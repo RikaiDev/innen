@@ -1,0 +1,75 @@
+[
+  {
+    "name": "normal",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "t:1", "type": "Task", "label": "寫 SFT 規格"}},
+      {"op": "node.upsert", "payload": {"id": "d:9", "type": "Decision", "label": "先台語漢字再台羅"}},
+      {"op": "edge.assert", "payload": {"from": "d:9", "type": "FOLLOWS_UP", "to": "t:1"}}
+    ],
+    "query": {"q": "SFT", "as_of": "2026-09-03T00:00:00Z", "limit": 20},
+    "expected": {
+      "hits": [{"node_id": "t:1", "kind": "Task", "label": "寫 SFT 規格", "excerpt": "寫 SFT 規格", "score": 1.0, "why": "graph"}],
+      "warnings": []
+    }
+  },
+  {
+    "name": "empty",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "t:1", "type": "Task", "label": "寫 SFT 規格"}}
+    ],
+    "query": {"q": "qqqzzzqqq", "as_of": "2026-09-03T00:00:00Z", "limit": 20},
+    "expected": {
+      "hits": [],
+      "warnings": []
+    }
+  },
+  {
+    "name": "warnings",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "t:1", "type": "Task", "label": "alpha beta"}},
+      {"op": "node.upsert", "payload": {"id": "t:2", "type": "Task", "label": "alpha gamma"}},
+      {"op": "edge.assert", "payload": {"from": "t:1", "type": "FOLLOWS_UP", "to": "t:2", "valid_from": "2026-01-01T00:00:00Z"}}
+    ],
+    "query": {"q": "alpha", "as_of": "2026-09-03T00:00:00Z", "limit": 150},
+    "expected": {
+      "hits": [
+        {"node_id": "t:1", "kind": "Task", "label": "alpha beta", "excerpt": "alpha beta", "score": 1.0, "why": "graph"},
+        {"node_id": "t:2", "kind": "Task", "label": "alpha gamma", "excerpt": "alpha gamma", "score": 1.0, "why": "graph"}
+      ],
+      "warnings": ["truncated"]
+    }
+  },
+  {
+    "name": "multi-hop",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "c:1", "type": "Conversation", "label": "apple 起點"}},
+      {"op": "node.upsert", "payload": {"id": "t:1", "type": "Task", "label": "第一步"}},
+      {"op": "node.upsert", "payload": {"id": "t:2", "type": "Task", "label": "第二步"}},
+      {"op": "node.upsert", "payload": {"id": "d:1", "type": "Decision", "label": "終點決策", "body": "收尾備註"}},
+      {"op": "edge.assert", "payload": {"from": "c:1", "type": "FOLLOWS_UP", "to": "t:1", "valid_from": "2026-01-01T00:00:00Z"}},
+      {"op": "edge.assert", "payload": {"from": "t:1", "type": "FOLLOWS_UP", "to": "t:2", "valid_from": "2026-01-01T00:00:00Z"}},
+      {"op": "edge.assert", "payload": {"from": "t:2", "type": "FOLLOWS_UP", "to": "d:1", "valid_from": "2026-01-01T00:00:00Z"}}
+    ],
+    "query": {"q": "apple", "as_of": "2026-09-03T00:00:00Z", "limit": 20},
+    "expected": {
+      "hits": [
+        {"node_id": "c:1", "kind": "Conversation", "label": "apple 起點", "excerpt": "apple 起點", "score": 1.0, "why": "graph"},
+        {"node_id": "t:1", "kind": "Task", "label": "第一步", "excerpt": "第一步", "score": 0.5, "why": "graph"},
+        {"node_id": "t:2", "kind": "Task", "label": "第二步", "excerpt": "第二步", "score": 0.3333333333333333, "why": "graph"},
+        {"node_id": "d:1", "kind": "Decision", "label": "終點決策", "excerpt": "終點決策 收尾備註", "score": 0.25, "why": "graph"}
+      ],
+      "warnings": []
+    }
+  },
+  {
+    "name": "custom-kind",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "w:1", "type": "Wiki", "label": "客製 apple 頁面"}}
+    ],
+    "query": {"q": "apple", "as_of": "2026-09-03T00:00:00Z", "limit": 20},
+    "expected": {
+      "hits": [{"node_id": "w:1", "kind": "Wiki", "label": "客製 apple 頁面", "excerpt": "客製 apple 頁面", "score": 1.0, "why": "graph"}],
+      "warnings": []
+    }
+  }
+]
