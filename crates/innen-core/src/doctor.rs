@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `journal-valid` | journal file exists-or-absent and every non-empty line parses as a [`JournalEntry`] |
 //! | `quarantine-list` | `quarantine/` absent, or holds no non-empty regular file |
-//! | `index-rebuildable` | derived files (`index.redb` + `fts/`) both open, or no derived index exists on a clean journal |
+//! | `index-rebuildable` | derived files (`index.redb` + `fts/`) both open with event counts matching the journal, or no derived index exists on a clean journal |
 //! | `ref-integrity` | every non-retracted edge `from` is a known node id and every `to` is a known node id or a Uri |
 //!
 //! Exit mapping (implement exactly): `0` = all checks pass; `1` =
@@ -27,7 +27,9 @@
 //! * A missing derived index on a clean journal is `ok`: queries replay the
 //!   journal directly, so there is nothing stale. A present-but-unopenable
 //!   (or partial) derived index is stale-but-rebuildable → exit `1` when the
-//!   journal is clean.
+//!   journal is clean. A present-and-openable index whose event count has
+//!   fallen behind the journal (post-build appends) is also
+//!   stale-but-rebuildable → exit `1`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,6 +38,9 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::journal::JournalEntry;
+
+/// redb `events` table (mirrors [`crate::index`] layout: `id → raw entry JSON`).
+const EVENTS: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("events");
 
 /// One named check result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -194,9 +199,43 @@ fn check_quarantine(root: &Path) -> Check {
     }
 }
 
-/// `index-rebuildable`: derived files open, or nothing stale to rebuild.
+/// Parsed-event count in the journal: non-empty lines that parse as
+/// [`JournalEntry`]. Missing file is `Some(0)`; `None` only when an existing
+/// file cannot be read. Read-only (`fs::read_to_string`).
+fn journal_parsed_count(root: &Path) -> Option<usize> {
+    let content = match fs::read_to_string(journal_path(root)) {
+        Ok(content) => content,
+        Err(e) if is_not_found(&e) => return Some(0),
+        Err(_) => return None,
+    };
+    let mut count = 0usize;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if serde_json::from_str::<JournalEntry>(line).is_ok() {
+            count += 1;
+        }
+    }
+    Some(count)
+}
+
+/// Row count of the redb `events` table. `None` when the db, transaction, or
+/// table cannot be read. Read-only (`Database::open` + read txn).
+fn redb_event_count(redb: &Path) -> Option<u64> {
+    use redb::ReadableTableMetadata as _;
+    let db = redb::Database::open(redb).ok()?;
+    let txn = db.begin_read().ok()?;
+    let table = txn.open_table(EVENTS).ok()?;
+    table.len().ok()
+}
+
+/// `index-rebuildable`: derived files open and fresh, or nothing stale to rebuild.
 ///
-/// * Both `index.redb` and `fts/` open → `ok`.
+/// * Both `index.redb` and `fts/` open **and** the redb `events` row count
+///   matches the journal parsed-event count → `ok`.
+/// * Both open but counts diverge (post-build appends) → not `ok`;
+///   stale-but-rebuildable → exit `1` when the journal is clean.
 /// * Neither exists → `ok` iff the journal is clean (nothing derived yet,
 ///   nothing stale; queries replay the journal directly).
 /// * Otherwise (partial set, or present-but-unopenable) → not `ok`;
@@ -230,6 +269,19 @@ fn check_index(root: &Path, journal_clean: bool) -> Check {
         let redb_ok = redb::Database::open(&redb).is_ok();
         let fts_ok = tantivy::Index::open_in_dir(&fts).is_ok();
         if redb_ok && fts_ok {
+            if let (Some(index_n), Some(journal_m)) =
+                (redb_event_count(&redb), journal_parsed_count(root))
+            {
+                if index_n != journal_m as u64 {
+                    return Check {
+                        name,
+                        ok: false,
+                        detail: format!(
+                            "stale index (index has {index_n} events, journal has {journal_m}); {rebuildable}"
+                        ),
+                    };
+                }
+            }
             return Check {
                 name,
                 ok: true,
@@ -491,6 +543,64 @@ mod tests {
             fs::read_to_string(qdir.join("2026-01-01.jsonl")).expect("reread quarantine"),
             "not json at all\n"
         );
+    }
+
+    #[test]
+    fn doctor_stale_index_is_1() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fixture_two_nodes_one_edge(dir.path());
+        crate::index::build(dir.path()).expect("build");
+        // Post-build append: the journal moves on, the derived index falls
+        // behind (3 indexed events vs 4 journal events).
+        let journal = Journal::open(dir.path()).expect("reopen");
+        journal
+            .append("node.upsert", &json!({"id": "n:3", "label": "three"}))
+            .expect("append n:3");
+        drop(journal);
+        let before = journal_bytes(dir.path());
+
+        let report = run(dir.path());
+
+        assert_eq!(report.exit_code, 1, "stale index must exit 1: {report:?}");
+        assert_eq!(report.checks[2].name, "index-rebuildable");
+        assert!(
+            !report.checks[2].ok,
+            "index-rebuildable must be not-ok: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2]
+                .detail
+                .contains("index has 3 events, journal has 4"),
+            "detail names both counts: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok: {}",
+            report.checks[0].detail
+        );
+        assert!(
+            report.checks[1].ok,
+            "quarantine-list stays ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            report.checks[3].ok,
+            "ref-integrity stays ok: {}",
+            report.checks[3].detail
+        );
+
+        // Report-only: the stale report leaves the journal untouched.
+        assert_eq!(journal_bytes(dir.path()), before);
+
+        // Rebuild converges: a fresh index matches the journal again.
+        crate::index::rebuild(dir.path()).expect("rebuild");
+        let report = run(dir.path());
+        assert_eq!(report.exit_code, 0, "rebuilt index must exit 0: {report:?}");
+        for check in &report.checks {
+            assert!(check.ok, "{} must be ok: {}", check.name, check.detail);
+        }
     }
 
     #[test]
