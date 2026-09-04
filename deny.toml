@@ -1,0 +1,5 @@
+[graph]
+targets = [{ triple = "aarch64-apple-darwin" }, { triple = "x86_64-unknown-linux-musl" }]
+[advisories]
+yanked = "deny"
+unmaintained = "warn"
