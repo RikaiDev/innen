@@ -463,6 +463,33 @@ pub fn run(root: &Path) -> Report {
     }
 }
 
+/// Lint: journal-valid + quarantine-empty + ref-integrity subset of [`run`].
+///
+/// Placement: lives here (not `config.rs`) to reuse the private read-only
+/// checks without widening visibility or adding a module. The quarantine check
+/// reuses [`check_quarantine`] logic but is renamed to `quarantine-empty` per
+/// the Task 8c scope wording. Order: `journal-valid`, `quarantine-empty`,
+/// `ref-integrity`. Exits mirror [`run`]: `2` when journal-invalid or
+/// ref-integrity broken (dominates), `1` when quarantine non-empty, else `0`.
+/// Report-only: no writes (same guarantees as [`run`]).
+pub fn lint(root: &Path) -> Report {
+    let journal = check_journal(root);
+    let mut quarantine = check_quarantine(root);
+    quarantine.name = "quarantine-empty".to_string();
+    let refs = check_ref_integrity(root);
+    let exit_code = if !journal.ok || !refs.ok {
+        2
+    } else if !quarantine.ok {
+        1
+    } else {
+        0
+    };
+    Report {
+        checks: vec![journal, quarantine, refs],
+        exit_code,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -931,5 +958,43 @@ mod tests {
         );
         assert!(!dir.path().join(".innen/index.redb").exists());
         assert!(!dir.path().join(".innen/fts").exists());
+    }
+
+    #[test]
+    fn lint_reports_quarantine() {
+        // Preseeded quarantine file → lint exit 1.
+        let dir = tempfile::tempdir().expect("tempdir");
+        fixture_two_nodes_one_edge(dir.path());
+        let qdir = dir.path().join(".innen/quarantine");
+        fs::create_dir_all(&qdir).expect("mkdir quarantine");
+        fs::write(qdir.join("2026-01-01.jsonl"), "not json at all\n").expect("preseed quarantine");
+
+        let report = super::lint(dir.path());
+
+        assert_eq!(
+            report.exit_code, 1,
+            "quarantine present must exit 1: {report:?}"
+        );
+        let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["journal-valid", "quarantine-empty", "ref-integrity"],
+            "lint scope in order: {report:?}"
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok: {}",
+            report.checks[0].detail
+        );
+        assert!(
+            !report.checks[1].ok,
+            "quarantine-empty must be not-ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            report.checks[2].ok,
+            "ref-integrity stays ok: {}",
+            report.checks[2].detail
+        );
     }
 }
