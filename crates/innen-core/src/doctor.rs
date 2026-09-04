@@ -14,9 +14,15 @@
 //! quarantine present OR index stale-but-rebuildable; `2` = journal invalid
 //! OR ref-integrity broken (severity `2` dominates `1`).
 //!
+//! Edge mapping: quarantine-unreadable → `1` (via `quarantine-list` not-ok);
+//! root-not-a-directory → `2` (via `journal-valid` not-ok).
+//!
 //! Report-only guarantee: NEVER mutates. This module only uses
 //! [`std::fs::read`]/[`std::fs::read_to_string`]/[`std::fs::read_dir`] plus
-//! read-only opens (`redb::Database::open`, `tantivy::Index::open_in_dir`).
+//! [`tantivy::Index::open_in_dir`] and an in-memory redb open (file bytes via
+//! [`std::fs::read`], never `redb::Database::open` on the original: that call
+//! requires write access and bumps `index.redb` mtime even for a read txn,
+//! which would break the no-mutation pins).
 //! It never calls [`crate::journal::Journal::open`] (which would quarantine
 //! bad lines and create dirs/lock files) nor [`crate::index::build`] /
 //! [`crate::index::rebuild`]. Consequences, pinned by tests:
@@ -220,14 +226,34 @@ fn journal_parsed_count(root: &Path) -> Option<usize> {
     Some(count)
 }
 
-/// Row count of the redb `events` table. `None` when the db, transaction, or
-/// table cannot be read. Read-only (`Database::open` + read txn).
-fn redb_event_count(redb: &Path) -> Option<u64> {
+/// Row count of the redb `events` table from an already-open database.
+/// `None` when the transaction or table cannot be read. Read-only (read txn).
+fn redb_event_count_in(db: &redb::Database) -> Option<u64> {
     use redb::ReadableTableMetadata as _;
-    let db = redb::Database::open(redb).ok()?;
     let txn = db.begin_read().ok()?;
     let table = txn.open_table(EVENTS).ok()?;
     table.len().ok()
+}
+
+/// Open `index.redb` without touching the original file.
+///
+/// `redb::Database::open` requires write access and bumps the file mtime
+/// even for a read-only transaction (verified: identical bytes, newer mtime),
+/// which would violate the report-only + no-mutation pins. Instead read the
+/// bytes (`fs::read`, `O_RDONLY`, no mtime change) into an in-memory backend
+/// and open that: all redb writes land on the copy. `None` when the file
+/// cannot be read, is empty, or is not a valid redb database (same
+/// not-ok mapping as a failed open).
+fn open_redb_readonly(path: &Path) -> Option<redb::Database> {
+    use redb::StorageBackend as _;
+    let bytes = fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let backend = redb::backends::InMemoryBackend::new();
+    backend.set_len(bytes.len() as u64).ok()?;
+    backend.write(0, &bytes).ok()?;
+    redb::Database::builder().create_with_backend(backend).ok()
 }
 
 /// `index-rebuildable`: derived files open and fresh, or nothing stale to rebuild.
@@ -266,12 +292,18 @@ fn check_index(root: &Path, journal_clean: bool) -> Check {
         };
     }
     if redb_exists && fts_exists {
-        let redb_ok = redb::Database::open(&redb).is_ok();
+        // Single open per check: probe + count share one `Database` opened
+        // from an in-memory copy (original mtime untouched).
+        let (redb_ok, redb_count) = match open_redb_readonly(&redb) {
+            Some(db) => {
+                let count = redb_event_count_in(&db);
+                (true, count)
+            }
+            None => (false, None),
+        };
         let fts_ok = tantivy::Index::open_in_dir(&fts).is_ok();
         if redb_ok && fts_ok {
-            if let (Some(index_n), Some(journal_m)) =
-                (redb_event_count(&redb), journal_parsed_count(root))
-            {
+            if let (Some(index_n), Some(journal_m)) = (redb_count, journal_parsed_count(root)) {
                 if index_n != journal_m as u64 {
                     return Check {
                         name,
@@ -464,6 +496,30 @@ mod tests {
         fs::read(root.join(".innen/journal.jsonl")).expect("read journal bytes")
     }
 
+    /// Sorted recursive listing of `.innen` (relative paths) for no-mutation pins.
+    fn snapshot_innen(root: &std::path::Path) -> Vec<String> {
+        let base = root.join(".innen");
+        let mut out = Vec::new();
+        let mut stack = vec![base.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read_dir snapshot") {
+                let entry = entry.expect("dir entry snapshot");
+                let path = entry.path();
+                let rel = path
+                    .strip_prefix(&base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                out.push(rel);
+                if path.is_dir() {
+                    stack.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
     #[test]
     fn doctor_healthy_is_0() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -558,6 +614,18 @@ mod tests {
             .expect("append n:3");
         drop(journal);
         let before = journal_bytes(dir.path());
+        // No-mutation pins with a present index: mtimes + full listing.
+        let redb_file = dir.path().join(".innen/index.redb");
+        let fts_dir = dir.path().join(".innen/fts");
+        let redb_mtime = fs::metadata(&redb_file)
+            .expect("redb meta")
+            .modified()
+            .expect("redb mtime");
+        let fts_mtime = fs::metadata(&fts_dir)
+            .expect("fts meta")
+            .modified()
+            .expect("fts mtime");
+        let before_listing = snapshot_innen(dir.path());
 
         let report = run(dir.path());
 
@@ -593,6 +661,28 @@ mod tests {
 
         // Report-only: the stale report leaves the journal untouched.
         assert_eq!(journal_bytes(dir.path()), before);
+        // Report-only with a present index: derived bytes untouched.
+        assert_eq!(
+            fs::metadata(&redb_file)
+                .expect("reread redb meta")
+                .modified()
+                .expect("reread redb mtime"),
+            redb_mtime,
+            "index.redb mtime must not change"
+        );
+        assert_eq!(
+            fs::metadata(&fts_dir)
+                .expect("reread fts meta")
+                .modified()
+                .expect("reread fts mtime"),
+            fts_mtime,
+            "fts/ mtime must not change"
+        );
+        assert_eq!(
+            snapshot_innen(dir.path()),
+            before_listing,
+            "no files added/removed under .innen"
+        );
 
         // Rebuild converges: a fresh index matches the journal again.
         crate::index::rebuild(dir.path()).expect("rebuild");
@@ -604,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_broken_journal_is_2() {
+    fn doctor_dangling_edge_is_2() {
         let dir = tempfile::tempdir().expect("tempdir");
         let journal = Journal::open(dir.path()).expect("open");
         journal
@@ -634,6 +724,173 @@ mod tests {
         assert!(
             report.checks[3].detail.contains("n:ghost"),
             "detail names the dangling endpoint: {}",
+            report.checks[3].detail
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok (dangling edge parses): {}",
+            report.checks[0].detail
+        );
+        assert!(
+            report.checks[1].ok,
+            "quarantine-list stays ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            report.checks[2].ok,
+            "index-rebuildable stays ok (no derived index, clean journal): {}",
+            report.checks[2].detail
+        );
+    }
+
+    #[test]
+    fn exit_2_dominates_1() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = Journal::open(dir.path()).expect("open");
+        journal
+            .append("node.upsert", &json!({"id": "n:1", "label": "one"}))
+            .expect("append n:1");
+        // Dangling edge pins exit 2 via ref-integrity (see
+        // `doctor_dangling_edge_is_2`).
+        journal
+            .append(
+                "edge.assert",
+                &json!({"from": "n:1", "to": "n:ghost", "type": "FOLLOWS_UP"}),
+            )
+            .expect("append dangling edge");
+        drop(journal);
+        // Quarantine presence alone pins exit 1; severity 2 must dominate.
+        let qdir = dir.path().join(".innen/quarantine");
+        fs::create_dir_all(&qdir).expect("mkdir quarantine");
+        fs::write(qdir.join("2026-01-01.jsonl"), "not json at all\n").expect("preseed quarantine");
+
+        let report = run(dir.path());
+
+        assert_eq!(
+            report.exit_code, 2,
+            "exit 2 must dominate exit 1: {report:?}"
+        );
+        assert!(
+            !report.checks[1].ok,
+            "quarantine-list must be not-ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            !report.checks[3].ok,
+            "ref-integrity must be not-ok: {}",
+            report.checks[3].detail
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok (dangling edge parses): {}",
+            report.checks[0].detail
+        );
+        assert!(
+            report.checks[2].ok,
+            "index-rebuildable stays ok (no derived index, clean journal): {}",
+            report.checks[2].detail
+        );
+    }
+
+    #[test]
+    fn partial_index_reports() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fixture_two_nodes_one_edge(dir.path());
+        crate::index::build(dir.path()).expect("build");
+        // Leave a partial derived index: index.redb present, fts/ missing.
+        fs::remove_dir_all(dir.path().join(".innen/fts")).expect("remove fts");
+        assert!(dir.path().join(".innen/index.redb").is_file());
+        assert!(!dir.path().join(".innen/fts").exists());
+
+        let report = run(dir.path());
+
+        assert_eq!(report.exit_code, 1, "partial index must exit 1: {report:?}");
+        assert_eq!(report.checks[2].name, "index-rebuildable");
+        assert!(
+            !report.checks[2].ok,
+            "index-rebuildable must be not-ok: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2].detail.contains("partial"),
+            "detail says partial: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2].detail.contains("fts/"),
+            "detail names the missing side: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2].detail.contains("rebuildable"),
+            "clean journal is rebuildable: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok: {}",
+            report.checks[0].detail
+        );
+        assert!(
+            report.checks[1].ok,
+            "quarantine-list stays ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            report.checks[3].ok,
+            "ref-integrity stays ok: {}",
+            report.checks[3].detail
+        );
+    }
+
+    #[test]
+    fn present_unopenable_index() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fixture_two_nodes_one_edge(dir.path());
+        crate::index::build(dir.path()).expect("build");
+        // Present-but-unopenable redb alongside a valid fts/ dir.
+        fs::write(dir.path().join(".innen/index.redb"), b"garbage-not-redb").expect("corrupt redb");
+
+        let report = run(dir.path());
+
+        assert_eq!(
+            report.exit_code, 1,
+            "unopenable index must exit 1: {report:?}"
+        );
+        assert_eq!(report.checks[2].name, "index-rebuildable");
+        assert!(
+            !report.checks[2].ok,
+            "index-rebuildable must be not-ok: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2].detail.contains("index.redb"),
+            "detail names the unreadable side: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2].detail.contains("rebuildable"),
+            "clean journal is rebuildable: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            !report.checks[2].detail.contains("not rebuildable"),
+            "clean journal must not say not-rebuildable: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok: {}",
+            report.checks[0].detail
+        );
+        assert!(
+            report.checks[1].ok,
+            "quarantine-list stays ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            report.checks[3].ok,
+            "ref-integrity stays ok: {}",
             report.checks[3].detail
         );
     }
