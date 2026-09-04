@@ -1,0 +1,12 @@
+# Repo-local cargo config (innen). Machine-global QoS lives in ~/.cargo/config.toml
+# (jobs, debuginfo) — do NOT duplicate it here. This file only adds what is
+# repo-specific and globally safe.
+[build]
+# sccache: never recompile a dependency crate twice. Server aut starts on
+# first use; stats via `sccache --show-stats` (watch the hit rate).
+rustc-wrapper = "sccache"
+
+[env]
+SCCACHE_CACHE_SIZE = "2G"
+# sccache and incremental are mutually exclusive; cache wins (deps dominate).
+CARGO_INCREMENTAL = "0"
