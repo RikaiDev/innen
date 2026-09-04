@@ -145,8 +145,8 @@ pub fn ensure_tokenizer(index: &tantivy::Index) {
 ///   filter per query).
 /// - `fts/` — on-disk tantivy index over materialized nodes with [`schema`]
 ///   + [`ensure_tokenizer`] (same contract as query's throwaway in-RAM
-///   index: text is `label`, or `label + " " + body`; docs added in sorted
-///   id order).
+///     index: text is `label`, or `label + " " + body`; docs added in sorted
+///     id order).
 const EVENTS: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("events");
 const NODES: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("nodes");
 const EDGES: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("edges");
@@ -203,6 +203,12 @@ fn fts_path(root: &Path) -> PathBuf {
 /// Replay is unfiltered (`as_of = None`, `include_expired = true`): history
 /// and retracted rows are preserved in the derived files; per-query
 /// filtering stays with the reader.
+///
+/// The write is two-phase and non-atomic (redb commit, then tantivy commit);
+/// a crash in between can leave a new redb beside a stale `fts/` until the
+/// next build. An existing `fts/` is reused via `open_in_dir`, falling back
+/// to `create` only when open fails — [`rebuild`] (which removes `fts/`
+/// first) is the reliable recovery path for corrupt derived bytes.
 pub fn build(root: &Path) -> Result<(), IndexError> {
     std::fs::create_dir_all(root.join(".innen"))?;
     std::fs::create_dir_all(fts_path(root))?;
@@ -306,6 +312,20 @@ pub fn build(root: &Path) -> Result<(), IndexError> {
 /// Drop derived index files (`index.redb` + `fts/`, missing files are fine)
 /// and [`build`] again from the journal (untouched — it is the source of
 /// truth). This is the recovery path for corrupt derived bytes.
+///
+/// A crash between the remove step and the end of [`build`] leaves total
+/// derived loss (no `index.redb`, no `fts/`) until the next build completes;
+/// this is acceptable because the journal is the source of truth and the next
+/// build restores everything.
+///
+/// The build itself is two-phase and non-atomic: the redb transaction commits
+/// first, then the tantivy writer commits. A crash in between can leave a new
+/// redb beside a stale `fts/` until the next build converges them.
+///
+/// `build` reuses an existing `fts/` via `open_in_dir`, falling back to
+/// `create` only when open fails; a corrupt-but-openable `fts/` may not
+/// self-heal. Removing `fts/` first (as done here) is the reliable recovery
+/// path.
 pub fn rebuild(root: &Path) -> Result<(), IndexError> {
     match std::fs::remove_file(redb_path(root)) {
         Ok(()) => {}
@@ -377,22 +397,137 @@ mod tests {
 
     /// Total edge rows across every `(type, from)` list in the derived redb.
     /// Reads the `edges` table as a black box (own handle, JSON-list values).
+    /// Every row read propagates via `expect`: a corrupt row fails the test
+    /// instead of being silently skipped.
     fn redb_edge_count(root: &Path) -> usize {
         use redb::ReadableTable as _;
-        const EDGES: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("edges");
-        let db = redb::Database::open(root.join(".innen").join("index.redb")).expect("open redb");
+        let db = redb::Database::open(redb_path(root)).expect("open redb");
         let txn = db.begin_read().expect("read txn");
         let table = txn.open_table(EDGES).expect("edges table");
-        table
-            .iter()
-            .expect("iter")
-            .filter_map(|row| row.ok())
-            .map(|(_, v)| {
-                serde_json::from_str::<Vec<serde_json::Value>>(v.value())
-                    .expect("edge list value")
-                    .len()
-            })
-            .sum()
+        let mut total = 0;
+        for row in table.iter().expect("iter") {
+            let (_, v) = row.expect("edge row readable");
+            let list =
+                serde_json::from_str::<Vec<serde_json::Value>>(v.value()).expect("edge list value");
+            total += list.len();
+        }
+        total
+    }
+
+    /// `(events rows, nodes rows, total edge rows)` in the derived redb.
+    /// All reads propagate via `expect` (see [`redb_edge_count`]).
+    fn redb_counts(root: &Path) -> (u64, u64, usize) {
+        use redb::{ReadableTable as _, ReadableTableMetadata as _};
+        let db = redb::Database::open(redb_path(root)).expect("open redb");
+        let txn = db.begin_read().expect("read txn");
+        let events = txn
+            .open_table(EVENTS)
+            .expect("events table")
+            .len()
+            .expect("events len");
+        let nodes = txn
+            .open_table(NODES)
+            .expect("nodes table")
+            .len()
+            .expect("nodes len");
+        let edges_table = txn.open_table(EDGES).expect("edges table");
+        let mut edge_rows = 0;
+        for row in edges_table.iter().expect("iter") {
+            let (_, v) = row.expect("edge row readable");
+            let list =
+                serde_json::from_str::<Vec<serde_json::Value>>(v.value()).expect("edge list value");
+            edge_rows += list.len();
+        }
+        (events, nodes, edge_rows)
+    }
+
+    /// Direct tantivy read-back from the built `fts/` dir (not the query
+    /// throwaway): open the on-disk index, register the tokenizer, run `q`,
+    /// return sorted `id`s. Panics on I/O/tantivy failure, so corruption
+    /// surfaces as a test failure rather than an empty result.
+    fn fts_ids(root: &Path, q: &str) -> Vec<String> {
+        use tantivy::collector::TopDocs;
+        use tantivy::query::QueryParser;
+        use tantivy::schema::Value as _;
+        let index_schema = schema();
+        let body_field = index_schema.get_field("body").expect("schema defines body");
+        let id_field = index_schema.get_field("id").expect("schema defines id");
+        let index = tantivy::Index::open_in_dir(fts_path(root)).expect("open fts");
+        ensure_tokenizer(&index);
+        let reader = index.reader().expect("fts reader");
+        let searcher = reader.searcher();
+        let parser = QueryParser::for_index(&index, vec![body_field]);
+        let parsed = parser.parse_query(q).expect("parse fts query");
+        let top = searcher
+            .search(&parsed, &TopDocs::with_limit(20))
+            .expect("fts search");
+        let mut ids = Vec::new();
+        for (_, addr) in top {
+            let fts_doc: tantivy::TantivyDocument = searcher.doc(addr).expect("fts doc");
+            if let Some(id) = fts_doc.get_first(id_field).and_then(|v| v.as_str()) {
+                ids.push(id.to_string());
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    /// True only if a direct `fts/` read finds `expect_id` for `q`; any
+    /// open/parse/search error returns false. Used to prove FTS corruption
+    /// actually broke read-back before rebuild.
+    fn fts_read_finds(root: &Path, q: &str, expect_id: &str) -> bool {
+        use tantivy::collector::TopDocs;
+        use tantivy::query::QueryParser;
+        use tantivy::schema::Value as _;
+        let index_schema = schema();
+        let Ok(body_field) = index_schema.get_field("body") else {
+            return false;
+        };
+        let Ok(id_field) = index_schema.get_field("id") else {
+            return false;
+        };
+        let Ok(index) = tantivy::Index::open_in_dir(fts_path(root)) else {
+            return false;
+        };
+        ensure_tokenizer(&index);
+        let Ok(reader) = index.reader() else {
+            return false;
+        };
+        let searcher = reader.searcher();
+        let parser = QueryParser::for_index(&index, vec![body_field]);
+        let Ok(parsed) = parser.parse_query(q) else {
+            return false;
+        };
+        let Ok(top) = searcher.search(&parsed, &TopDocs::with_limit(20)) else {
+            return false;
+        };
+        for (_, addr) in top {
+            if let Ok(fts_doc) = searcher.doc::<tantivy::TantivyDocument>(addr) {
+                if fts_doc.get_first(id_field).and_then(|v| v.as_str()) == Some(expect_id) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Overwrite every regular file under `fts/` with garbage. `rebuild`
+    /// removes the whole dir, so it still recovers.
+    fn corrupt_fts_files(root: &Path) {
+        let mut corrupted = 0;
+        let mut stack = vec![fts_path(root)];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read fts dir") {
+                let path = entry.expect("fts entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.is_file() {
+                    std::fs::write(&path, b"garbage-not-a-tantivy-file").expect("corrupt fts file");
+                    corrupted += 1;
+                }
+            }
+        }
+        assert!(corrupted > 0, "expected fts files to corrupt");
     }
 
     #[test]
@@ -408,16 +543,31 @@ mod tests {
         assert_eq!(hits[1].why, "graph");
         assert_eq!(hits[1].score, 0.5);
         assert_eq!(redb_edge_count(dir.path()), 1);
+        // Direct tantivy read-back proves FTS derived state (not just redb).
+        let fts_alpha = fts_ids(dir.path(), "alpha");
+        assert!(
+            fts_alpha.contains(&"t:1".to_string()),
+            "fts must index t:1, got {fts_alpha:?}"
+        );
+        assert!(
+            fts_alpha.contains(&"t:2".to_string()),
+            "fts must index t:2, got {fts_alpha:?}"
+        );
+        assert!(
+            fts_alpha.contains(&"p:1".to_string()),
+            "fts must index p:1, got {fts_alpha:?}"
+        );
 
         // Corrupt index.redb bytes (overwrite with garbage).
-        let redb_path = dir.path().join(".innen").join("index.redb");
-        std::fs::write(&redb_path, b"garbage-not-a-redb-file").expect("corrupt");
+        let redb_file = redb_path(dir.path());
+        std::fs::write(&redb_file, b"garbage-not-a-redb-file").expect("corrupt");
         assert!(
-            redb::Database::open(&redb_path).is_err(),
+            redb::Database::open(&redb_file).is_err(),
             "corruption must break redb open"
         );
 
-        // rebuild() recovers: the edge is visible again.
+        // rebuild() recovers: the edge is visible again via query, redb,
+        // and direct FTS read-back.
         rebuild(dir.path()).expect("rebuild");
         let hits = query_ids(dir.path());
         assert_eq!(hits.len(), 2);
@@ -426,5 +576,104 @@ mod tests {
         assert_eq!(hits[1].why, "graph");
         assert_eq!(hits[1].score, 0.5);
         assert_eq!(redb_edge_count(dir.path()), 1);
+        let fts_alpha = fts_ids(dir.path(), "alpha");
+        assert!(
+            fts_alpha.contains(&"t:1".to_string()),
+            "fts must recover t:1, got {fts_alpha:?}"
+        );
+        assert!(
+            fts_alpha.contains(&"t:2".to_string()),
+            "fts must recover t:2, got {fts_alpha:?}"
+        );
+        assert!(
+            fts_alpha.contains(&"p:1".to_string()),
+            "fts must recover p:1, got {fts_alpha:?}"
+        );
+
+        // Corrupt FTS files (garbage into every file under fts/).
+        corrupt_fts_files(dir.path());
+        assert!(
+            !fts_read_finds(dir.path(), "alpha", "t:1"),
+            "fts corruption must break direct read-back"
+        );
+
+        // rebuild() recovers FTS as well.
+        rebuild(dir.path()).expect("rebuild after fts corruption");
+        let fts_alpha = fts_ids(dir.path(), "alpha");
+        assert!(
+            fts_alpha.contains(&"t:1".to_string()),
+            "fts must recover t:1 after fts corruption, got {fts_alpha:?}"
+        );
+        assert!(
+            fts_alpha.contains(&"t:2".to_string()),
+            "fts must recover t:2 after fts corruption, got {fts_alpha:?}"
+        );
+        assert!(
+            fts_alpha.contains(&"p:1".to_string()),
+            "fts must recover p:1 after fts corruption, got {fts_alpha:?}"
+        );
+        let hits = query_ids(dir.path());
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].node_id, "t:1");
+        assert_eq!(hits[1].node_id, "t:2");
+        assert_eq!(redb_edge_count(dir.path()), 1);
+    }
+
+    #[test]
+    fn build_is_idempotent() {
+        let dir = fixture_root();
+        build(dir.path()).expect("first build");
+        let counts_first = redb_counts(dir.path());
+        let hits_first = query_ids(dir.path());
+        let fts_first = fts_ids(dir.path(), "alpha");
+        build(dir.path()).expect("second build");
+        let counts_second = redb_counts(dir.path());
+        let hits_second = query_ids(dir.path());
+        let fts_second = fts_ids(dir.path(), "alpha");
+        assert_eq!(
+            counts_first, counts_second,
+            "second build must converge to same row counts"
+        );
+        assert_eq!(
+            hits_first, hits_second,
+            "second build must converge to same query hits"
+        );
+        assert_eq!(
+            fts_first, fts_second,
+            "second build must converge to same fts ids"
+        );
+        // Fixture pins the converged state: 4 events, 3 nodes, 1 edge row.
+        assert_eq!(counts_first, (4, 3, 1));
+    }
+
+    #[test]
+    fn rebuild_with_missing_files() {
+        let dir = fixture_root();
+        // No derived files yet: rebuild must still work (missing files fine).
+        assert!(!redb_path(dir.path()).exists());
+        assert!(!fts_path(dir.path()).exists());
+        rebuild(dir.path()).expect("rebuild with missing files");
+        let hits = query_ids(dir.path());
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].node_id, "t:1");
+        assert_eq!(hits[1].node_id, "t:2");
+        assert_eq!(redb_edge_count(dir.path()), 1);
+        assert!(fts_read_finds(dir.path(), "alpha", "t:1"));
+    }
+
+    #[test]
+    fn empty_journal_builds_empty_index() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        Journal::open(dir.path()).expect("open");
+        build(dir.path()).expect("build empty");
+        assert_eq!(redb_counts(dir.path()), (0, 0, 0));
+        assert!(
+            fts_ids(dir.path(), "alpha").is_empty(),
+            "empty journal must build empty fts"
+        );
+        assert!(
+            query_ids(dir.path()).is_empty(),
+            "empty journal must query empty"
+        );
     }
 }
