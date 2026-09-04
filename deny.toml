@@ -1,5 +1,23 @@
 [graph]
 targets = [{ triple = "aarch64-apple-darwin" }, { triple = "x86_64-unknown-linux-musl" }]
+
+# Vulnerabilities and yanked crates fail by default in cargo-deny 0.20.
+# Warnings (unmaintained/unsound notices) do not fail. Ignore with reason only.
 [advisories]
-yanked = "deny"
-unmaintained = "warn"
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unlicense",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Unicode-3.0",
+]
+

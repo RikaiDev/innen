@@ -8,7 +8,15 @@ pub const SCHEMA_VERSION: &str = "innen/v1";
 pub const VOLATILE_NODE_EDGE: &[&str] = &["observed_utc"];
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    // digest 0.11 removed the LowerHex impl on outputs: encode manually.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn canonical_value(value: &Value) -> Value {

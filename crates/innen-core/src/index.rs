@@ -400,8 +400,8 @@ mod tests {
     /// Every row read propagates via `expect`: a corrupt row fails the test
     /// instead of being silently skipped.
     fn redb_edge_count(root: &Path) -> usize {
-        use redb::ReadableTable as _;
-        let db = redb::Database::open(redb_path(root)).expect("open redb");
+        use redb::{ReadableDatabase as _, ReadableTable as _};
+        let db = redb::ReadOnlyDatabase::open(redb_path(root)).expect("open redb");
         let txn = db.begin_read().expect("read txn");
         let table = txn.open_table(EDGES).expect("edges table");
         let mut total = 0;
@@ -417,8 +417,8 @@ mod tests {
     /// `(events rows, nodes rows, total edge rows)` in the derived redb.
     /// All reads propagate via `expect` (see [`redb_edge_count`]).
     fn redb_counts(root: &Path) -> (u64, u64, usize) {
-        use redb::{ReadableTable as _, ReadableTableMetadata as _};
-        let db = redb::Database::open(redb_path(root)).expect("open redb");
+        use redb::{ReadableDatabase as _, ReadableTable as _, ReadableTableMetadata as _};
+        let db = redb::ReadOnlyDatabase::open(redb_path(root)).expect("open redb");
         let txn = db.begin_read().expect("read txn");
         let events = txn
             .open_table(EVENTS)
@@ -459,7 +459,7 @@ mod tests {
         let parser = QueryParser::for_index(&index, vec![body_field]);
         let parsed = parser.parse_query(q).expect("parse fts query");
         let top = searcher
-            .search(&parsed, &TopDocs::with_limit(20))
+            .search(&parsed, &TopDocs::with_limit(20).order_by_score())
             .expect("fts search");
         let mut ids = Vec::new();
         for (_, addr) in top {
@@ -498,7 +498,7 @@ mod tests {
         let Ok(parsed) = parser.parse_query(q) else {
             return false;
         };
-        let Ok(top) = searcher.search(&parsed, &TopDocs::with_limit(20)) else {
+        let Ok(top) = searcher.search(&parsed, &TopDocs::with_limit(20).order_by_score()) else {
             return false;
         };
         for (_, addr) in top {
@@ -562,7 +562,7 @@ mod tests {
         let redb_file = redb_path(dir.path());
         std::fs::write(&redb_file, b"garbage-not-a-redb-file").expect("corrupt");
         assert!(
-            redb::Database::open(&redb_file).is_err(),
+            redb::ReadOnlyDatabase::open(&redb_file).is_err(),
             "corruption must break redb open"
         );
 

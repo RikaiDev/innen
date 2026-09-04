@@ -229,7 +229,7 @@ fn journal_parsed_count(root: &Path) -> Option<usize> {
 /// Row count of the redb `events` table from an already-open database.
 /// `None` when the transaction or table cannot be read. Read-only (read txn).
 fn redb_event_count_in(db: &redb::Database) -> Option<u64> {
-    use redb::ReadableTableMetadata as _;
+    use redb::{ReadableDatabase as _, ReadableTableMetadata as _};
     let txn = db.begin_read().ok()?;
     let table = txn.open_table(EVENTS).ok()?;
     table.len().ok()

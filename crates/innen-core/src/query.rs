@@ -235,7 +235,9 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
     if !params.q.is_empty() {
         let parser = QueryParser::for_index(&index, vec![body_field]);
         if let Ok(parsed) = parser.parse_query(&params.q) {
-            if let Ok(top) = searcher.search(&parsed, &TopDocs::with_limit(FTS_TOP_K)) {
+            if let Ok(top) =
+                searcher.search(&parsed, &TopDocs::with_limit(FTS_TOP_K).order_by_score())
+            {
                 let mut scored: Vec<(String, f32)> = Vec::new();
                 for (bm25, addr) in top {
                     if let Ok(doc) = searcher.doc::<TantivyDocument>(addr) {
