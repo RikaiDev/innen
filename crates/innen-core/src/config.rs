@@ -45,7 +45,7 @@
 //! [`load_with_env`] with an injected empty env map and the lint test touches
 //! no env, so no two tests contend on the same real env key.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// CLI-explicit overrides (highest precedence layer).
@@ -374,6 +374,67 @@ pub fn load_with_env(
         .get("INNEN_REBUILD_ON_OPEN")
         .and_then(|s| parse_env_bool(s));
     load_impl(root, cli, env_root, env_format, env_rebuild)
+}
+
+/// CLI `config set` failure, extracted from `src/main.rs`.
+///
+/// Placement choice: machine.json persistence lives here in `config.rs` (not a
+/// new module) to share the flat-object layout and sorted-keys discipline with
+/// the read path above; graph write-path rules live in `graph.rs`. Display
+/// strings match the former binary `eprintln!("error: {e}")` suffixes exactly.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigSetError {
+    #[error("unknown config key: {0} (root|format|rebuild_on_open)")]
+    UnknownKey(String),
+    #[error("rebuild_on_open must be true|false")]
+    InvalidBool,
+    #[error("{0} must be non-empty")]
+    EmptyValue(String),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Validate `key`/`value` and persist one key into `<root>/.innen/machine.json`.
+///
+/// Mirrors the former binary `cmd_config_set` byte-for-byte: key allowlist,
+/// `rebuild_on_open` true|false check, non-empty check for `root`/`format`,
+/// `Bool` vs `String` stored shape, `create_dir_all`, read-merge-write with
+/// sorted keys plus trailing newline (unparseable bytes fall back to empty;
+/// only `NotFound` is a clean empty — other reads fail). Returns the echo
+/// string (`rebuild_on_open` lowercased, others verbatim) for the caller to print.
+pub fn set_machine_value(root: &Path, key: &str, value: &str) -> Result<String, ConfigSetError> {
+    if !matches!(key, "root" | "format" | "rebuild_on_open") {
+        return Err(ConfigSetError::UnknownKey(key.to_string()));
+    }
+    if key == "rebuild_on_open"
+        && !matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "false")
+    {
+        return Err(ConfigSetError::InvalidBool);
+    }
+    if (key == "root" || key == "format") && value.trim().is_empty() {
+        return Err(ConfigSetError::EmptyValue(key.to_string()));
+    }
+    let stored = if key == "rebuild_on_open" {
+        let b = value.trim().eq_ignore_ascii_case("true");
+        serde_json::Value::Bool(b)
+    } else {
+        serde_json::Value::String(value.to_string())
+    };
+    let machine_path = root.join(".innen").join("machine.json");
+    std::fs::create_dir_all(root.join(".innen"))?;
+    let mut map: BTreeMap<String, serde_json::Value> = match std::fs::read(&machine_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => return Err(ConfigSetError::Io(e)),
+    };
+    map.insert(key.to_string(), stored);
+    let text = serde_json::to_string(&map).expect("machine.json serializes");
+    std::fs::write(&machine_path, format!("{text}\n"))?;
+    let echo = match key {
+        "rebuild_on_open" => value.trim().to_ascii_lowercase(),
+        _ => value.to_string(),
+    };
+    Ok(echo)
 }
 
 #[cfg(test)]

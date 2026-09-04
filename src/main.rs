@@ -10,7 +10,6 @@
 //! `--format json` is compact `serde_json::to_string` (single line +
 //! trailing newline); struct field order is the wire order.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::{CommandFactory as _, Parser, Subcommand};
@@ -186,6 +185,27 @@ fn is_human(format: &str) -> bool {
     format == "human"
 }
 
+/// TSV field budget (chars, not bytes — CJK safe) for human tables.
+const TSV_FIELD_LIMIT: usize = 200;
+
+/// Escape one human-table TSV field: truncate to [`TSV_FIELD_LIMIT`] chars
+/// (CJK-safe, chars not bytes) with a `…` marker, then encode `\t`→`\\t`,
+/// `\n`→`\\n`, `\r`→`\\r` so embedded tabs/newlines cannot break rows.
+/// Truncation runs first so escape sequences stay intact.
+fn escape_tsv_field(s: &str) -> String {
+    let truncated: String = if s.chars().count() > TSV_FIELD_LIMIT {
+        let mut out: String = s.chars().take(TSV_FIELD_LIMIT).collect();
+        out.push('…');
+        out
+    } else {
+        s.to_string()
+    };
+    truncated
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
 fn print_query_json(out: &innen_core::query::QueryOutput) {
     println!(
         "{}",
@@ -195,11 +215,16 @@ fn print_query_json(out: &innen_core::query::QueryOutput) {
 
 fn print_query_human(out: &innen_core::query::QueryOutput) {
     // Bounded P1 human table: id/kind/score/why (+ label for readability).
+    // All string fields are TSV-escaped (tabs/newlines encoded, 200-char cap).
     println!("id\tkind\tscore\twhy\tlabel");
     for h in &out.hits {
         println!(
             "{}\t{}\t{}\t{}\t{}",
-            h.node_id, h.kind, h.score, h.why, h.label
+            escape_tsv_field(&h.node_id),
+            escape_tsv_field(&h.kind),
+            h.score,
+            escape_tsv_field(&h.why),
+            escape_tsv_field(&h.label)
         );
     }
     if !out.warnings.is_empty() {
@@ -215,14 +240,14 @@ fn print_report_json(report: &innen_core::doctor::Report) {
 }
 
 fn print_report_human(report: &innen_core::doctor::Report) {
-    // Bounded P1 human table: doctor checks.
+    // Bounded P1 human table: doctor checks (TSV-escaped, 200-char cap).
     println!("check\tok\tdetail");
     for c in &report.checks {
         println!(
             "{}\t{}\t{}",
-            c.name,
+            escape_tsv_field(&c.name),
             if c.ok { "ok" } else { "FAIL" },
-            c.detail
+            escape_tsv_field(&c.detail)
         );
     }
     println!("exit_code\t{}", report.exit_code);
@@ -251,21 +276,12 @@ fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) -> i32 {
     }
 }
 
-fn is_uri_shape(s: &str) -> bool {
-    !s.is_empty() && (s.starts_with('/') || s.contains("://"))
-}
-
 fn cmd_graph_node(root: &std::path::Path, format: &str, args: &GraphNodeArgs) -> i32 {
     use serde_json::json;
-    // Custom kinds require provenance (mirror graph::validate open-world rule).
+    // Thin call: custom-provenance rule lives in innen-core::graph.
     let parsed: innen_core::graph::NodeType = args.kind.parse().unwrap();
-    if matches!(parsed, innen_core::graph::NodeType::Custom(_))
-        && args
-            .provenance
-            .as_deref()
-            .is_none_or(|p| p.trim().is_empty())
-    {
-        eprintln!("error: custom node kind requires non-empty --provenance");
+    if let Err(e) = innen_core::graph::check_node_provenance(&parsed, args.provenance.as_deref()) {
+        eprintln!("error: {e}");
         return 1;
     }
     let mut payload = json!({
@@ -289,7 +305,7 @@ fn cmd_graph_node(root: &std::path::Path, format: &str, args: &GraphNodeArgs) ->
     match journal.append("node.upsert", &payload) {
         Ok(id) => {
             if is_human(format) {
-                println!("created\t{id}");
+                println!("created\t{}", escape_tsv_field(&id));
             } else {
                 println!(
                     "{}",
@@ -309,79 +325,18 @@ fn cmd_graph_node(root: &std::path::Path, format: &str, args: &GraphNodeArgs) ->
 fn cmd_graph_relate(root: &std::path::Path, format: &str, args: &GraphRelateArgs) -> i32 {
     use serde_json::json;
     let edge_ty: innen_core::graph::EdgeType = args.edge.parse().unwrap();
-    // Resolve endpoint kinds from current materialized state for validation.
-    // Missing nodes skip validation (journal permits dangling; doctor reports).
-    let mut from_ty_opt: Option<innen_core::graph::NodeType> = None;
-    let mut to_ep_opt: Option<innen_core::graph::Endpoint> = None;
-    // Best-effort read of current nodes (open may quarantine; that is the
+    // Thin call: endpoint-kind resolution + adjacency/provenance validation
+    // lives in innen-core::graph (best-effort open may quarantine; that is the
     // normal write-path behavior for graph mutations).
-    if let Ok(journal) = innen_core::journal::Journal::open(root) {
-        if let Ok(entries) = journal.read_all() {
-            let events: Vec<serde_json::Value> = entries
-                .iter()
-                .map(|e| {
-                    json!({
-                        "op": e.op,
-                        "payload": e.payload,
-                        "observed_utc": e.observed_utc,
-                    })
-                })
-                .collect();
-            let m = innen_core::graph::materialize(&events, None, true);
-            if let Some(node) = m.nodes.get(&args.from) {
-                let ty = node
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Custom");
-                from_ty_opt = Some(ty.parse().unwrap());
-            }
-            if is_uri_shape(&args.to) {
-                to_ep_opt = Some(innen_core::graph::Endpoint::Uri(args.to.clone()));
-            } else if let Some(node) = m.nodes.get(&args.to) {
-                let ty = node
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Custom");
-                let nt: innen_core::graph::NodeType = ty.parse().unwrap();
-                to_ep_opt = Some(innen_core::graph::Endpoint::Node(nt));
-            }
-        }
-    }
-    if let (Some(from_ty), Some(to_ep)) = (from_ty_opt, to_ep_opt) {
-        if let Err(e) =
-            innen_core::graph::validate(&from_ty, &edge_ty, &to_ep, args.provenance.as_deref())
-        {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    } else {
-        // No stored kinds to check against: still enforce the custom-party
-        // provenance rule directly on the declared edge string.
-        let edge_is_custom = matches!(edge_ty, innen_core::graph::EdgeType::Custom(_));
-        let to_is_uri = is_uri_shape(&args.to);
-        if edge_is_custom || to_is_uri {
-            // URI legality still applies even without stored nodes.
-            if to_is_uri
-                && !matches!(
-                    edge_ty,
-                    innen_core::graph::EdgeType::LocatedAt
-                        | innen_core::graph::EdgeType::OriginatedAt
-                        | innen_core::graph::EdgeType::Custom(_)
-                )
-            {
-                eprintln!("error: illegal adjacency: ? -[{}]-> {}", edge_ty, args.to);
-                return 1;
-            }
-            if edge_is_custom
-                && args
-                    .provenance
-                    .as_deref()
-                    .is_none_or(|p| p.trim().is_empty())
-            {
-                eprintln!("error: custom node/edge requires non-empty provenance");
-                return 1;
-            }
-        }
+    if let Err(e) = innen_core::graph::validate_relate_request(
+        root,
+        &args.from,
+        &edge_ty,
+        &args.to,
+        args.provenance.as_deref(),
+    ) {
+        eprintln!("error: {e}");
+        return 1;
     }
     let mut payload = json!({
         "from": args.from,
@@ -412,7 +367,7 @@ fn cmd_graph_relate(root: &std::path::Path, format: &str, args: &GraphRelateArgs
     match journal.append("edge.assert", &payload) {
         Ok(id) => {
             if is_human(format) {
-                println!("created\t{id}");
+                println!("created\t{}", escape_tsv_field(&id));
             } else {
                 println!(
                     "{}",
@@ -446,7 +401,7 @@ fn cmd_graph_retract(root: &std::path::Path, format: &str, args: &GraphRetractAr
     match journal.append("edge.retract", &payload) {
         Ok(id) => {
             if is_human(format) {
-                println!("retracted\t{id}");
+                println!("retracted\t{}", escape_tsv_field(&id));
             } else {
                 println!(
                     "{}",
@@ -527,7 +482,7 @@ fn cmd_config_get(root: &std::path::Path, format: &str, key: &str) -> i32 {
         return 1;
     };
     if is_human(format) {
-        println!("{key} = {value}");
+        println!("{key} = {}", escape_tsv_field(&value));
     } else {
         println!(
             "{}",
@@ -539,52 +494,16 @@ fn cmd_config_get(root: &std::path::Path, format: &str, key: &str) -> i32 {
 }
 
 fn cmd_config_set(root: &std::path::Path, format: &str, key: &str, value: &str) -> i32 {
-    if !matches!(key, "root" | "format" | "rebuild_on_open") {
-        eprintln!("error: unknown config key: {key} (root|format|rebuild_on_open)");
-        return 1;
-    }
-    if key == "rebuild_on_open"
-        && !matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "false")
-    {
-        eprintln!("error: rebuild_on_open must be true|false");
-        return 1;
-    }
-    if (key == "root" || key == "format") && value.trim().is_empty() {
-        eprintln!("error: {key} must be non-empty");
-        return 1;
-    }
-    let stored = if key == "rebuild_on_open" {
-        let b = value.trim().eq_ignore_ascii_case("true");
-        serde_json::Value::Bool(b)
-    } else {
-        serde_json::Value::String(value.to_string())
-    };
-    let machine_path = root.join(".innen").join("machine.json");
-    if let Err(e) = std::fs::create_dir_all(root.join(".innen")) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    let mut map: BTreeMap<String, serde_json::Value> = match std::fs::read(&machine_path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+    // Thin call: validation + machine.json persistence lives in innen-core::config.
+    let echo = match innen_core::config::set_machine_value(root, key, value) {
+        Ok(echo) => echo,
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
         }
     };
-    map.insert(key.to_string(), stored);
-    let text = serde_json::to_string(&map).expect("machine.json serializes");
-    if let Err(e) = std::fs::write(&machine_path, format!("{text}\n")) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    // Echo the resolved stored value (sorted-keys deterministic).
-    let echo = match key {
-        "rebuild_on_open" => value.trim().to_ascii_lowercase(),
-        _ => value.to_string(),
-    };
     if is_human(format) {
-        println!("{key} = {echo}");
+        println!("{key} = {}", escape_tsv_field(&echo));
     } else {
         println!(
             "{}",
@@ -650,4 +569,22 @@ fn main() {
         Commands::Completions { shell } => cmd_completions(shell),
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tsv_escape_pins_tabs_newlines_and_cjk_truncation() {
+        // Embedded tabs/newlines must not break TSV rows.
+        assert_eq!(escape_tsv_field("a\tb\nc\rd"), "a\\tb\\nc\\rd");
+        // Long fields truncate at 200 chars (chars, not bytes — CJK safe) with ….
+        let long = "字".repeat(250);
+        let got = escape_tsv_field(&long);
+        assert_eq!(got, format!("{}…", "字".repeat(TSV_FIELD_LIMIT)));
+        assert_eq!(got.chars().count(), TSV_FIELD_LIMIT + 1);
+        // Short CJK passes through unchanged.
+        assert_eq!(escape_tsv_field("臺北"), "臺北");
+    }
 }

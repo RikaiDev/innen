@@ -13,6 +13,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 /// Graph node kind. Unknown names parse to [`NodeType::Custom`], never `Err`.
@@ -582,6 +583,121 @@ pub fn materialize(
         });
     }
     Materialized { nodes, edges }
+}
+
+// CLI write-path helpers, extracted from `src/main.rs` (Task 8d follow-up).
+//
+// Placement choice: graph write-path rules live here in `graph.rs` (not a new
+// module) to reuse `NodeType`/`EdgeType`/`validate`/`materialize` without
+// widening visibility; config persistence lives in `config.rs`. `src/main.rs`
+// calls these thinly. Behavior is byte-identical to the former inline code —
+// existing CLI golden tests are the lock and pass unchanged.
+
+/// URI shape, mirroring [`validate`]: non-empty and starting with `/` or
+/// containing `://`. Extracted from the binary so CLI and core share one rule.
+pub fn is_uri_shape(s: &str) -> bool {
+    !s.is_empty() && (s.starts_with('/') || s.contains("://"))
+}
+
+/// Why [`check_node_provenance`] rejected a `node.upsert` write.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NodeProvenanceError {
+    #[error("custom node kind requires non-empty --provenance")]
+    MissingProvenance,
+}
+
+/// CLI `graph node` custom-provenance rule (mirrors [`validate`] open-world
+/// rule for the single-node case): a [`NodeType::Custom`] kind needs
+/// `provenance = Some(non-empty)`, else [`NodeProvenanceError::MissingProvenance`].
+/// Error string is pinned to the former binary message.
+pub fn check_node_provenance(
+    kind: &NodeType,
+    provenance: Option<&str>,
+) -> Result<(), NodeProvenanceError> {
+    if matches!(kind, NodeType::Custom(_)) && provenance.is_none_or(|p| p.trim().is_empty()) {
+        return Err(NodeProvenanceError::MissingProvenance);
+    }
+    Ok(())
+}
+
+/// CLI `graph relate` validation: resolve endpoint kinds from current
+/// materialized state, then run [`validate`] plus the dangling-node fallback.
+///
+/// Mirrors the former binary `cmd_graph_relate` lines byte-for-byte:
+/// * Best-effort [`crate::journal::Journal::open`] + `read_all` + [`materialize`];
+///   open/read failures fall through to the fallback below (journal permits
+///   dangling; doctor reports).
+/// * Missing nodes skip table validation; the fallback still enforces URI
+///   legality (non-`LOCATED_AT`/`ORIGINATED_AT`/custom edge under a URI target
+///   fails as `IllegalPair` with `from: "?"`) and the custom-party provenance
+///   rule (fails as [`AdjacencyError::MissingProvenance`]).
+/// * Both messages match the former `eprintln!` strings exactly when the caller
+///   prints `error: {e}`.
+pub fn validate_relate_request(
+    root: &Path,
+    from: &str,
+    edge: &EdgeType,
+    to: &str,
+    provenance: Option<&str>,
+) -> Result<(), AdjacencyError> {
+    let mut from_ty_opt: Option<NodeType> = None;
+    let mut to_ep_opt: Option<Endpoint> = None;
+    if let Ok(journal) = crate::journal::Journal::open(root) {
+        if let Ok(entries) = journal.read_all() {
+            let events: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "op": e.op,
+                        "payload": e.payload,
+                        "observed_utc": e.observed_utc,
+                    })
+                })
+                .collect();
+            let m = materialize(&events, None, true);
+            if let Some(node) = m.nodes.get(from) {
+                let ty = node
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Custom");
+                from_ty_opt = Some(ty.parse().unwrap());
+            }
+            if is_uri_shape(to) {
+                to_ep_opt = Some(Endpoint::Uri(to.to_string()));
+            } else if let Some(node) = m.nodes.get(to) {
+                let ty = node
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Custom");
+                let nt: NodeType = ty.parse().unwrap();
+                to_ep_opt = Some(Endpoint::Node(nt));
+            }
+        }
+    }
+    if let (Some(from_ty), Some(to_ep)) = (from_ty_opt, to_ep_opt) {
+        validate(&from_ty, edge, &to_ep, provenance)
+    } else {
+        let edge_is_custom = matches!(edge, EdgeType::Custom(_));
+        let to_is_uri = is_uri_shape(to);
+        if edge_is_custom || to_is_uri {
+            if to_is_uri
+                && !matches!(
+                    edge,
+                    EdgeType::LocatedAt | EdgeType::OriginatedAt | EdgeType::Custom(_)
+                )
+            {
+                return Err(AdjacencyError::IllegalPair {
+                    from: "?".to_string(),
+                    edge: edge.to_string(),
+                    to: to.to_string(),
+                });
+            }
+            if edge_is_custom && provenance.is_none_or(|p| p.trim().is_empty()) {
+                return Err(AdjacencyError::MissingProvenance);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
