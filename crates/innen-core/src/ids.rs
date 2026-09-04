@@ -65,16 +65,50 @@ mod tests {
 
     #[test]
     fn id_excludes_volatile_fields() {
-        let a = event_id("node.upsert", &json!({"id": "t:1", "observed_utc": "2026-01-01T00:00:00Z"}));
-        let b = event_id("node.upsert", &json!({"id": "t:1", "observed_utc": "2026-06-06T06:06:06Z"}));
+        let a = event_id(
+            "node.upsert",
+            &json!({"id": "t:1", "observed_utc": "2026-01-01T00:00:00Z"}),
+        );
+        let b = event_id(
+            "node.upsert",
+            &json!({"id": "t:1", "observed_utc": "2026-06-06T06:06:06Z"}),
+        );
         assert_eq!(a, b);
     }
 
     #[test]
     fn nested_keys_sorted_and_cjk_raw() {
-        let bytes = canonical_bytes("node.upsert", &json!({"b": 1, "a": {"z": 1, "y": "臺"}}), VOLATILE_NODE_EDGE);
-        assert_eq!(bytes, r#"{"v":"innen/v1","op":"node.upsert","payload":{"a":{"y":"臺","z":1},"b":1}}"#.as_bytes());
+        let bytes = canonical_bytes(
+            "node.upsert",
+            &json!({"b": 1, "a": {"z": 1, "y": "臺"}}),
+            VOLATILE_NODE_EDGE,
+        );
+        assert_eq!(
+            bytes,
+            r#"{"v":"innen/v1","op":"node.upsert","payload":{"a":{"y":"臺","z":1},"b":1}}"#
+                .as_bytes()
+        );
         let f = canonical_bytes("x", &json!({"n": 0.1}), &[]);
         assert!(f.windows(3).any(|w| w == b"0.1"));
+    }
+
+    #[test]
+    fn input_order_independence() {
+        let a = json!({"b": 1, "a": {"z": 1, "y": "臺"}});
+        let b = json!({"a": {"y": "臺", "z": 1}, "b": 1});
+        assert_eq!(
+            canonical_bytes("node.upsert", &a, VOLATILE_NODE_EDGE),
+            canonical_bytes("node.upsert", &b, VOLATILE_NODE_EDGE)
+        );
+        assert_eq!(event_id("node.upsert", &a), event_id("node.upsert", &b));
+    }
+
+    #[test]
+    fn op_distinctness() {
+        let payload = json!({"id": "t:1"});
+        assert_ne!(
+            event_id("node.upsert", &payload),
+            event_id("node.delete", &payload)
+        );
     }
 }
