@@ -40,7 +40,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::journal::JournalEntry;
@@ -49,7 +49,7 @@ use crate::journal::JournalEntry;
 const EVENTS: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("events");
 
 /// One named check result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,
     pub ok: bool,
@@ -60,7 +60,7 @@ pub struct Check {
 ///
 /// Serializes as `{checks:[{name, ok, detail}], exit_code}` (the human table
 /// lives in the Task 8d CLI, not here).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub checks: Vec<Check>,
     pub exit_code: u8,
