@@ -27,6 +27,9 @@ pub enum NodeType {
     Artifact,
     Project,
     Product,
+    /// Open-world escape hatch. `FromStr` canonicalizes known names to core
+    /// variants, so `Custom("task")` displays as `"task"` but parses back to
+    /// `NodeType::Task`; only truly unknown names stay `Custom`.
     Custom(String),
 }
 
@@ -88,6 +91,10 @@ pub enum EdgeType {
     Contains,
     PartOf,
     Informs,
+    /// Open-world escape hatch. `FromStr` canonicalizes known names to core
+    /// variants, so `Custom("BELONGS_TO")` displays as `"BELONGS_TO"` but
+    /// parses back to `EdgeType::BelongsTo`; only truly unknown names stay
+    /// `Custom`.
     Custom(String),
 }
 
@@ -458,5 +465,325 @@ mod tests {
             None,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn custom_collides_with_core_normalizes() {
+        let custom = NodeType::Custom("task".to_string());
+        let reparsed: NodeType = custom.to_string().parse().unwrap();
+        assert_eq!(reparsed, NodeType::Task);
+    }
+
+    #[test]
+    fn custom_bypass_accept() {
+        assert!(validate(
+            &NodeType::Task,
+            &EdgeType::Custom("mentions".to_string()),
+            &Endpoint::Node(NodeType::Decision),
+            Some("test"),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn whitespace_provenance_rejected() {
+        let err = validate(
+            &NodeType::Custom("Wiki".to_string()),
+            &EdgeType::BelongsTo,
+            &Endpoint::Node(NodeType::Project),
+            Some("   "),
+        )
+        .unwrap_err();
+        assert_eq!(err, AdjacencyError::MissingProvenance);
+    }
+
+    #[test]
+    fn case_insensitive_parse() {
+        for s in ["task", "TASK", "Task"] {
+            assert_eq!(s.parse::<NodeType>(), Ok(NodeType::Task));
+        }
+    }
+
+    #[test]
+    fn uri_under_wrong_edge_rejected() {
+        let err = validate(
+            &NodeType::Task,
+            &EdgeType::FollowsUp,
+            &Endpoint::Uri("/x".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            AdjacencyError::IllegalPair {
+                from: "Task".to_string(),
+                edge: "FOLLOWS_UP".to_string(),
+                to: "/x".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn adjacency_table_full_coverage() {
+        let rows: Vec<(NodeType, EdgeType, Endpoint)> = vec![
+            (
+                NodeType::Conversation,
+                EdgeType::BelongsTo,
+                Endpoint::Node(NodeType::Project),
+            ),
+            (
+                NodeType::Conversation,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Conversation,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Task),
+            ),
+            (
+                NodeType::Task,
+                EdgeType::BelongsTo,
+                Endpoint::Node(NodeType::Project),
+            ),
+            (
+                NodeType::Task,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Task),
+            ),
+            (
+                NodeType::Task,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Decision),
+            ),
+            (
+                NodeType::Task,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Task,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Artifact),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::BelongsTo,
+                Endpoint::Node(NodeType::Project),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Task),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::FollowsUp,
+                Endpoint::Node(NodeType::Decision),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::Supports,
+                Endpoint::Node(NodeType::Task),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::Supports,
+                Endpoint::Node(NodeType::Decision),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::BelongsTo,
+                Endpoint::Node(NodeType::Project),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::Evaluates,
+                Endpoint::Node(NodeType::Product),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::Evaluates,
+                Endpoint::Node(NodeType::Dataset),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::Evaluates,
+                Endpoint::Node(NodeType::Model),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::Supports,
+                Endpoint::Node(NodeType::Task),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::Supports,
+                Endpoint::Node(NodeType::Decision),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::DiscussedIn,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::DiscussedIn,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Model,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Dataset),
+            ),
+            (
+                NodeType::Model,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Model),
+            ),
+            (
+                NodeType::Model,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Dataset,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Dataset),
+            ),
+            (
+                NodeType::Dataset,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Model),
+            ),
+            (
+                NodeType::Dataset,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Dataset),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Model),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::DerivedFrom,
+                Endpoint::Node(NodeType::Conversation),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::Supersedes,
+                Endpoint::Node(NodeType::Artifact),
+            ),
+            (
+                NodeType::Decision,
+                EdgeType::Supersedes,
+                Endpoint::Node(NodeType::Decision),
+            ),
+            (
+                NodeType::Dataset,
+                EdgeType::LocatedAt,
+                Endpoint::Uri("/x".to_string()),
+            ),
+            (
+                NodeType::Model,
+                EdgeType::LocatedAt,
+                Endpoint::Uri("/x".to_string()),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::LocatedAt,
+                Endpoint::Uri("/x".to_string()),
+            ),
+            (
+                NodeType::Dataset,
+                EdgeType::OriginatedAt,
+                Endpoint::Uri("/x".to_string()),
+            ),
+            (
+                NodeType::Model,
+                EdgeType::OriginatedAt,
+                Endpoint::Uri("/x".to_string()),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::OriginatedAt,
+                Endpoint::Uri("/x".to_string()),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::Contains,
+                Endpoint::Node(NodeType::Artifact),
+            ),
+            (
+                NodeType::Artifact,
+                EdgeType::PartOf,
+                Endpoint::Node(NodeType::Artifact),
+            ),
+            (
+                NodeType::Product,
+                EdgeType::Informs,
+                Endpoint::Node(NodeType::Project),
+            ),
+            (
+                NodeType::Experiment,
+                EdgeType::Informs,
+                Endpoint::Node(NodeType::Project),
+            ),
+        ];
+        assert_eq!(rows.len(), 42, "plan lists exactly 42 triples");
+        for (from, edge, to) in &rows {
+            assert!(
+                validate(from, edge, to, Some("test")).is_ok(),
+                "should accept {from} -[{edge}]-> {to}"
+            );
+        }
+        let nodes = [
+            NodeType::Conversation,
+            NodeType::Task,
+            NodeType::Decision,
+            NodeType::Experiment,
+            NodeType::Dataset,
+            NodeType::Model,
+            NodeType::Artifact,
+            NodeType::Project,
+            NodeType::Product,
+        ];
+        let edges = [
+            EdgeType::BelongsTo,
+            EdgeType::FollowsUp,
+            EdgeType::Supports,
+            EdgeType::Evaluates,
+            EdgeType::DiscussedIn,
+            EdgeType::DerivedFrom,
+            EdgeType::Supersedes,
+            EdgeType::LocatedAt,
+            EdgeType::OriginatedAt,
+            EdgeType::Contains,
+            EdgeType::PartOf,
+            EdgeType::Informs,
+        ];
+        let uri = Endpoint::Uri("/x".to_string());
+        let mut accepted = 0;
+        for from in &nodes {
+            for edge in &edges {
+                for to in &nodes {
+                    let to_ep = Endpoint::Node(to.clone());
+                    if validate(from, edge, &to_ep, None).is_ok() {
+                        accepted += 1;
+                    }
+                }
+                if validate(from, edge, &uri, None).is_ok() {
+                    accepted += 1;
+                }
+            }
+        }
+        assert_eq!(accepted, 42, "core table must accept exactly 42 triples");
     }
 }
