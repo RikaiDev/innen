@@ -630,4 +630,215 @@ mod tests {
             "got: {err}"
         );
     }
+    #[test]
+    fn profile_escapes_quote_and_backslash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profile")).unwrap();
+        // TOML bytes: title = "a\"b\\c" -> value a"b\c
+        std::fs::write(
+            dir.path().join("profile/profile.toml"),
+            "title = \"a\\\"b\\\\c\"\nblurb = \"B\"\nstatus = \"s\"\n",
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.path().join("profile/profile.toml")).unwrap();
+        let map = profile_string_map(&text);
+        assert_eq!(map.get("title").map(String::as_str), Some("a\"b\\c"));
+        let out = profile_render(dir.path()).unwrap();
+        assert_eq!(out, "# a\"b\\c\n\nB\n\nstatus: s\n");
+    }
+    #[test]
+    fn profile_hash_inside_quotes_kept_outside_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profile")).unwrap();
+        std::fs::write(
+            dir.path().join("profile/profile.toml"),
+            "# leading comment\ntitle = \"a#b\" # trailing comment\nblurb = \"B\"#no-space\nstatus = \"ok\"\n",
+        )
+        .unwrap();
+        let out = profile_render(dir.path()).unwrap();
+        assert_eq!(out, "# a#b\n\nB\n\nstatus: ok\n");
+    }
+    #[test]
+    fn profile_other_section_header_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profile")).unwrap();
+        std::fs::write(
+            dir.path().join("profile/profile.toml"),
+            "title = \"T\"\n[other]\nblurb = \"B\"\nstatus = \"active\"\nfoo = \"bar\"\n",
+        )
+        .unwrap();
+        let out = profile_render(dir.path()).unwrap();
+        assert_eq!(out, "# T\n\nB\n\nstatus: active\n");
+    }
+    #[test]
+    fn profile_duplicate_keys_last_wins_bare_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profile")).unwrap();
+        std::fs::write(
+            dir.path().join("profile/profile.toml"),
+            "title = \"first\"\ntitle = \"second\"\nblurb = \"B\"\nstatus = \"s\"\ncount = 3\n",
+        )
+        .unwrap();
+        let out = profile_render(dir.path()).unwrap();
+        assert_eq!(out, "# second\n\nB\n\nstatus: s\n");
+    }
+    #[test]
+    fn profile_missing_keys_render_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profile")).unwrap();
+        std::fs::write(dir.path().join("profile/profile.toml"), "title = \"T\"\n").unwrap();
+        let out = profile_render(dir.path()).unwrap();
+        assert_eq!(out, "# T\n\n\n\nstatus: \n");
+    }
+    #[test]
+    fn project_retracted_belongs_to_skipped() {
+        let dir = project_fixture();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "edge.retract",
+            &serde_json::json!({"from": "t:1", "type": "BELONGS_TO", "to": "p:x"}),
+        )
+        .unwrap();
+        let out = project_render(dir.path(), "p:x").unwrap();
+        assert!(!out.contains("task one"), "retracted member skipped: {out}");
+        assert!(out.contains("decision one"));
+    }
+    #[test]
+    fn project_label_missing_falls_back_to_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "p:x", "type": "Project", "label": "Project X"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "t:nolabel", "type": "Task"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "t:empty", "type": "Task", "label": ""}),
+        )
+        .unwrap();
+        for from in ["t:nolabel", "t:empty"] {
+            j.append(
+                "edge.assert",
+                &serde_json::json!({"from": from, "type": "BELONGS_TO", "to": "p:x"}),
+            )
+            .unwrap();
+        }
+        let out = project_render(dir.path(), "p:x").unwrap();
+        assert!(
+            out.contains("- t:nolabel"),
+            "missing label falls back to id: {out}"
+        );
+        assert!(
+            out.contains("- t:empty"),
+            "empty label falls back to id: {out}"
+        );
+    }
+    #[test]
+    fn project_members_sorted_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "p:x", "type": "Project", "label": "Project X"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "t:z", "type": "Task", "label": "zeta"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "t:a", "type": "Task", "label": "alpha"}),
+        )
+        .unwrap();
+        for from in ["t:z", "t:a"] {
+            j.append(
+                "edge.assert",
+                &serde_json::json!({"from": from, "type": "BELONGS_TO", "to": "p:x"}),
+            )
+            .unwrap();
+        }
+        let out = project_render(dir.path(), "p:x").unwrap();
+        let pos_alpha = out.find("alpha").expect("alpha present");
+        let pos_zeta = out.find("zeta").expect("zeta present");
+        assert!(pos_alpha < pos_zeta, "members sorted: {out}");
+    }
+    #[test]
+    fn project_custom_task_counted_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "p:x", "type": "Project", "label": "Project X"}),
+        )
+        .unwrap();
+        for (id, ty, label) in [
+            ("t:lower", "task", "lower task"),
+            ("t:upper", "TASK", "upper task"),
+            ("t:mixed", "TaSk", "mixed task"),
+        ] {
+            j.append(
+                "node.upsert",
+                &serde_json::json!({"id": id, "type": ty, "label": label}),
+            )
+            .unwrap();
+            j.append(
+                "edge.assert",
+                &serde_json::json!({"from": id, "type": "BELONGS_TO", "to": "p:x"}),
+            )
+            .unwrap();
+        }
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "n:other", "type": "Note", "label": "ignored note"}),
+        )
+        .unwrap();
+        j.append(
+            "edge.assert",
+            &serde_json::json!({"from": "n:other", "type": "BELONGS_TO", "to": "p:x"}),
+        )
+        .unwrap();
+        let out = project_render(dir.path(), "p:x").unwrap();
+        assert!(
+            out.contains("- lower task"),
+            "lowercase task counted: {out}"
+        );
+        assert!(
+            out.contains("- upper task"),
+            "uppercase task counted: {out}"
+        );
+        assert!(
+            out.contains("- mixed task"),
+            "mixed-case task counted: {out}"
+        );
+        assert!(
+            !out.contains("ignored note"),
+            "unknown kinds still ignored: {out}"
+        );
+    }
+    #[test]
+    fn project_empty_sections_still_emitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "p:x", "type": "Project", "label": "Project X"}),
+        )
+        .unwrap();
+        let out = project_render(dir.path(), "p:x").unwrap();
+        for section in ["## Decisions", "## Tasks", "## Experiments", "## Datasets"] {
+            assert!(out.contains(section), "missing {section}: {out}");
+        }
+        assert_eq!(
+            out,
+            "# Project X\n\n## Decisions\n\n## Tasks\n\n## Experiments\n\n## Datasets\n"
+        );
+    }
 }
