@@ -10,7 +10,7 @@
 //!   one stored line per bad line, UTC date in filename.
 //!
 //! Validation is minimal per-op shape only (full type checks land in Task 5):
-//! `payload` must be an object; `node.upsert`/`node.delete` need string `id`;
+//! `payload` must be an object; `node.upsert` needs string `id`;
 //! `edge.assert`/`edge.retract` need strings `from`/`to`/`type`;
 //! `config.set` needs string `key`.
 
@@ -25,13 +25,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// Ops accepted by [`Journal::append`]. Full type validation lands in Task 5.
-pub const ALLOWED_OPS: &[&str] = &[
-    "node.upsert",
-    "node.delete",
-    "edge.assert",
-    "edge.retract",
-    "config.set",
-];
+pub const ALLOWED_OPS: &[&str] = &["node.upsert", "edge.assert", "edge.retract", "config.set"];
 
 #[derive(Debug, Error)]
 pub enum JournalError {
@@ -115,7 +109,7 @@ fn validate(op: &str, payload: &Value) -> Result<(), JournalError> {
         ))),
     };
     match op {
-        "node.upsert" | "node.delete" => need("id")?,
+        "node.upsert" => need("id")?,
         "edge.assert" | "edge.retract" => {
             need("from")?;
             need("to")?;
@@ -294,7 +288,7 @@ mod tests {
         for (op, payload) in [
             ("node.upsert", json!([1, 2])), // non-object payload
             ("node.upsert", json!({"label": "no-id"})),
-            ("node.delete", json!({})),
+            ("node.upsert", json!({})),
             ("edge.assert", json!({"from": "a", "to": "b"})), // missing type
             ("edge.retract", json!({"from": "a", "to": 1, "type": "t"})),
             ("config.set", json!({"key": 42})),
