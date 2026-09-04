@@ -71,5 +71,30 @@
       "hits": [{"node_id": "w:1", "kind": "Wiki", "label": "客製 apple 頁面", "excerpt": "客製 apple 頁面", "score": 1.0, "why": "graph"}],
       "warnings": []
     }
+  },
+  {
+    "name": "cjk",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "t:1", "type": "Task", "label": "寫 SFT 規格"}},
+      {"op": "node.upsert", "payload": {"id": "d:9", "type": "Decision", "label": "先台語漢字再台羅"}}
+    ],
+    "query": {"q": "台羅", "as_of": "2026-09-03T00:00:00Z", "limit": 20},
+    "expected": {
+      "hits": [{"node_id": "d:9", "kind": "Decision", "label": "先台語漢字再台羅", "excerpt": "先台語漢字再台羅", "score": 1.0, "why": "graph"}],
+      "warnings": []
+    }
+  },
+  {
+    "name": "quarantine",
+    "journal": [
+      {"op": "node.upsert", "payload": {"id": "t:1", "type": "Task", "label": "hello quarantine"}},
+      {"op": "node.upsert", "payload": {"id": "t:2", "type": "Task", "label": "unrelated"}}
+    ],
+    "preseed_corrupt": ["not json at all"],
+    "query": {"q": "hello", "as_of": "2026-09-03T00:00:00Z", "limit": 20},
+    "expected": {
+      "hits": [{"node_id": "t:1", "kind": "Task", "label": "hello quarantine", "excerpt": "hello quarantine", "score": 1.0, "why": "graph"}],
+      "warnings": ["quarantined_skipped"]
+    }
   }
 ]

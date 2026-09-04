@@ -2,8 +2,9 @@
 //!
 //! [`schema`] defines the `body` TEXT field indexed with the `"innen-cjk"`
 //! tokenizer and the `id` STORED field. [`ensure_tokenizer`] registers the
-//! analyzer on an [`tantivy::Index`]'s tokenizer manager; call it at index
-//! build AND at query open (both call sites) before indexing or searching.
+//! analyzer on an [`tantivy::Index`]'s tokenizer manager; call it once at
+//! index build before indexing — the same `Index` then serves searching
+//! (registration is idempotent, manager is shared).
 //! tantivy 0.24 ships no jieba tokenizer, so [`JiebaTokenizer`] bridges
 //! `jieba-rs` (`cut_for_search`, HMM on) into a [`tantivy::tokenizer`]
 //! [`Tokenizer`](tantivy::tokenizer::Tokenizer) with jieba char offsets
@@ -61,8 +62,17 @@ impl Tokenizer for JiebaTokenizer {
             if jt.word.is_empty() {
                 continue;
             }
-            let offset_from = byte_of_char.get(jt.start).copied().unwrap_or(text.len());
-            let offset_to = byte_of_char.get(jt.end).copied().unwrap_or(text.len());
+            // Skip out-of-range or degenerate zero-width offsets instead of
+            // clamping: emitting a zero-width token would pollute the index.
+            let (Some(offset_from), Some(offset_to)) = (
+                byte_of_char.get(jt.start).copied(),
+                byte_of_char.get(jt.end).copied(),
+            ) else {
+                continue;
+            };
+            if offset_from >= offset_to {
+                continue;
+            }
             tokens.push(Token {
                 offset_from,
                 offset_to,
@@ -111,7 +121,7 @@ pub fn schema() -> Schema {
 }
 
 /// Register (idempotent) the `"innen-cjk"` analyzer on `index`.
-/// Call at index build AND at query open.
+/// Call once at index build before indexing; searching reuses the same manager.
 pub fn ensure_tokenizer(index: &tantivy::Index) {
     index
         .tokenizers()

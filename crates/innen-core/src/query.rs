@@ -7,8 +7,8 @@
 //!    `Some`) and `include_expired` straight through.
 //! 2. Index: build a throwaway in-RAM tantivy index from materialized nodes
 //!    with [`crate::index::schema`] + [`crate::index::ensure_tokenizer`]
-//!    (called at index build AND again at query open, both call sites).
-//!    Indexed text per node is `label`, or `label + " " + body` when a body
+//!    (called once at index build before indexing; the same `Index`
+//!    serves searching). Indexed text per node is `label`, or `label + " " + body` when a body
 //!    exists. Nodes are added in sorted id order for determinism.
 //! 3. Seeds: FTS top-20 over `body` (BM25) UNION exact node-id substring
 //!    match (`node_id.contains(q)`; empty `q` matches nothing on either
@@ -29,7 +29,9 @@
 //!    `excerpt` is `label`, or `label + " " + first 200 chars of body`.
 //! 7. Limit (`u16`, default 20, max 100): requested > 100 clamps to 100
 //!    with a `truncated` warning; independently, cutting ranked hits down
-//!    to the effective limit also raises `truncated` (once).
+//!    to the effective limit also raises `truncated` (once). `limit: 0`
+//!    is pinned to empty `hits` with `truncated` (always, even when the
+//!    query would otherwise return nothing).
 //! 8. Warnings (in this push order): `truncated`, `quarantined_skipped`
 //!    (a non-empty `<root>/.innen/quarantine/*.jsonl` exists at query
 //!    open — FTS itself always scans all indexed nodes), `time_blind_fts`
@@ -45,7 +47,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::Value as _;
@@ -88,7 +90,7 @@ impl Default for QueryParams {
 }
 
 /// One ranked hit. Field order is the wire order.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hit {
     pub node_id: String,
     pub kind: String,
@@ -99,7 +101,7 @@ pub struct Hit {
 }
 
 /// Ranked output for one query.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QueryOutput {
     pub hits: Vec<Hit>,
     pub warnings: Vec<String>,
@@ -154,6 +156,10 @@ fn has_quarantine(root: &Path) -> bool {
 }
 
 /// Run the pinned P1 query against the journal at `root`.
+///
+/// `limit: 0` is pinned to empty `hits` with a `truncated` warning (a
+/// degenerate request for zero rows always reports truncation, even when
+/// the query would otherwise return nothing).
 pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput, QueryError> {
     let root = root.as_ref();
     let mut truncated = false;
@@ -163,6 +169,10 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
     } else {
         params.limit as usize
     };
+    // Pin: `limit: 0` always truncates (empty hits + warning).
+    if params.limit == 0 {
+        truncated = true;
+    }
 
     // Journal open also performs the quarantine scan; real I/O errors are fatal.
     let journal = Journal::open(root)?;
@@ -186,11 +196,14 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
     let as_of = params.as_of.clone().unwrap_or_else(observed_utc_now);
     let materialized = materialize(&events, Some(&as_of), params.include_expired);
 
-    // --- FTS over a throwaway in-RAM index (index-build call site). ---
+    // --- FTS over a throwaway in-RAM index. ---
     let index_schema = schema();
     let body_field = index_schema.get_field("body").expect("schema defines body");
     let id_field = index_schema.get_field("id").expect("schema defines id");
     let index = Index::create_in_ram(index_schema);
+    // Single tokenizer registration: the same `Index` serves both indexing
+    // (below) and searching (reader/searcher); its TokenizerManager is
+    // shared so one idempotent register before first use covers both.
     ensure_tokenizer(&index);
     {
         let mut writer = index.writer(15_000_000)?;
@@ -214,8 +227,6 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
         }
         writer.commit()?;
     }
-    // Query-open call site (same TokenizerManager; registration is idempotent).
-    ensure_tokenizer(&index);
     let reader = index.reader()?;
     let searcher = reader.searcher();
 
@@ -421,5 +432,37 @@ mod tests {
         assert_eq!(out.hits.len(), 1);
         assert_eq!(out.hits[0].node_id, "a:1");
         assert_eq!(out.warnings, vec!["truncated".to_string()]);
+    }
+
+    #[test]
+    fn limit_zero_pinned_to_empty_with_truncated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = Journal::open(dir.path()).expect("open");
+        journal
+            .append(
+                "node.upsert",
+                &serde_json::json!({"id": "a:1", "type": "Task", "label": "hello one"}),
+            )
+            .expect("append");
+        // Non-empty query: empty hits + truncated.
+        let params = QueryParams {
+            q: "hello".to_string(),
+            as_of: Some("2026-09-03T00:00:00Z".to_string()),
+            limit: 0,
+            include_expired: false,
+        };
+        let out = query(dir.path(), &params).expect("query");
+        assert!(out.hits.is_empty());
+        assert_eq!(out.warnings, vec!["truncated".to_string()]);
+        // Empty query: still empty hits + truncated (pinned, not conditional).
+        let empty_params = QueryParams {
+            q: "qqqzzzqqq".to_string(),
+            as_of: Some("2026-09-03T00:00:00Z".to_string()),
+            limit: 0,
+            include_expired: false,
+        };
+        let empty_out = query(dir.path(), &empty_params).expect("query");
+        assert!(empty_out.hits.is_empty());
+        assert_eq!(empty_out.warnings, vec!["truncated".to_string()]);
     }
 }
