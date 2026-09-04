@@ -133,7 +133,8 @@ fn node_kind(node: &serde_json::Value) -> String {
 }
 
 /// `label`, or `label + " " + first 200 chars of body`.
-fn excerpt_of(label: &str, body: &str) -> String {
+// Widened to `pub(crate)` so `parity::search` reuses the same helper (no dup).
+pub(crate) fn excerpt_of(label: &str, body: &str) -> String {
     let short: String = body.chars().take(EXCERPT_BODY_CHARS).collect();
     match (label.is_empty(), short.is_empty()) {
         (true, _) => short,

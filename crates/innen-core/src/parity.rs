@@ -14,6 +14,7 @@ use tantivy::{doc, Index, TantivyDocument};
 use crate::graph::materialize;
 use crate::index::{ensure_tokenizer, schema};
 use crate::journal::Journal;
+use crate::query::excerpt_of;
 
 /// Short navigation text: what innen is, start with query, core commands.
 pub fn guide_text() -> &'static str {
@@ -32,19 +33,8 @@ fn node_text<'a>(node: &'a serde_json::Value, key: &str) -> &'a str {
     node.get(key).and_then(|v| v.as_str()).unwrap_or("")
 }
 
-fn excerpt_of(label: &str, body: &str) -> String {
-    let short: String = body
-        .chars()
-        .take(crate::query::EXCERPT_BODY_CHARS)
-        .collect();
-    match (label.is_empty(), short.is_empty()) {
-        (true, _) => short,
-        (false, true) => label.to_string(),
-        (false, false) => format!("{label} {short}"),
-    }
-}
-
 /// Lexical-only search over tantivy `body` (label [+ body]); no graph walk.
+/// Cost: per-call throwaway in-RAM index rebuild O(n); persistent-index reads are a later phase.
 pub fn search(root: &Path, keyword: &str, limit: u16) -> Vec<SearchHit> {
     if keyword.is_empty() || limit == 0 {
         return Vec::new();
@@ -312,6 +302,40 @@ mod tests {
         assert_eq!((s.nodes, s.edges, s.events, s.artifacts), (3, 1, 4, 0));
     }
     #[test]
+    fn search_empty_keyword_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "a:1", "type": "Task", "label": "hello world"}),
+        )
+        .unwrap();
+        assert!(search(dir.path(), "", 20).is_empty());
+    }
+    #[test]
+    fn search_limit_zero_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "a:1", "type": "Task", "label": "hello world"}),
+        )
+        .unwrap();
+        assert!(search(dir.path(), "hello", 0).is_empty());
+    }
+    #[test]
+    fn search_unparsable_query_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "a:1", "type": "Task", "label": "hello world"}),
+        )
+        .unwrap();
+        // Gibberish punctuation must not panic; parity-read degrades to empty.
+        assert!(search(dir.path(), "!!!???,,,", 20).is_empty());
+    }
+    #[test]
     fn timeline_filters_by_month() {
         let dir = tempfile::tempdir().unwrap();
         let j = Journal::open(dir.path()).unwrap();
@@ -325,10 +349,11 @@ mod tests {
             &serde_json::json!({"id": "s:1", "type": "Task", "label": "sep"}),
         )
         .unwrap();
-        // Journal::append stamps wall-clock observed_utc and ignores any
-        // payload observed_utc, so both rows would share today's month.
-        // Rewrite the stored envelope timestamps to give the filter two
-        // distinct months; assertions below are unchanged in intent.
+        // No Journal API supports backdating: `append` stamps wall-clock
+        // observed_utc and ignores any payload observed_utc, so both rows
+        // would share today's month. Rewrite the stored envelope timestamps
+        // to give the filter two distinct months; assertions below are
+        // unchanged in intent.
         let jpath = dir.path().join(".innen/journal.jsonl");
         let content = std::fs::read_to_string(&jpath).unwrap();
         let mut lines: Vec<serde_json::Value> = content
