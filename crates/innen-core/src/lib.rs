@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod cloud;
 pub mod config;
 pub mod doctor;
 pub mod graph;
