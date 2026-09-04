@@ -146,6 +146,11 @@ impl Journal {
     /// Open (or create) the journal at `root/.innen`. Corrupt lines are
     /// moved to `quarantine/<UTC-date>.jsonl`; real I/O errors are fatal
     /// and quarantine nothing.
+    ///
+    /// Takes a blocking fs2 exclusive lock on the sibling `journal.lock`
+    /// for the scan/rebuild window. Must not be called re-entrantly/nested
+    /// in the same process (it will self-block); restructure callers
+    /// needing nested access to a single open instead.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, JournalError> {
         let journal = Self {
             root: root.as_ref().to_path_buf(),
@@ -307,6 +312,8 @@ mod tests {
     fn crash_half_line_quarantined_and_opens_normally() {
         // Hand-rolled UTC clock known answers.
         assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_utc(951782400), "2000-02-29T00:00:00Z");
+        assert_eq!(format_utc(1709164800), "2024-02-29T00:00:00Z");
         assert_eq!(format_utc(1767225600), "2026-01-01T00:00:00Z");
 
         let (tmp, journal) = open_tmp();
