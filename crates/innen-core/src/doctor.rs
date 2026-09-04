@@ -997,4 +997,58 @@ mod tests {
             report.checks[2].detail
         );
     }
+
+    #[test]
+    fn lint_exit_2_dominates_1() {
+        // Dangling edge (exit 2 via ref-integrity) + quarantine (exit 1):
+        // severity 2 dominates, mirroring `exit_2_dominates_1` for `run`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = Journal::open(dir.path()).expect("open");
+        journal
+            .append("node.upsert", &json!({"id": "n:1", "label": "one"}))
+            .expect("append n:1");
+        journal
+            .append(
+                "edge.assert",
+                &json!({"from": "n:1", "to": "n:ghost", "type": "FOLLOWS_UP"}),
+            )
+            .expect("append dangling edge");
+        drop(journal);
+        let qdir = dir.path().join(".innen/quarantine");
+        fs::create_dir_all(&qdir).expect("mkdir quarantine");
+        fs::write(qdir.join("2026-01-01.jsonl"), "not json at all\n").expect("preseed quarantine");
+
+        let report = super::lint(dir.path());
+
+        assert_eq!(
+            report.exit_code, 2,
+            "exit 2 must dominate exit 1 in lint: {report:?}"
+        );
+        let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["journal-valid", "quarantine-empty", "ref-integrity"],
+            "lint scope in order: {report:?}"
+        );
+        assert!(
+            report.checks[0].ok,
+            "journal-valid stays ok (dangling edge parses): {}",
+            report.checks[0].detail
+        );
+        assert!(
+            !report.checks[1].ok,
+            "quarantine-empty must be not-ok: {}",
+            report.checks[1].detail
+        );
+        assert!(
+            !report.checks[2].ok,
+            "ref-integrity must be not-ok: {}",
+            report.checks[2].detail
+        );
+        assert!(
+            report.checks[2].detail.contains("n:ghost"),
+            "detail names the dangling endpoint: {}",
+            report.checks[2].detail
+        );
+    }
 }

@@ -103,7 +103,8 @@ fn strip_comment(line: &str) -> &str {
 }
 
 /// Unquote a double-quoted value; supports `\\` and `\"` only. Returns `None`
-/// when the value is not exactly one double-quoted string.
+/// when the value is not exactly one double-quoted string. Interior bare
+/// quotes (`"""`, `"a"b"`) are rejected.
 fn unquote(value: &str) -> Option<String> {
     let inner = value.strip_prefix('"')?.strip_suffix('"')?;
     let mut out = String::with_capacity(inner.len());
@@ -115,6 +116,9 @@ fn unquote(value: &str) -> Option<String> {
                 '"' => out.push('"'),
                 _ => return None,
             }
+        } else if c == '"' {
+            // Bare interior quote: not an escape, not the outer pair.
+            return None;
         } else {
             out.push(c);
         }
@@ -130,6 +134,8 @@ fn parse_toml_text(text: &str) -> Layer {
         Index,
         Other,
     }
+    // Strip a leading BOM so `\uFEFF[core]` still parses as a header.
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let mut section: Option<Section> = None;
     let mut layer = Layer::default();
     for raw in text.lines() {
@@ -140,6 +146,8 @@ fn parse_toml_text(text: &str) -> Layer {
         if line.starts_with('[') {
             // Section header: exact `[core]` / `[index]` after trimming inner
             // whitespace; anything else (incl. `[mcp]`) becomes Other.
+            // Malformed headers (`[core] extra`, unclosed `[core`) reset to
+            // the ignore-section instead of retaining the prior section.
             if line.ends_with(']') {
                 let name = line[1..line.len() - 1].trim();
                 section = Some(match name {
@@ -147,6 +155,8 @@ fn parse_toml_text(text: &str) -> Layer {
                     "index" => Section::Index,
                     _ => Section::Other,
                 });
+            } else {
+                section = Some(Section::Other);
             }
             continue;
         }
@@ -156,12 +166,18 @@ fn parse_toml_text(text: &str) -> Layer {
         match (section, key) {
             (Some(Section::Core), "root") => {
                 if let Some(s) = unquote(value) {
-                    layer.root = Some(PathBuf::from(s));
+                    // Empty `""` is ignored (falls through to lower layer),
+                    // matching empty-env handling.
+                    if !s.is_empty() {
+                        layer.root = Some(PathBuf::from(s));
+                    }
                 }
             }
             (Some(Section::Core), "format") => {
                 if let Some(s) = unquote(value) {
-                    layer.format = Some(s);
+                    if !s.is_empty() {
+                        layer.format = Some(s);
+                    }
                 }
             }
             (Some(Section::Index), "rebuild_on_open") => match value {
@@ -185,8 +201,13 @@ fn read_toml_layer(root: &Path) -> Layer {
 }
 
 /// Parse flat `machine.json` bytes; unknown keys / wrong types ignored,
-/// any parse failure → empty layer.
+/// any parse failure → empty layer. A leading UTF-8 BOM is stripped;
+/// empty-string values are ignored (fall through to lower layers).
 fn parse_machine_bytes(bytes: &[u8]) -> Layer {
+    // Strip UTF-8 BOM (`EF BB BF`) when present.
+    let bytes = bytes
+        .strip_prefix(b"\xEF\xBB\xBF".as_slice())
+        .unwrap_or(bytes);
     let value: serde_json::Value = match serde_json::from_slice(bytes) {
         Ok(value) => value,
         Err(_) => return Layer::default(),
@@ -196,10 +217,14 @@ fn parse_machine_bytes(bytes: &[u8]) -> Layer {
     };
     let mut layer = Layer::default();
     if let Some(s) = obj.get("root").and_then(|v| v.as_str()) {
-        layer.root = Some(PathBuf::from(s));
+        if !s.is_empty() {
+            layer.root = Some(PathBuf::from(s));
+        }
     }
     if let Some(s) = obj.get("format").and_then(|v| v.as_str()) {
-        layer.format = Some(s.to_string());
+        if !s.is_empty() {
+            layer.format = Some(s.to_string());
+        }
     }
     if let Some(b) = obj.get("rebuild_on_open").and_then(|v| v.as_bool()) {
         layer.rebuild_on_open = Some(b);
@@ -319,9 +344,11 @@ fn load_impl(
 pub fn load(root: &Path, cli: &CliOverrides) -> (Config, Vec<String>) {
     let env_root = std::env::var("INNEN_ROOT")
         .ok()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from);
-    let env_format = std::env::var("INNEN_FORMAT").ok().filter(|s| !s.is_empty());
+    let env_format = std::env::var("INNEN_FORMAT")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let env_rebuild = std::env::var("INNEN_REBUILD_ON_OPEN")
         .ok()
         .and_then(|s| parse_env_bool(&s));
@@ -337,9 +364,12 @@ pub fn load_with_env(
 ) -> (Config, Vec<String>) {
     let env_root = env
         .get("INNEN_ROOT")
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from);
-    let env_format = env.get("INNEN_FORMAT").filter(|s| !s.is_empty()).cloned();
+    let env_format = env
+        .get("INNEN_FORMAT")
+        .filter(|s| !s.trim().is_empty())
+        .cloned();
     let env_rebuild = env
         .get("INNEN_REBUILD_ON_OPEN")
         .and_then(|s| parse_env_bool(s));
