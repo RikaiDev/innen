@@ -383,6 +383,35 @@ pub struct Materialized {
     pub edges: Vec<StoredEdge>,
 }
 
+/// Canonical `YYYY-MM-DDTHH:MM:SSZ` shape check.
+///
+/// Lexicographic string order equals time order only for this fixed-width
+/// UTC `Z` shape (len 20, digits plus `-`/`T`/`:`/`Z` in position). Offsets
+/// like `+08:00` and fractional seconds fail this check on purpose: their
+/// lexicographic order does not match time order, so replay skips them
+/// instead of mis-ordering.
+fn is_canonical_ts(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 20 {
+        return false;
+    }
+    if b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        return false;
+    }
+    for &i in &[0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18] {
+        if !b[i].is_ascii_digit() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Replay journal `events` in slice order into a [`Materialized`] snapshot.
 ///
 /// Each event is a journal-entry object with string `op`, object `payload`,
@@ -395,9 +424,15 @@ pub struct Materialized {
 /// * `edge.assert`: append one [`StoredEdge`] row (`retracted: false`).
 ///   `valid_from` defaults to the event `observed_utc` (else `""`, which is
 ///   below any real timestamp); `valid_until` `null`/missing/non-string
-///   means never expires.
+///   means never expires. Rows with a non-canonical timestamp are skipped:
+///   a non-empty non-canonical `valid_from`, any non-canonical `valid_until`
+///   string, or a non-empty non-canonical `observed_utc` (see timestamp
+///   assumption below). The `""` default is exempt so missing timestamps
+///   keep their historical meaning instead of being dropped.
 /// * `edge.retract`: set `retracted = true` on every row with the same
-///   `(from, edge, to)`; rows are retained.
+///   `(from, edge, to)`; rows are retained, not filtered — callers must
+///   check [`StoredEdge::retracted`]. Cost is an O(E) scan per retract,
+///   fine for P1 scale; the index owns performance in Chunk 3.
 /// * Validity filter (skipped when `include_expired`): keep edges with
 ///   `valid_from <= cutoff` and (`valid_until` none or `cutoff <=
 ///   valid_until`), both ends inclusive, where `cutoff` is `as_of` or now
@@ -405,6 +440,11 @@ pub struct Materialized {
 ///
 /// Timestamp assumption: UTC `Z` timestamps share one fixed-width `YYYY-MM-
 /// DDTHH:MM:SSZ` shape, so lexicographic string order equals time order.
+/// [`is_canonical_ts`] enforces that shape during replay; offset (`+08:00`)
+/// or fractional timestamps are skipped rather than mis-ordered.
+///
+/// `typ.parse().unwrap()` is infallible by construction: [`EdgeType`] (like
+/// [`NodeType`]) maps unknown names to `Custom` instead of returning `Err`.
 pub fn materialize(
     events: &[serde_json::Value],
     as_of: Option<&str>,
@@ -492,6 +532,15 @@ pub fn materialize(
                     .or(env_observed)
                     .unwrap_or_default()
                     .to_string();
+                if !valid_from.is_empty() && !is_canonical_ts(&valid_from) {
+                    continue;
+                }
+                if valid_until.as_ref().is_some_and(|u| !is_canonical_ts(u)) {
+                    continue;
+                }
+                if !observed_utc.is_empty() && !is_canonical_ts(&observed_utc) {
+                    continue;
+                }
                 edges.push(StoredEdge {
                     from: from.to_string(),
                     edge,
@@ -1028,5 +1077,83 @@ mod tests {
         assert_eq!(filtered.edges.len(), 0);
         let unfiltered = materialize(&events, Some(as_of), true);
         assert_eq!(unfiltered.edges.len(), 2);
+    }
+
+    #[test]
+    fn replay_skips_malformed_and_unknown_ops() {
+        let events = vec![
+            serde_json::json!({"foo": 1}),
+            serde_json::json!({"op": "node.upsert"}),
+            serde_json::json!({"op": "node.upsert", "payload": "not-an-object"}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"label": "no-id"}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from": "n:1"}}),
+            serde_json::json!({"op":"config.set","observed_utc":"2026-01-01T00:00:00Z","payload":{"key": "theme", "value": "dark"}}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:1","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:2","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"SUPPORTS","valid_from":"2026-01-01T00:00:00Z","valid_until":123}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:2","to":"n:1","type":"SUPPORTS","valid_until":null}}),
+        ];
+        let m = materialize(&events, Some("2026-06-01T00:00:00Z"), false);
+        assert_eq!(m.nodes.len(), 2);
+        assert_eq!(m.edges.len(), 2);
+        assert!(m.edges.iter().all(|e| e.valid_until.is_none()));
+        let defaulted = m.edges.iter().find(|e| e.from == "n:2").unwrap();
+        assert_eq!(defaulted.valid_from, "2026-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn retract_specificity() {
+        let events = vec![
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:1","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:2","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:3","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"SUPPORTS","valid_from":"2026-01-01T00:00:00Z","valid_until":null}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"FOLLOWS_UP","valid_from":"2026-01-01T00:00:00Z","valid_until":null}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:3","type":"SUPPORTS","valid_from":"2026-01-01T00:00:00Z","valid_until":null}}),
+            serde_json::json!({"op":"edge.retract","observed_utc":"2026-01-03T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"SUPPORTS"}}),
+        ];
+        let m = materialize(&events, Some("2026-06-01T00:00:00Z"), true);
+        assert_eq!(m.edges.len(), 3);
+        for e in &m.edges {
+            let is_target = e.from == "n:1" && e.to == "n:2" && e.edge == EdgeType::Supports;
+            assert_eq!(
+                e.retracted, is_target,
+                "only exact (from, edge, to) retracts"
+            );
+        }
+    }
+
+    #[test]
+    fn nodes_never_filtered() {
+        let events = vec![
+            serde_json::json!({"op":"node.upsert","observed_utc":"2020-01-01T00:00:00Z","payload":{"id":"n:1","observed_utc":"2020-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2020-01-01T00:00:00Z","payload":{"id":"n:2","observed_utc":"2020-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2020-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"SUPPORTS","valid_from":"2020-01-01T00:00:00Z","valid_until":"2020-02-01T00:00:00Z"}}),
+        ];
+        let m = materialize(&events, Some("2026-06-01T00:00:00Z"), false);
+        assert_eq!(m.edges.len(), 0);
+        assert_eq!(m.nodes.len(), 2);
+        assert!(m.nodes.contains_key("n:1"));
+        assert!(m.nodes.contains_key("n:2"));
+    }
+
+    #[test]
+    fn offset_timestamps_skipped() {
+        let events = vec![
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:1","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"node.upsert","observed_utc":"2026-01-01T00:00:00Z","payload":{"id":"n:2","observed_utc":"2026-01-01T00:00:00Z"}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"SUPPORTS","valid_from":"2026-01-01T00:00:00+08:00","valid_until":null}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:2","type":"FOLLOWS_UP","valid_from":"2026-01-01T00:00:00.123Z","valid_until":null}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:2","to":"n:1","type":"SUPPORTS","valid_from":"2026-01-01T00:00:00Z","valid_until":"2026-12-31T00:00:00+08:00"}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00+08:00","payload":{"from":"n:2","to":"n:1","type":"FOLLOWS_UP","valid_from":"2026-01-01T00:00:00Z","valid_until":null}}),
+            serde_json::json!({"op":"edge.assert","observed_utc":"2026-01-02T00:00:00Z","payload":{"from":"n:1","to":"n:1","type":"SUPPORTS","valid_from":"2026-01-01T00:00:00Z","valid_until":null}}),
+        ];
+        let as_of = Some("2026-06-01T00:00:00Z");
+        let filtered = materialize(&events, as_of, false);
+        assert_eq!(filtered.edges.len(), 1);
+        assert_eq!(filtered.edges[0].from, "n:1");
+        assert_eq!(filtered.edges[0].to, "n:1");
+        let unfiltered = materialize(&events, as_of, true);
+        assert_eq!(unfiltered.edges.len(), 1);
     }
 }
