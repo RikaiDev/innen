@@ -10,10 +10,16 @@
 //! [`Tokenizer`](tantivy::tokenizer::Tokenizer) with jieba char offsets
 //! mapped back to byte offsets.
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tantivy::schema::{Schema, TextFieldIndexing, TextOptions, STORED};
 use tantivy::tokenizer::{TextAnalyzer, Token, TokenStream, Tokenizer};
+use tantivy::{doc, Index};
+
+use crate::graph::materialize;
+use crate::journal::Journal;
 
 /// Tokenizer name referenced by the `body` field's indexing options.
 pub const INNEN_CJK: &str = "innen-cjk";
@@ -126,4 +132,299 @@ pub fn ensure_tokenizer(index: &tantivy::Index) {
     index
         .tokenizers()
         .register(INNEN_CJK, TextAnalyzer::from(JiebaTokenizer::new()));
+}
+
+/// Derived index layout under `<root>/.innen/` (Task 8a; the journal stays
+/// the source of truth):
+///
+/// - `index.redb` — redb with `events(id → raw entry JSON)`,
+///   `nodes(id → node JSON)`, `edges((type, from) → JSON list of edge rows)`.
+///   Edge keys join the canonical edge name and from-id with `\0`; each row
+///   keeps `from`/`type`/`to`/`weight`/`valid_from`/`valid_until`/`retracted`/
+///   `observed_utc` (retracted rows retained, validity unfiltered — readers
+///   filter per query).
+/// - `fts/` — on-disk tantivy index over materialized nodes with [`schema`]
+///   + [`ensure_tokenizer`] (same contract as query's throwaway in-RAM
+///   index: text is `label`, or `label + " " + body`; docs added in sorted
+///   id order).
+const EVENTS: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("events");
+const NODES: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("nodes");
+const EDGES: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("edges");
+
+/// Derived-index build failure: journal I/O, filesystem I/O, tantivy, redb.
+/// Corrupt `index.redb`/`fts` bytes surface here; recover via [`rebuild`].
+#[derive(Debug, thiserror::Error)]
+pub enum IndexError {
+    #[error("journal: {0}")]
+    Journal(#[from] crate::journal::JournalError),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("tantivy: {0}")]
+    Tantivy(#[from] tantivy::TantivyError),
+    #[error("redb: {0}")]
+    Redb(#[from] redb::Error),
+}
+
+// redb method errors convert into `redb::Error` (one step the `#[from]`
+// above cannot chain through `?` on its own); forward them so every redb
+// call site keeps plain `?` while the enum stays four variants.
+macro_rules! forward_redb {
+    ($($ty:ty),*) => {
+        $(
+            impl From<$ty> for IndexError {
+                fn from(e: $ty) -> Self {
+                    Self::Redb(e.into())
+                }
+            }
+        )*
+    };
+}
+
+forward_redb!(
+    redb::CommitError,
+    redb::DatabaseError,
+    redb::StorageError,
+    redb::TableError,
+    redb::TransactionError
+);
+
+fn redb_path(root: &Path) -> PathBuf {
+    root.join(".innen").join("index.redb")
+}
+
+fn fts_path(root: &Path) -> PathBuf {
+    root.join(".innen").join("fts")
+}
+
+/// Full replay over the journal into redb + tantivy (idempotent rerun:
+/// redb keys are overwritten and the FTS segment is cleared before
+/// re-adding, so a second `build` converges to the same state).
+///
+/// Replay is unfiltered (`as_of = None`, `include_expired = true`): history
+/// and retracted rows are preserved in the derived files; per-query
+/// filtering stays with the reader.
+pub fn build(root: &Path) -> Result<(), IndexError> {
+    std::fs::create_dir_all(root.join(".innen"))?;
+    std::fs::create_dir_all(fts_path(root))?;
+
+    let journal = Journal::open(root)?;
+    let entries = journal.read_all()?;
+    let events: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "op": e.op,
+                "payload": e.payload,
+                "observed_utc": e.observed_utc,
+            })
+        })
+        .collect();
+    let materialized = materialize(&events, None, true);
+
+    // --- redb (one write txn; journal ops are monotonic in keys, so
+    // --- overwrite converges; full reset is `rebuild`).
+    let db = redb::Database::create(redb_path(root))?;
+    {
+        let txn = db.begin_write()?;
+        {
+            let mut table = txn.open_table(EVENTS)?;
+            for entry in &entries {
+                let raw = serde_json::to_string(entry).expect("journal entry serializes");
+                table.insert(entry.id.as_str(), raw.as_str())?;
+            }
+        }
+        {
+            let mut table = txn.open_table(NODES)?;
+            for (id, node) in &materialized.nodes {
+                let raw = serde_json::to_string(node).expect("node serializes");
+                table.insert(id.as_str(), raw.as_str())?;
+            }
+        }
+        {
+            let mut grouped: BTreeMap<(String, String), Vec<serde_json::Value>> = BTreeMap::new();
+            for edge in &materialized.edges {
+                grouped
+                    .entry((edge.edge.to_string(), edge.from.clone()))
+                    .or_default()
+                    .push(serde_json::json!({
+                        "from": edge.from,
+                        "type": edge.edge.to_string(),
+                        "to": edge.to,
+                        "weight": edge.weight,
+                        "valid_from": edge.valid_from,
+                        "valid_until": edge.valid_until,
+                        "retracted": edge.retracted,
+                        "observed_utc": edge.observed_utc,
+                    }));
+            }
+            let mut table = txn.open_table(EDGES)?;
+            for ((ty, from), list) in &grouped {
+                let key = format!("{ty}\0{from}");
+                let raw = serde_json::to_string(list).expect("edge list serializes");
+                table.insert(key.as_str(), raw.as_str())?;
+            }
+        }
+        txn.commit()?;
+    }
+
+    // --- tantivy (open-or-create; clear, then reindex in sorted id order).
+    let index_schema = schema();
+    let body_field = index_schema.get_field("body").expect("schema defines body");
+    let id_field = index_schema.get_field("id").expect("schema defines id");
+    let fts = fts_path(root);
+    let index = match Index::open_in_dir(&fts) {
+        Ok(index) => index,
+        Err(_) => Index::create_in_dir(&fts, index_schema)?,
+    };
+    ensure_tokenizer(&index);
+    {
+        let mut writer = index.writer(15_000_000)?;
+        writer.delete_all_documents()?;
+        let mut ids: Vec<&String> = materialized.nodes.keys().collect();
+        ids.sort();
+        for id in ids {
+            let node = &materialized.nodes[id];
+            let label = node.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            let body = node.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            let text = if body.is_empty() {
+                label.to_string()
+            } else if label.is_empty() {
+                body.to_string()
+            } else {
+                format!("{label} {body}")
+            };
+            writer.add_document(doc!(
+                body_field => text,
+                id_field => id.clone(),
+            ))?;
+        }
+        writer.commit()?;
+    }
+    Ok(())
+}
+
+/// Drop derived index files (`index.redb` + `fts/`, missing files are fine)
+/// and [`build`] again from the journal (untouched — it is the source of
+/// truth). This is the recovery path for corrupt derived bytes.
+pub fn rebuild(root: &Path) -> Result<(), IndexError> {
+    match std::fs::remove_file(redb_path(root)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    match std::fs::remove_dir_all(fts_path(root)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    build(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    use crate::journal::Journal;
+    use crate::query::{query, QueryParams};
+
+    /// Fixture journal: 3 node.upsert + 1 edge.assert (`t:1 -FOLLOWS_UP-> t:2`,
+    /// a core adjacency row so query BFS traverses it).
+    fn fixture_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = Journal::open(dir.path()).expect("open");
+        for (id, ty, label) in [
+            ("t:1", "Task", "alpha one"),
+            ("t:2", "Task", "alpha two"),
+            ("p:1", "Project", "alpha project"),
+        ] {
+            journal
+                .append(
+                    "node.upsert",
+                    &serde_json::json!({"id": id, "type": ty, "label": label}),
+                )
+                .expect("append node");
+        }
+        journal
+            .append(
+                "edge.assert",
+                &serde_json::json!({
+                    "from": "t:1",
+                    "to": "t:2",
+                    "type": "FOLLOWS_UP",
+                    "valid_from": "2026-01-01T00:00:00Z",
+                }),
+            )
+            .expect("append edge");
+        dir
+    }
+
+    /// Query `t:1` (exact id-substring seed); the edge shows up as `t:2`
+    /// reached at depth 1 with `why: "graph"`.
+    fn query_ids(root: &Path) -> Vec<crate::query::Hit> {
+        query(
+            root,
+            &QueryParams {
+                q: "t:1".to_string(),
+                as_of: None,
+                limit: 20,
+                include_expired: false,
+            },
+        )
+        .expect("query")
+        .hits
+    }
+
+    /// Total edge rows across every `(type, from)` list in the derived redb.
+    /// Reads the `edges` table as a black box (own handle, JSON-list values).
+    fn redb_edge_count(root: &Path) -> usize {
+        use redb::ReadableTable as _;
+        const EDGES: redb::TableDefinition<&str, &str> = redb::TableDefinition::new("edges");
+        let db = redb::Database::open(root.join(".innen").join("index.redb")).expect("open redb");
+        let txn = db.begin_read().expect("read txn");
+        let table = txn.open_table(EDGES).expect("edges table");
+        table
+            .iter()
+            .expect("iter")
+            .filter_map(|row| row.ok())
+            .map(|(_, v)| {
+                serde_json::from_str::<Vec<serde_json::Value>>(v.value())
+                    .expect("edge list value")
+                    .len()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn index_corrupt_recovers() {
+        let dir = fixture_root();
+        build(dir.path()).expect("build");
+
+        // Query sees the 1 edge: seed t:1 reaches t:2 at depth 1.
+        let hits = query_ids(dir.path());
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].node_id, "t:1");
+        assert_eq!(hits[1].node_id, "t:2");
+        assert_eq!(hits[1].why, "graph");
+        assert_eq!(hits[1].score, 0.5);
+        assert_eq!(redb_edge_count(dir.path()), 1);
+
+        // Corrupt index.redb bytes (overwrite with garbage).
+        let redb_path = dir.path().join(".innen").join("index.redb");
+        std::fs::write(&redb_path, b"garbage-not-a-redb-file").expect("corrupt");
+        assert!(
+            redb::Database::open(&redb_path).is_err(),
+            "corruption must break redb open"
+        );
+
+        // rebuild() recovers: the edge is visible again.
+        rebuild(dir.path()).expect("rebuild");
+        let hits = query_ids(dir.path());
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].node_id, "t:1");
+        assert_eq!(hits[1].node_id, "t:2");
+        assert_eq!(hits[1].why, "graph");
+        assert_eq!(hits[1].score, 0.5);
+        assert_eq!(redb_edge_count(dir.path()), 1);
+    }
 }
