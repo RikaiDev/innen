@@ -2,6 +2,7 @@
 name = "innen-core"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 
 [dependencies]
 serde = { workspace = true }
@@ -14,4 +15,7 @@ redb = { workspace = true }
 jieba-rs = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
