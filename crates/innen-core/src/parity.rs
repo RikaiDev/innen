@@ -248,10 +248,230 @@ pub fn timeline(root: &Path, filter: Option<&str>) -> Vec<TimelineEntry> {
     out
 }
 
+/// Project page render (Task 10).
+///
+/// Groups `BELONGS_TO` members whose `to` == `id` by member node `type`
+/// (case-insensitive `decision`/`task`/`experiment`/`dataset`; other kinds
+/// ignored) and lists member labels as `- ` bullets under `## Decisions` /
+/// `## Tasks` / `## Experiments` / `## Datasets` (always emitted, in that
+/// order, members sorted for determinism; missing/empty label falls back to
+/// the member id). Retracted edges are skipped; validity windows are ignored
+/// (`materialize(..., include_expired = true)`, same as `search`/`status`).
+/// Unknown id (no node with that id, including unreadable journal) errors.
+pub fn project_render(root: &Path, id: &str) -> Result<String, String> {
+    let materialized = match Journal::open(root).and_then(|j| {
+        j.read_all().map(|entries| {
+            entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "op": e.op,
+                        "payload": e.payload,
+                        "observed_utc": e.observed_utc,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    }) {
+        Ok(events) => materialize(&events, None, true),
+        Err(_) => materialize(&[], None, true),
+    };
+    let project = materialized
+        .nodes
+        .get(id)
+        .ok_or_else(|| format!("unknown project: {id}"))?;
+    let project_label = project
+        .get("label")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(id);
+    let mut decisions = Vec::new();
+    let mut tasks = Vec::new();
+    let mut experiments = Vec::new();
+    let mut datasets = Vec::new();
+    for edge in &materialized.edges {
+        if edge.retracted || edge.to != id || edge.edge != crate::graph::EdgeType::BelongsTo {
+            continue;
+        }
+        let Some(node) = materialized.nodes.get(&edge.from) else {
+            continue;
+        };
+        let label = node
+            .get("label")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(edge.from.as_str())
+            .to_string();
+        match node
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "decision" => decisions.push(label),
+            "task" => tasks.push(label),
+            "experiment" => experiments.push(label),
+            "dataset" => datasets.push(label),
+            _ => {}
+        }
+    }
+    decisions.sort();
+    tasks.sort();
+    experiments.sort();
+    datasets.sort();
+    let mut out = format!("# {project_label}\n\n");
+    let sections = [
+        ("## Decisions", &decisions),
+        ("## Tasks", &tasks),
+        ("## Experiments", &experiments),
+        ("## Datasets", &datasets),
+    ];
+    for (i, (header, members)) in sections.iter().enumerate() {
+        out.push_str(header);
+        out.push('\n');
+        for m in members.iter() {
+            out.push_str("- ");
+            out.push_str(m);
+            out.push('\n');
+        }
+        if i + 1 < sections.len() {
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// Minimal flat TOML string reader for `profile/profile.toml` (Task 10).
+///
+/// Local 10-line reader reusing the `config.rs` hand-parser pattern (`#`
+/// comments outside double quotes, double-quoted values with `\\` / `\"`
+/// escapes only, bare interior quotes rejected): flat `key = "value"` lines
+/// only, section headers and non-string values ignored, last duplicate wins.
+/// Only `title`/`blurb`/`status` are kept; every other key is ignored without
+/// error. Missing keys render as empty strings.
+fn profile_string_map(text: &str) -> std::collections::HashMap<String, String> {
+    fn strip_comment(line: &str) -> &str {
+        let bytes = line.as_bytes();
+        let mut in_quotes = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' if in_quotes => {
+                    i += 2;
+                    continue;
+                }
+                b'"' => in_quotes = !in_quotes,
+                b'#' if !in_quotes => return line[..i].trim_end(),
+                _ => {}
+            }
+            i += 1;
+        }
+        line
+    }
+    fn unquote(value: &str) -> Option<String> {
+        let inner = value.strip_prefix('"')?.strip_suffix('"')?;
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next()? {
+                    '\\' => out.push('\\'),
+                    '"' => out.push('"'),
+                    _ => return None,
+                }
+            } else if c == '"' {
+                return None;
+            } else {
+                out.push(c);
+            }
+        }
+        Some(out)
+    }
+    let mut map = std::collections::HashMap::new();
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line.is_empty() || line.starts_with('[') {
+            continue;
+        }
+        let Some(eq) = line.find('=') else { continue };
+        let key = line[..eq].trim();
+        let value = line[eq + 1..].trim();
+        if !matches!(key, "title" | "blurb" | "status") {
+            continue;
+        }
+        if let Some(s) = unquote(value) {
+            map.insert(key.to_string(), s);
+        }
+    }
+    map
+}
+
+/// Profile page render (Task 10).
+///
+/// Reads `<root>/profile/profile.toml` via [`profile_string_map`] and renders
+/// byte-exact `"# {title}\n\n{blurb}\n\nstatus: {status}\n"` (absent keys are
+/// empty strings). A missing/unreadable file errors with prefix
+/// `"missing profile/profile.toml"`.
+pub fn profile_render(root: &Path) -> Result<String, String> {
+    let path = root.join("profile/profile.toml");
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("missing profile/profile.toml: {e}"))?;
+    let map = profile_string_map(&text);
+    let title = map.get("title").map(String::as_str).unwrap_or("");
+    let blurb = map.get("blurb").map(String::as_str).unwrap_or("");
+    let status = map.get("status").map(String::as_str).unwrap_or("");
+    Ok(format!("# {title}\n\n{blurb}\n\nstatus: {status}\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::journal::Journal;
+
+    fn project_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "p:x", "type": "Project", "label": "Project X"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "t:1", "type": "Task", "label": "task one"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "d:1", "type": "Decision", "label": "decision one"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "e:1", "type": "Experiment", "label": "experiment one"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "ds:1", "type": "Dataset", "label": "dataset one"}),
+        )
+        .unwrap();
+        j.append(
+            "node.upsert",
+            &serde_json::json!({"id": "u:1", "type": "Task", "label": "unrelated chores"}),
+        )
+        .unwrap();
+        for from in ["t:1", "d:1", "e:1", "ds:1"] {
+            j.append(
+                "edge.assert",
+                &serde_json::json!({"from": from, "type": "BELONGS_TO", "to": "p:x"}),
+            )
+            .unwrap();
+        }
+        dir
+    }
 
     #[test]
     fn guide_mentions_query_first() {
@@ -373,5 +593,41 @@ mod tests {
         let rows = timeline(dir.path(), Some("2026-09"));
         assert_eq!(rows.len(), 1);
         assert!(rows[0].observed_utc.starts_with("2026-09"));
+    }
+    #[test]
+    fn project_render_groups_by_kind() {
+        let dir = project_fixture();
+        let out = project_render(dir.path(), "p:x").unwrap();
+        for section in ["## Decisions", "## Tasks", "## Experiments", "## Datasets"] {
+            assert!(out.contains(section), "missing {section}");
+        }
+        assert!(!out.contains("unrelated"));
+    }
+    #[test]
+    fn project_unknown_id_errors() {
+        let dir = project_fixture();
+        let err = project_render(dir.path(), "p:nope").unwrap_err();
+        assert_eq!(err, "unknown project: p:nope");
+    }
+    #[test]
+    fn profile_renders_fixture_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profile")).unwrap();
+        std::fs::write(
+            dir.path().join("profile/profile.toml"),
+            "title = \"T\"\nblurb = \"B\"\nstatus = \"active\"\nextra = \"ignored\"\n",
+        )
+        .unwrap();
+        let out = profile_render(dir.path()).unwrap();
+        assert_eq!(out, "# T\n\nB\n\nstatus: active\n");
+    }
+    #[test]
+    fn profile_missing_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = profile_render(dir.path()).unwrap_err();
+        assert!(
+            err.starts_with("missing profile/profile.toml"),
+            "got: {err}"
+        );
     }
 }
