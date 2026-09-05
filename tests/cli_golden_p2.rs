@@ -1,18 +1,26 @@
 //! CLI golden P2 (Task 12).
 //!
-//! Eight cases, thin dispatch over core fns from Tasks 9-11:
-//! 1. guide contains "query",
+//! Nine cases, thin dispatch over core fns from Tasks 9-11:
+//! 1. guide byte-exact JSON (pinned text),
 //! 2. search lexical fixture,
 //! 3. status counts,
 //! 4. timeline month filter,
-//! 5. project unknown (exit 1),
+//! 5. project unknown (exit 1, plan-pinned raw stderr),
 //! 6. profile fixture byte-exact vs expected file,
-//! 7. artifact add roundtrip (bytes identical),
-//! 8. cloud status stub via PATH.
+//! 7. artifact add roundtrip (bytes identical + pinned sha256),
+//! 8. cloud status stub byte-exact canned output,
+//! 9. search-human TSV representative (fixed fixture, byte-exact).
+//!
+//! Full human-matrix coverage is deferred; case 9 is the representative pin.
 //!
 //! JSON cases compare compact `serde_json::to_string` outputs directly
 //! (byte-exact, like Task 7's strengthened assertion). Each case builds its
 //! own temp KB. KB root via explicit `--root <dir>`. No network.
+//!
+//! NOTE (P1/P2 error prefix): P1 arms print `error: {e}` to stderr, but P2
+//! arms intentionally print the core message raw (`{e}`, no prefix) so the
+//! plan-pinned literal `unknown project: <id>` matches byte-for-byte.
+//! Do not "unify" P2 to `error:` — that would break the plan literal.
 
 use assert_cmd::Command;
 use serde_json::json;
@@ -20,6 +28,11 @@ use serde_json::json;
 // Wire structs mirroring `src/main.rs` P2 JSON shapes (field order is the
 // wire order). Expected values use `to_string` on these structs so byte-exact
 // comparison is order-stable (avoids `json!` map-ordering drift).
+
+#[derive(serde::Serialize)]
+struct WantGuide {
+    text: String,
+}
 
 #[derive(serde::Serialize)]
 struct WantSearchHit {
@@ -64,6 +77,12 @@ fn append(root: &std::path::Path, op: &str, payload: serde_json::Value) {
 
 /// Rewrite stored envelope `observed_utc` timestamps in order (for timeline
 /// fixtures; `Journal::append` stamps wall-clock and ignores payload time).
+///
+/// NOTE (coupling): this mirrors the ad-hoc rewrite in
+/// `crates/innen-core/src/parity.rs` timeline test (`timeline_filters_by_month`).
+/// Coupled to the journal envelope shape (`.innen/journal.jsonl`, one compact
+/// JSON object per line with an `observed_utc` field). If the envelope gains a
+/// backdate API, prefer that over rewriting here.
 fn rewrite_observed(root: &std::path::Path, stamps: &[&str]) {
     let jpath = root.join(".innen/journal.jsonl");
     let content = std::fs::read_to_string(&jpath).expect("read journal");
@@ -85,7 +104,7 @@ fn rewrite_observed(root: &std::path::Path, stamps: &[&str]) {
 }
 
 // ---------------------------------------------------------------------------
-// Case 1: guide contains "query"
+// Case 1: guide byte-exact JSON (pinned text)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -98,10 +117,26 @@ fn guide_contains_query() {
         .assert()
         .code(0);
     let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    assert!(
-        out.contains("query"),
-        "guide stdout must contain query, got: {out:?}"
+    // Pinned guide text — byte-exact means byte-exact. Hardcoded here (not
+    // `guide_text()`) so drift fails the test. Keep in sync with
+    // `innen_core::parity::guide_text`.
+    const GUIDE_TEXT: &str = "innen is a local-first knowledge graph over an append-only journal.\nStart with query to ask the graph (lexical + graph walk).\nCore commands: query, search, status, timeline, guide.\nUse search for lexical-only hits, status for counts, timeline for history.";
+    // Exact first line + contains query (robustness probes on the decoded text).
+    let first_line = GUIDE_TEXT.lines().next().expect("guide has first line");
+    assert_eq!(
+        first_line, "innen is a local-first knowledge graph over an append-only journal.",
+        "guide first line must be exact"
     );
+    assert!(
+        GUIDE_TEXT.contains("query"),
+        "guide text must contain query"
+    );
+    // Full stdout EQUALS pinned expected JSON (single line + trailing newline).
+    let want = serde_json::to_string(&WantGuide {
+        text: GUIDE_TEXT.to_string(),
+    })
+    .expect("want serializes");
+    assert_eq!(out, format!("{want}\n"), "guide stdout must be byte-exact");
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +273,7 @@ fn timeline_month() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 5: project unknown → exit 1, stderr
+// Case 5: project unknown → exit 1, stderr byte-exact (plan-pinned raw)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -251,9 +286,12 @@ fn project_unknown() {
         .assert()
         .code(1);
     let err = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert!(
-        err.contains("unknown project: p:nope"),
-        "stderr must contain unknown project, got: {err:?}"
+    // Plan Case 5 pins stderr `unknown project: p:nope` raw (no `error: `
+    // prefix). P1 arms use `error: {e}`; P2 intentionally keeps raw `{e}`.
+    // Do not unify — see file header NOTE.
+    assert_eq!(
+        err, "unknown project: p:nope\n",
+        "stderr must equal plan-pinned literal, got: {err:?}"
     );
 }
 
@@ -264,10 +302,11 @@ fn project_unknown() {
 #[test]
 fn profile_fixture() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let fixture_toml =
-        std::fs::read_to_string("tests/fixtures/profile.toml").expect("read profile fixture");
-    let expected =
-        std::fs::read_to_string("tests/fixtures/expected_profile.md").expect("read expected");
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture_toml = std::fs::read_to_string(manifest_dir.join("tests/fixtures/profile.toml"))
+        .expect("read profile fixture");
+    let expected = std::fs::read_to_string(manifest_dir.join("tests/fixtures/expected_profile.md"))
+        .expect("read expected");
     std::fs::create_dir_all(dir.path().join("profile")).expect("mkdir profile");
     std::fs::write(dir.path().join("profile/profile.toml"), &fixture_toml)
         .expect("write profile.toml");
@@ -307,6 +346,18 @@ fn artifact_roundtrip_cli() {
     let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let v: serde_json::Value =
         serde_json::from_str(out.trim_end()).expect("artifact stdout parses as JSON");
+    // sha256 of the 11 bytes `hello-bytes`, verified against `sha256sum`.
+    const WANT_SHA256: &str = "dd1fb82ed53df87c98fa9397b0ceba6b166374eab810ab351e5d955652613f37";
+    assert_eq!(
+        v.get("sha256").and_then(|x| x.as_str()),
+        Some(WANT_SHA256),
+        "artifact sha256 must equal independently computed hash"
+    );
+    assert_eq!(
+        v.get("bytes").and_then(serde_json::Value::as_u64),
+        Some(11),
+        "artifact bytes must be 11"
+    );
     let stored = v
         .get("path")
         .and_then(|x| x.as_str())
@@ -316,7 +367,7 @@ fn artifact_roundtrip_cli() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 8: cloud status stub via PATH
+// Case 8: cloud status stub via PATH (byte-exact canned output)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -335,8 +386,11 @@ fn cloud_status_stub() {
     #[cfg(not(unix))]
     std::fs::copy(&stub, &link).expect("copy rclone");
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bindir.path().display(), old_path);
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let new_path = std::env::join_paths(
+        std::iter::once(bindir.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .expect("join PATH");
 
     let root = dir.path().to_string_lossy().into_owned();
     let assert = Command::cargo_bin("innen")
@@ -346,8 +400,54 @@ fn cloud_status_stub() {
         .assert()
         .code(0);
     let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    assert!(
-        out.contains("canned-dir"),
-        "cloud status must print canned listing, got: {out:?}"
+    // Stub `lsd` prints `canned-dir\n`; CLI wraps as
+    // `{"remote":"myremote","output":"canned-dir\n"}` + trailing newline.
+    assert_eq!(
+        out, "{\"remote\":\"myremote\",\"output\":\"canned-dir\\n\"}\n",
+        "cloud status must equal canned output byte-exact, got: {out:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 9: search-human TSV representative (fixed fixture, byte-exact)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn search_human_tsv() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    append(
+        dir.path(),
+        "node.upsert",
+        json!({"id": "a:1", "type": "Task", "label": "SFT tokenizer"}),
+    );
+    append(
+        dir.path(),
+        "node.upsert",
+        json!({"id": "b:2", "type": "Task", "label": "unrelated chores"}),
+    );
+    append(
+        dir.path(),
+        "edge.assert",
+        json!({"from": "b:2", "type": "FOLLOWS_UP", "to": "a:1"}),
+    );
+
+    let root = dir.path().to_string_lossy().into_owned();
+    let assert = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .args([
+            "--root",
+            &root,
+            "--format",
+            "human",
+            "search",
+            "--keyword",
+            "SFT",
+        ])
+        .assert()
+        .code(0);
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        out, "node_id\texcerpt\na:1\tSFT tokenizer\n",
+        "search-human TSV must be byte-exact, got: {out:?}"
     );
 }

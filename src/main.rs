@@ -23,6 +23,10 @@
 //! `print!`, no extra newline) and TSV tables elsewhere; P2 errors print
 //! the core message raw to stderr (no `error:` prefix) so
 //! `unknown project: <id>` matches byte-for-byte.
+//! NOTE (P1/P2 error prefix, intentional): P1 arms print `error: {e}`;
+//! P2 arms (`project`/`profile`/`artifact`/`cloud`) keep raw `{e}` per the
+//! plan-pinned literal `unknown project: <id>`. Do not "unify" P2 to
+//! `error:` — that would break the plan literal and byte-exact stderr.
 
 use std::path::PathBuf;
 
