@@ -7,6 +7,7 @@ pub mod harvest;
 pub mod ids;
 pub mod index;
 pub mod journal;
+pub mod migrate;
 pub mod parity;
 pub mod query;
 pub mod tap;

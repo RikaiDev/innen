@@ -276,21 +276,25 @@ pub fn project_render(root: &Path, id: &str) -> Result<String, String> {
         Ok(events) => materialize(&events, None, true),
         Err(_) => materialize(&[], None, true),
     };
-    let project = materialized
+    let (target_id, project) = materialized
         .nodes
-        .get(id)
+        .get_key_value(id)
+        .or_else(|| materialized.nodes.get_key_value(&format!("p:{id}")))
+        .or_else(|| materialized.nodes.get_key_value(&format!("project:{id}")))
+        .map(|(k, v)| (k.as_str(), v))
         .ok_or_else(|| format!("unknown project: {id}"))?;
     let project_label = project
         .get("label")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or(id);
+        .unwrap_or(target_id);
     let mut decisions = Vec::new();
     let mut tasks = Vec::new();
     let mut experiments = Vec::new();
     let mut datasets = Vec::new();
     for edge in &materialized.edges {
-        if edge.retracted || edge.to != id || edge.edge != crate::graph::EdgeType::BelongsTo {
+        if edge.retracted || edge.to != target_id || edge.edge != crate::graph::EdgeType::BelongsTo
+        {
             continue;
         }
         let Some(node) = materialized.nodes.get(&edge.from) else {
@@ -608,6 +612,14 @@ mod tests {
         let dir = project_fixture();
         let err = project_render(dir.path(), "p:nope").unwrap_err();
         assert_eq!(err, "unknown project: p:nope");
+    }
+    #[test]
+    fn project_render_resolves_shorthand_id() {
+        let dir = project_fixture();
+        // Fixture defines "p:x"; passing shorthand "x" should resolve to "p:x".
+        let out = project_render(dir.path(), "x").unwrap();
+        assert!(out.contains("# Project X"));
+        assert!(out.contains("## Tasks"));
     }
     #[test]
     fn profile_renders_fixture_toml() {
