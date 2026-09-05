@@ -71,41 +71,42 @@ Reading user input alone captures *intent*, but completely misses *reality*:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   Heterogeneous Coding Agent Stores                     │
-│  Codex CLI        Claude Code       Gemini (Antigravity)   OpenCode     Grok CLI  │
-│  (~/.codex)       (~/.claude)       (~/.gemini)            (SQLite)     (~/.grok) │
-└────────┬───────────────┬───────────────────┬───────────────────┬───────────┬──────┘
-         │               │                   │                   │           │
-         └───────────────┴─────────┐   ┌─────┴───────────────────┴───────────┘
-                                   ▼   ▼
-               ┌───────────────────────────────────────────────┐
-               │         innen Multi-Agent Tap Engine          │
-               │   - Strip system prompts & <system-reminder>  │
-               │   - Extract User Intent (Prompt & Directives) │
-               │   - Extract Outcomes, Conclusions, Root Causes│
-               │   - Harvest File Paths & SHA-256 Receipts     │
-               └───────────────────────┬───────────────────────┘
+│                    Heterogeneous Coding Agent Stores                    │
+│  Codex CLI    Claude Code   Gemini (Antigravity)  OpenCode    Grok CLI  │
+│  (~/.codex)   (~/.claude)       (~/.gemini)       (SQLite)   (~/.grok)  │
+└───────┬─────────────┬────────────────┬────────────────┬───────────┬─────┘
+        │             │                │                │           │
+        └─────────────┴────────────────┬────────────────┴───────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      innen Multi-Agent Tap Engine                       │
+│    - Strip system prompts & <system-reminder> noise                     │
+│    - Extract User Intent (Prompts, Directives, Tasks)                   │
+│    - Extract Outcomes, Conclusions, Root Causes, and Fixes              │
+│    - Harvest File Paths, SHA-256 Receipts, and Commits                  │
+└──────────────────────────────────────┬──────────────────────────────────┘
                                        │
                                        ▼ (99.98% Token Reduction)
-               ┌───────────────────────────────────────────────┐
-               │    High-Density Event Stream (.innen/journal)  │
-               └───────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│            High-Density Event Stream (.innen/journal.jsonl)             │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Empirical 7-Day Multi-Tool Benchmark
+### Empirical 30-Day Multi-Tool Benchmark
 
-Harvesting all real engineering sessions across 5 coding tools over a 7-day period on a developer workstation:
+Harvesting all real engineering sessions across 5 coding tools over a 30-day period (2026-08-06 to 2026-09-05) on a developer workstation:
 
 | Coding Tool | Harvested Sessions | Raw Log Tokens | Folded Knowledge Tokens | Token Savings |
 |---|---|---|---|---|
-| **OpenCode** (SQLite DB) | 123 | 114,357,511 | 55,274 | **99.95%** |
-| **Codex CLI** (`.jsonl`) | 72 | 47,819,401 | 30,527 | **99.94%** |
-| **Gemini / Antigravity** (`.jsonl`) | 18 | 26,552,709 | 10,757 | **99.96%** |
-| **Claude Code** (`.jsonl`) | 3 | 479,796 | 1,841 | **99.62%** |
-| **Grok CLI** (`chat_history.jsonl`) | 1 | 8,920 | 660 | **92.60%** |
-| **TOTAL (Across 5 Tools)** | **217** | **189,218,337** | **99,059** | **99.98%** 🔥 |
+| **Claude Code** (`.jsonl`) | 1,095 | 10,316,106 | 33,870 | **99.67%** |
+| **Codex CLI** (`.jsonl`) | 616 | 2,566,019,566 | 341,367 | **99.99%** |
+| **OpenCode** (SQLite DB) | 290 | 54,667,589 | 107,562 | **99.80%** |
+| **Gemini / Antigravity** (`.jsonl`) | 84 | 23,506,507 | 56,003 | **99.76%** |
+| **Grok CLI** (`chat_history.jsonl`) | 2 | 177,479 | 834 | **99.53%** |
+| **TOTAL (Across 5 Tools)** | **2,087** | **2,654,687,247** | **539,636** | **99.98%** 🔥 |
 
-By filtering peripheral system instructions and tool chatter while preserving paired **Intent + Outcome + Receipt** tuples, `innen` reduces **189 million raw tokens into 99k high-density tokens** ready for causal graph linking and immediate recall.
+By filtering peripheral system instructions and tool chatter while preserving paired **Intent + Outcome + Receipt** tuples, `innen` reduces **2.65 billion raw tokens into 539k high-density tokens** (a **99.98% overall token reduction** across 2,087 sessions) ready for causal graph linking and immediate recall.
 
 ---
 
@@ -115,15 +116,15 @@ By filtering peripheral system instructions and tool chatter while preserving pa
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           The LLM Agent                                 │
-│         (Codex / Claude Code / Gemini / OpenCode / Grok)                │
+│                            The LLM Agent                                │
+│          (Codex / Claude Code / Gemini / OpenCode / Grok)               │
 └───────────────────▲─────────────────────────────────┬───────────────────┘
                     │ query / project (<35ms)         │ harvest / ingest / append
                     │ (90% – 95% token reduction)     │ (append-only)
 ┌───────────────────┴─────────────────────────────────▼───────────────────┐
-                    │                      innen CLI                      │
-                    │           (Single Static Rust Binary)               │
-├───────────────────┴────────────┬────────────────────────────────────────┤
+│                               innen CLI                                 │
+│                      (Single Static Rust Binary)                        │
+├────────────────────────────────┬────────────────────────────────────────┤
 │  Derived Indexes (Rebuild 30ms)│        Source of Truth (Append-Only)   │
 │  ┌──────────────────────────┐  │  ┌──────────────────────────────────┐  │
 │  │   Tantivy CJK FTS        │  │  │   .innen/journal.jsonl           │  │
@@ -193,7 +194,13 @@ When an agent needs context on a specific project or topic, retrieval strategies
 
 ### Installation
 
-`innen` distributes as a self-contained static binary with zero external runtime requirements:
+`innen` is available via Homebrew on macOS:
+
+```bash
+brew install rikaidev/tap/innen
+```
+
+Or build from source (single static binary, zero external runtime dependencies):
 
 ```bash
 git clone https://github.com/RikaiDev/innen.git
