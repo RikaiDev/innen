@@ -46,6 +46,10 @@ pub enum TapError {
 }
 
 /// `<root>/.innen/tap/{tap_id}.watermark`
+///
+/// NOTE: `tap_id` is joined verbatim into the path; P2 ids are hardcoded
+/// constants (`harvest-dir`) so this is safe — dynamic tap ids must be
+/// sanitized (known limitation, no code change).
 pub fn watermark_path(root: &Path, tap_id: &str) -> PathBuf {
     root.join(".innen")
         .join("tap")

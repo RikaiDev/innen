@@ -1,6 +1,6 @@
 //! CLI golden P2 (Task 12).
 //!
-//! Nine cases, thin dispatch over core fns from Tasks 9-11:
+//! Eleven cases, thin dispatch over core fns from Tasks 9-11 and 14:
 //! 1. guide byte-exact JSON (pinned text),
 //! 2. search lexical fixture,
 //! 3. status counts,
@@ -9,7 +9,9 @@
 //! 6. profile fixture byte-exact vs expected file,
 //! 7. artifact add roundtrip (bytes identical + pinned sha256),
 //! 8. cloud status stub byte-exact canned output,
-//! 9. search-human TSV representative (fixed fixture, byte-exact).
+//! 9. search-human TSV representative (fixed fixture, byte-exact),
+//! 10. harvest --check JSON shape (dry-run, no `.innen` side effects),
+//! 11. ingest golden journal diff (credential skip + watermark advance).
 //!
 //! Full human-matrix coverage is deferred; case 9 is the representative pin.
 //!
@@ -450,4 +452,124 @@ fn search_human_tsv() {
         out, "node_id\texcerpt\na:1\tSFT tokenizer\n",
         "search-human TSV must be byte-exact, got: {out:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cases 10-11 (Task 14): harvest --check + ingest over Tap.
+// Wire structs mirror the core `harvest` JSON shapes (field order is the
+// wire order); expected values use `to_string` so comparison is byte-exact.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct WantHarvestTap {
+    id: String,
+    new_files: Vec<String>,
+    skipped: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct WantHarvest {
+    taps: Vec<WantHarvestTap>,
+}
+
+#[derive(serde::Serialize)]
+struct WantIngestSkipped {
+    path: String,
+    pattern: String,
+    preview: String,
+}
+
+#[derive(serde::Serialize)]
+struct WantIngest {
+    added: u64,
+    skipped: Vec<WantIngestSkipped>,
+}
+
+// ---------------------------------------------------------------------------
+// Case 10: harvest --check JSON shape (dry-run, no side effects)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn harvest_check_json_shape() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let inbox = dir.path().join("00-inbox/harvest");
+    std::fs::create_dir_all(&inbox).expect("mkdir inbox");
+    std::fs::write(inbox.join("a.md"), "hello").expect("write a.md");
+    std::fs::write(inbox.join("b.md"), "world").expect("write b.md");
+
+    let root = dir.path().to_string_lossy().into_owned();
+    let assert = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .args(["--root", &root, "--format", "json", "harvest", "--check"])
+        .assert()
+        .code(0);
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let got = out.trim_end().to_string();
+
+    let want = serde_json::to_string(&WantHarvest {
+        taps: vec![WantHarvestTap {
+            id: "harvest-dir".to_string(),
+            new_files: vec!["a.md".to_string(), "b.md".to_string()],
+            skipped: vec![],
+        }],
+    })
+    .expect("want serializes");
+    assert_eq!(got, want, "harvest --check must list new files byte-exact");
+    // Dry-run pins: no journal appends, no watermark advance (`.innen`
+    // untouched — `check` never opens the journal nor stores a watermark).
+    assert!(
+        !dir.path().join(".innen").exists(),
+        "harvest --check must not create .innen"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 11: ingest golden journal diff (credential skip + watermark)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ingest_journal_diff() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let inbox = dir.path().join("00-inbox/harvest");
+    std::fs::create_dir_all(&inbox).expect("mkdir inbox");
+    std::fs::write(inbox.join("ok.md"), "hello").expect("write ok.md");
+    std::fs::write(inbox.join("bad.md"), "key AKIAIOSFODNN7EXAMPLE end").expect("write bad.md");
+
+    let root = dir.path().to_string_lossy().into_owned();
+    let assert = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .args(["--root", &root, "--format", "json", "ingest"])
+        .assert()
+        .code(0);
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let got = out.trim_end().to_string();
+
+    let want = serde_json::to_string(&WantIngest {
+        added: 1,
+        skipped: vec![WantIngestSkipped {
+            path: "bad.md".to_string(),
+            pattern: "aws-access-key".to_string(),
+            preview: "AKIAIO***".to_string(),
+        }],
+    })
+    .expect("want serializes");
+    assert_eq!(got, want, "ingest report must be byte-exact");
+
+    // Journal diff: exactly one `node.upsert` (ok.md); bad.md never appended.
+    let journal =
+        std::fs::read_to_string(dir.path().join(".innen/journal.jsonl")).expect("read journal");
+    assert_eq!(
+        journal.lines().count(),
+        1,
+        "ingest must append exactly one event, got: {journal:?}"
+    );
+    assert!(journal.contains("ok.md"), "journal must record ok.md");
+    assert!(
+        !journal.contains("bad.md"),
+        "credential file must never be appended"
+    );
+    // Watermark advances past all consumed files (1 added + 1 skipped).
+    let wm = std::fs::read_to_string(dir.path().join(".innen/tap/harvest-dir.watermark"))
+        .expect("read watermark");
+    assert_eq!(wm.trim(), "2", "watermark must cover consumed files");
 }

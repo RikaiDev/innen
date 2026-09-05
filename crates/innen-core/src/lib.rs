@@ -3,6 +3,7 @@ pub mod cloud;
 pub mod config;
 pub mod doctor;
 pub mod graph;
+pub mod harvest;
 pub mod ids;
 pub mod index;
 pub mod journal;

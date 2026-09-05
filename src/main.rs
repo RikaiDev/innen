@@ -12,13 +12,15 @@
 //!
 //! P2 commands (Task 12): `guide`, `search --keyword --limit`, `status`,
 //! `timeline [filter]`, `project <id>`, `profile`, `artifact add --file`,
-//! `cloud status|doctor`. P2 JSON shapes (field order is wire order):
+//! `cloud status|doctor` (Task 14 adds `harvest --check`, `ingest`). P2 JSON shapes (field order is wire order):
 //! guide `{"text"}`, search `{"hits":[{node_id,excerpt}]}`,
 //! status `{"nodes","edges","events","artifacts"}`,
 //! timeline `{"entries":[{observed_utc,op,summary}]}`,
 //! project `{"id","render"}`, profile `{"render"}`,
 //! artifact `{"sha256","path","bytes"}`,
-//! cloud status `{"remote","output"}`, cloud doctor `{"output"}`.
+//! cloud status `{"remote","output"}`, cloud doctor `{"output"}`,
+//! harvest check `{"taps":[{id,new_files,skipped}]}`,
+//! ingest `{"added","skipped":[{path,pattern,preview}]}`.
 //! P2 human renders raw markdown for project/profile (byte-exact via
 //! `print!`, no extra newline) and TSV tables elsewhere; P2 errors print
 //! the core message raw to stderr (no `error:` prefix) so
@@ -114,6 +116,10 @@ enum Commands {
         #[command(subcommand)]
         op: CloudOp,
     },
+    /// Dry-run harvest check over `00-inbox/harvest` (Task 14).
+    Harvest(HarvestArgs),
+    /// Ingest new inbox files into the journal (Task 14).
+    Ingest,
 }
 
 #[derive(clap::Args)]
@@ -219,6 +225,14 @@ enum ConfigOp {
         /// Value to store.
         value: String,
     },
+}
+
+/// P2 `harvest --check`: dry-run only (no appends, no watermark advance).
+#[derive(clap::Args)]
+struct HarvestArgs {
+    /// Dry-run flag (accepted for compat; harvest is always a dry-run check).
+    #[arg(long, default_value_t = false)]
+    check: bool,
 }
 
 /// P2 `search --keyword <kw> [--limit <n>]`: lexical-only, no graph walk.
@@ -936,6 +950,65 @@ fn cmd_cloud_doctor(format: &str) -> i32 {
     }
 }
 
+fn cmd_harvest(root: &std::path::Path, format: &str, _args: &HarvestArgs) -> i32 {
+    // Thin call: dry-run report lives in innen-core::harvest (never appends,
+    // never advances the watermark). Core structs serialize in field order,
+    // which is the JSON wire order.
+    let report = innen_core::harvest::check(root);
+    if is_human(format) {
+        println!("id\tstatus\tpath");
+        for tap in &report.taps {
+            for f in &tap.new_files {
+                println!(
+                    "{}\tnew\t{}",
+                    escape_tsv_field(&tap.id),
+                    escape_tsv_field(f)
+                );
+            }
+            for s in &tap.skipped {
+                println!(
+                    "{}\tskipped\t{}",
+                    escape_tsv_field(&tap.id),
+                    escape_tsv_field(s)
+                );
+            }
+        }
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&report).expect("harvest report serializes")
+        );
+    }
+    0
+}
+
+fn cmd_ingest(root: &std::path::Path, format: &str) -> i32 {
+    // Thin call: appends + watermark advance live in
+    // innen-core::harvest::ingest::run. Credential hits are reported, never
+    // appended.
+    let report = innen_core::harvest::ingest::run(root);
+    if is_human(format) {
+        println!("added\t{}", report.added);
+        if !report.skipped.is_empty() {
+            println!("path\tpattern\tpreview");
+            for s in &report.skipped {
+                println!(
+                    "{}\t{}\t{}",
+                    escape_tsv_field(&s.path),
+                    escape_tsv_field(&s.pattern),
+                    escape_tsv_field(&s.preview)
+                );
+            }
+        }
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&report).expect("ingest report serializes")
+        );
+    }
+    0
+}
+
 fn cmd_completions(shell: &str) -> i32 {
     let clap_shell = match shell {
         "bash" => clap_complete::Shell::Bash,
@@ -1020,6 +1093,14 @@ fn main() {
             CloudOp::Status(a) => cmd_cloud_status(&cli.format, &a.remote),
             CloudOp::Doctor => cmd_cloud_doctor(&cli.format),
         },
+        Commands::Harvest(args) => {
+            let root = resolve_root(cli.root.clone());
+            cmd_harvest(&root, &cli.format, args)
+        }
+        Commands::Ingest => {
+            let root = resolve_root(cli.root.clone());
+            cmd_ingest(&root, &cli.format)
+        }
     };
     std::process::exit(code);
 }
