@@ -120,8 +120,6 @@ enum Commands {
     Harvest(HarvestArgs),
     /// Ingest new inbox files into the journal (Task 14).
     Ingest,
-    /// One-time migration from legacy km repository (Task 16).
-    Migrate(MigrateArgs),
 }
 
 #[derive(clap::Args)]
@@ -294,16 +292,6 @@ struct CloudStatusArgs {
     /// Remote name (stub ignores the value).
     #[arg(long, default_value = "myremote")]
     remote: String,
-}
-
-/// One-time migration from legacy km repository.
-#[derive(clap::Args)]
-struct MigrateArgs {
-    /// Old km repository path.
-    old: PathBuf,
-    /// Target innen repository path.
-    #[arg(long)]
-    out: PathBuf,
 }
 
 // --- P2 JSON wire structs (field order is the wire order) ---
@@ -1037,42 +1025,6 @@ fn cmd_completions(shell: &str) -> i32 {
     0
 }
 
-fn cmd_migrate(format: &str, args: &MigrateArgs) -> i32 {
-    match innen_core::migrate::migrate(&args.old, &args.out) {
-        Ok(report) => {
-            if is_human(format) {
-                println!("migrated\t{}", report.migrated_events);
-                println!("quarantined\t{}", report.quarantined.len());
-                println!("rewritten\t{}", report.rewritten.len());
-                if !report.quarantined.is_empty() {
-                    println!("\nquarantined events (require manual check):");
-                    for q in &report.quarantined {
-                        println!(
-                            "{}\t{}",
-                            escape_tsv_field(&q.old_event_id),
-                            escape_tsv_field(&q.reason)
-                        );
-                    }
-                }
-            } else {
-                println!(
-                    "{}",
-                    serde_json::to_string(&report).expect("migrate report serializes")
-                );
-            }
-            if report.quarantined.is_empty() {
-                0
-            } else {
-                1
-            }
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            1
-        }
-    }
-}
-
 fn main() {
     let cli = Cli::parse();
     let code = match &cli.command {
@@ -1149,7 +1101,6 @@ fn main() {
             let root = resolve_root(cli.root.clone());
             cmd_ingest(&root, &cli.format)
         }
-        Commands::Migrate(args) => cmd_migrate(&cli.format, args),
     };
     std::process::exit(code);
 }

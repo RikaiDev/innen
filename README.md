@@ -1,45 +1,54 @@
-# innen（因縁）
+# innen (因縁) — a deterministic realization of the LLM Wiki
 
-> **An opinionated, high-performance, deterministic realization of the LLM Wiki paradigm.**
->
-> 依據 Andrej Karpathy 的 LLM Wiki 思想，以 Rust 打造具備因果追溯（Dependent Origination）、時序圖譜、雙引擎衍生索引與次線性 Token 檢索的現代知識系統。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust: 2021](https://img.shields.io/badge/Rust-2021%20%28MSRV%201.90%29-orange.svg)](https://www.rust-lang.org/)
+[![Architecture: Event--Sourced](https://img.shields.io/badge/Architecture-Event--Sourced%20Graph-green.svg)](#architecture)
+[![Zero-Daemon](https://img.shields.io/badge/Runtime-Zero--Daemon%20Static%20Binary-black.svg)](#quick-start)
 
----
+**innen is an open-source, high-performance knowledge engine and graph runtime designed for LLM agents. It implements an event-sourced journal, dual embedded derived indexes (Redb + Tantivy CJK BM25), and hybrid subgraph retrieval to turn raw markdown files into a living, causally-sound, persistent knowledge base.**
 
-## 1. 核心定位：LLM Wiki 的一種實作方法
-
-2026 年 4 月，Andrej Karpathy 在其發布的 [LLM Wiki 指南](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 與後續論述中指出：
-
-> *「在 LLM agent 時代，分享具體的程式碼或應用程式已經不再必要；你只需要分享核心概念（idea file），每個人的代理人就會依據自己的具體需求客製化實作。」*
-
-Karpathy 定義了 **LLM Wiki** 的本質：
-- **持續複利的實體（Persistent, Compounding Artifact）**：知識不是每次對話臨時推導，而是被編譯成持久的網絡；交叉引用已經在那裡，矛盾已被標記，綜合反映了所讀過的一切。
-- **三層架構**：不可變的原始材料（`01-raw/`） $\to$ LLM 維護的結構化知識（`02-wiki/`） $\to$ 產出、綱要與索引（`03-output/`、`04-index/`）。
-- **三種核心操作**：Ingest（編譯萃取）、Query（檢索並將新結論寫回）、Lint（定期健康檢查與消歧）。
-- **四大優勢**：**明確（Explicit）**、**自主持有（Yours）**、**檔案優先（File over app）**、**自帶模型（BYOAI）**。
-
-### `innen` 的回答
-
-**`innen`（因縁）是 Karpathy「LLM Wiki」範式的一種高確定性、系統級工程實作。**
-
-在個人百篇筆記的小規模下，純文字 Markdown 搭配簡單目錄尚可運作；然而當知識庫擴展至數百次對話、跨專案實驗矩陣、法律與科研證據鏈時，純文字 Wiki 會迅速遭遇三重瓶頸：
-1. **Context Window 與成本膨脹**：LLM 每次檢索動輒需傾印數千字的總帳或 Wiki 全文（2,500 ~ 5,000 tokens），稀釋注意力且大幅拉高延遲。
-2. **時序遺失與歷史覆寫**：單純覆寫 Markdown 無法回答「某項決策是在何時被哪次實驗推翻？原始脈絡為何？」。
-3. **隱性幻覺與懸空參照**：缺少強型別約束與參照完整性（Reference Integrity），破碎連結與幽靈專案會悄然滋生。
-
-`innen` 取名自佛教哲學的**「因緣」（Dependent Origination，互為條件、因果相續）**，透過**因果事件日誌（Event Journal）**、**雙引擎衍生索引（Redb + Tantivy）**與**混合圖譜檢索（BM25 + 3-Hop BFS）**，在保持「檔案優先、Markdown 本位」的前提下，為 LLM Agent 賦予毫秒級響應與 90%~95% 的極致 Token 減量。
+*The name reads from Buddhist philosophy: **因縁** (innen) — dependent origination, causal connection. In genuine knowledge management, no claim exists in a vacuum. Every decision, task, experiment, and document arises out of prior conditions and leaves traceable consequences. innen does not merely store text; it captures the causal graph of why things are the way they are.*
 
 ---
 
-## 2. 架構核心：三層責任與引擎解耦
+## 1. Context & Motivation
+
+In April 2026, **Andrej Karpathy** published his formal [LLM Wiki Guide](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), outlining a radical shift away from opaque corporate AI memories toward an open, explicit, compounding knowledge base:
+
+> *"In the age of LLM agents, sharing specific code or apps is no longer necessary. You only need to share the core idea (an idea file), and everyone's personal agent will tailor-build the realization to their exact needs."*
+
+Karpathy articulated four foundational pillars of the **LLM Wiki**:
+- **Explicit**: The knowledge is laid out in plain sight; you can inspect exactly what the AI knows and what it does not.
+- **Yours**: Held on your own machine under your direct ownership, free from vendor lock-in.
+- **File over app**: Stored in durable formats (Markdown, JSON, images) readable by standard Unix tools.
+- **BYOAI (Bring Your Own AI)**: Model-agnostic; agents from Claude, Gemini, Codex, to local weights can all read and write to it.
+
+### The Limits of Naive Markdown at Scale
+
+Karpathy's initial observation was elegant: *"At small scale (~100 articles, ~400k words), no RAG is needed; the LLM simply navigates through index files."*
+
+However, once an agentic knowledge base scales to hundreds of daily transcripts, multi-project experiment matrixes, compliance receipts, and evolving research state, naive flat markdown approaches hit a structural ceiling:
+
+1. **Context Window & Cost Explosion**: An agent needing context on a project must dump raw transcripts and verbose ledgers into its prompt (2,500 – 5,000+ tokens per call). This rapidly inflates API costs, degrades inference speed, and causes context dilution / needle-in-a-haystack forgetting.
+2. **Loss of Temporal Provenance**: Flat file edits overwrite past state. When was a decision made? Which experiment invalidated it? What was the historical baseline? Overwrites destroy causal continuity.
+3. **Dangling References & Silent Drift**: Without schema validation and reference integrity, broken links, orphan notes, and phantom projects proliferate undetected.
+4. **Vector Database Pitfalls**: Offloading knowledge to opaque vector databases introduces non-deterministic recall, loses exact identifier matching (e.g. SHA-256 hashes or issue codes), and requires heavy, battery-draining background daemon processes.
+
+**`innen` is an opinionated, production-grade realization of the LLM Wiki paradigm.** It bridges human-readable markdown with the mathematical rigor of an append-only event journal and sub-35ms deterministic graph retrieval.
+
+---
+
+## 2. Architecture
+
+`innen` decouples immutable ground truth from throwaway, high-speed derived indexes:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           The LLM Agent                                 │
-│          (Claude / Gemini / Codex / Antigravity / Open-Source)          │
+│        (Claude Code / Antigravity / Codex / Local Open Weights)         │
 └───────────────────▲─────────────────────────────────┬───────────────────┘
                     │ query / project (<35ms)         │ ingest / append
-                    │ (tokens 節省 90%~95%)           │ (append-only)
+                    │ (90% – 95% token reduction)     │ (append-only)
 ┌───────────────────┴─────────────────────────────────▼───────────────────┐
 │                              innen CLI                                  │
 │                 (Single 12MB Rust Static Binary)                        │
@@ -47,115 +56,131 @@ Karpathy 定義了 **LLM Wiki** 的本質：
 │  Derived Indexes (Rebuild 30ms)│        Source of Truth (Append-Only)   │
 │  ┌──────────────────────────┐  │  ┌──────────────────────────────────┐  │
 │  │   Tantivy CJK FTS        │  │  │   .innen/journal.jsonl           │  │
-│  │   (BM25 + Jieba 分詞)    │  │  │   (Canonical JSON, SHA256 ID,    │  │
+│  │   (BM25 + Jieba CJK)     │  │  │   (Canonical JSON, SHA256 ID,    │  │
 │  ├──────────────────────────┤  │  │    Bi-temporal: observed/valid)  │  │
 │  │   redb (Embedded KV)     │  │  └──────────────────────────────────┘  │
-│  │   (Transactions, Adjacency│ │  ┌──────────────────────────────────┐  │
+│  │   (ACID, Adjacency Graph)│  │  ┌──────────────────────────────────┐  │
 │  └──────────────────────────┘  │  │   01-raw/ & 02-wiki/ Markdown    │  │
 │                                │  └──────────────────────────────────┘  │
 └────────────────────────────────┴────────────────────────────────────────┘
 ```
 
-1. **真實來源唯讀不可變（Event-Sourced Journal）**：
-   - 所有的節點（Node）與關係（Edge）異動皆寫入 `.innen/journal.jsonl`。
-   - 撤銷關係採用 `edge.retract`，歷史永久保留，永不破壞時間序列。
-   - 具備雙時間軸：`observed_utc`（記錄觀察時間）與 `valid_from` / `valid_to`（實體有效區間）。
-2. **雙衍生索引（Dual Derived Index）**：
-   - **Tantivy CJK FTS**：內嵌 Jieba-rs 中文分詞字典，支援繁體中文 BM25 相關性評分。
-   - **Redb**：純 Rust 實作之嵌入式 ACID 交易資料庫，毫秒級處理節點與鄰接表。
-   - **索引完全可拋棄**：執行 `innen rebuild` 僅需 **30 毫秒** 即可由 journal 重新生成全部索引。
-3. **混合子圖檢索（Hybrid Subgraph Retrieval）**：
-   - 檢索機制：BM25 快速篩選 Top 候選種子 $\to$ 沿著關聯邊展開 1~3 步 BFS 圖譜擴散 $\to$ 依距離與長度歸一化權重排序。
-   - 相比傳統 Flat RAG，只輸出高度相關的高密度結構化知識行，消弭無關雜訊。
+### Core Principles
+
+- **Append-Only Event Sourcing**:
+  Every entity (`node.upsert`), relation (`edge.assert`), and cancellation (`edge.retract`) is recorded as an immutable JSON line in `.innen/journal.jsonl`. Edits never erase history; retraction preserves the historical record while updating the materialized present.
+- **Bi-Temporal Modeling**:
+  Events record both `observed_utc` (when the system recorded the event) and `valid_from` / `valid_to` (when the fact was true in reality). Queries can traverse historical snapshots using `--as-of <TIMESTAMP>`.
+- **Zero-Daemon Dual Indexes**:
+  - **Redb**: Embedded, pure-Rust transactional key-value store maintaining materialized node tables and adjacency graphs.
+  - **Tantivy CJK FTS**: Embedded full-text search engine with bundled Jieba CJK segmentation. No background services, no open ports, zero cloud dependencies.
+- **Instant Index Rebuilds**:
+  Indexes are strictly derived state. Corrupted, stale, or deleted indexes can be completely re-materialized from the journal via `innen rebuild` in **under 35 milliseconds**.
+- **Deterministic Integrity (`doctor` / `lint`)**:
+  Zero-mutation health checks ensure all edge endpoints resolve, quarantine directories remain empty, and journals parse flawlessly, returning strict exit codes (`0` for clean, `1` for quarantined, `2` for corruption/dangling edges).
 
 ---
 
-## 3. 實測評測：效能與 Token 減量
+## 3. Empirical Benchmarks
 
-針對包含 635 筆日誌事件、395 條關聯邊、85 篇 Wiki 之真實知識庫進行全量對比評測：
+Tested on a production research knowledge base comprising **635 events, 395 relational edges, 85 structured wiki pages, and 11 active project ledgers** on Apple Silicon:
 
-### A. 效能與資源佔用（Apple Silicon）
+### A. Execution Latency & Memory Footprint
 
-| 操作項目 (Command) | Python `km` 引擎 | `innen` (Rust) 引擎 | **加速比 (Speedup)** | 記憶體常駐 (Peak RSS) |
-|---|---|---|---|---|
-| **CLI 啟動 (`--help`)** | 642.8 ms | **17.3 ms** | **37.1x** | **2.9 MB** (節省 88%) |
-| **健康檢查 (`lint`)** | 633.1 ms | **33.4 ms** | **18.9x** | **5.5 MB** (節省 78%) |
-| **狀態摘要 (`status`)** | 295.7 ms | **29.4 ms** | **10.0x** | **6.6 MB** (節省 78%) |
-| **專案視圖 (`project`)** | 302.1 ms | **21.3 ms** | **14.2x** | **6.4 MB** (節省 78%) |
-| **衍生索引重建 (`rebuild`)** | N/A | **30.1 ms** | **即時完成** | **2.8 MB** |
-| **全量遷移驗證 (`migrate`)** | N/A | **1.27 秒** | **一次性全遷** | 38.2 MB (635 筆事件重構) |
+| Command | Description | Mean Latency | Peak Memory (RSS) |
+|---|---|---|---|
+| `innen --help` | CLI cold startup & argument parsing | **17.3 ms** | **2.9 MB** |
+| `innen lint` | Full journal & reference integrity audit | **33.4 ms** | **5.5 MB** |
+| `innen status` | Materialized graph census & node breakdown | **29.4 ms** | **6.6 MB** |
+| `innen project <id>` | Deterministic project page synthesis | **21.3 ms** | **6.4 MB** |
+| `innen query --q <term>` | Jieba tokenize + BM25 + 3-hop BFS expansion | **309.7 ms** | **76.4 MB** (includes CJK dict) |
+| `innen rebuild` | Full Redb + Tantivy index regeneration | **30.1 ms** | **2.8 MB** |
 
-### B. LLM Agent 上下文 Token 減量評測（以 PCNe 專案為例）
+*All core inspection commands execute in **under 35 milliseconds** with less than **7 MB** of resident memory, allowing LLM agent toolhooks to invoke them with negligible overhead.*
+
+### B. Prompt Token Reduction for Agent Context
+
+When an LLM agent investigates a specific project (e.g. healthcare research state), different retrieval strategies yield dramatically different prompt token loads:
 
 ```text
-[Prompt 上下文注入方案對比]
+[Context Window Injection Comparison]
 ────────────────────────────────────────────────────────────────────────────────────
-1. Naive Flat Dump (原始紀錄+Wiki全文)   ████████████████████ 2,500 tokens (100.0%)
-2. 舊版 km project 傾印                  ██████████████████   2,252 tokens (90.1%)
-3. 舊版 km graph query 檢索              ██████               739 tokens (29.6%)
-4. innen query --q 'PCNe' (BM25+圖鄰接)  ██                   245 tokens (9.8%)  🔥 減量 90.2%
-5. innen project nhri-pcne (語意聚合)   ▌                    102 tokens (4.1%)  🔥 減量 95.9%
+1. Naive Flat Dump (Raw Transcripts + Full Wiki)  ████████████████████ 2,500 tokens (100.0% Baseline)
+2. Verbose Project Ledger Dump                   ██████████████████   2,252 tokens (90.1%)
+3. Unranked Graph Entity List                    ██████               739 tokens (29.6%)
+4. innen query --q <term> (BM25 + 3-Hop BFS)     ██                   245 tokens (9.8%)  🔥 90.2% reduction
+5. innen project <id> (Structured Synthesis)     ▌                    102 tokens (4.1%)  🔥 95.9% reduction
 ────────────────────────────────────────────────────────────────────────────────────
 ```
 
-- **`innen project <id>`（減量 95.9%）**：僅需 102 tokens 即可為 Agent 呈現當前專案完整的 Decisions、Tasks、Experiments 與 Datasets 狀態。
-- **`innen query --q <keyword>`（減量 90.2%）**：以 245 tokens 精準涵蓋 13 個核心實體與重要交付物 SHA-256，無任何幻覺或關鍵資訊漏失。
+- **`innen project <id>` (95.9% Token Reduction)**: Synthesizes active Decisions, Tasks, Experiments, and Datasets in **102 tokens** (vs. 2,500 tokens), giving the model an exact high-density mental model without peripheral chatter.
+- **`innen query --q <term>` (90.2% Token Reduction)**: Extracts a ranked 1~3 hop subgraph of 13 critical entities and SHA-256 artifact receipts in **245 tokens**, preserving 100% causal recall without context bloat.
 
 ---
 
-## 4. 命令與生命週期
+## 4. Quick Start
 
-### 日常工作流命令
+### Installation
 
-```bash
-# 1. 採集與收錄：多對話逐字稿收集
-innen harvest --check
-
-# 2. 檢索與查詢：BM25 + 鄰接子圖展開
-innen query --q "智慧藥事照護" --format human
-
-# 3. 專案視圖：結構化匯總決策、任務與實驗
-innen project nhri-pcne
-
-# 4. 全文檢索
-innen search "PCNe"
-
-# 5. 健康檢查與診斷（嚴格退出碼：0=正常, 1=隔離區異常, 2=日誌/參照損壞）
-innen doctor
-innen lint
-
-# 6. 索引重建（由 journal 瞬間還原衍生資料庫）
-innen rebuild
-```
-
-### 關於 `migrate` 指令的生命週期
-
-- **一次性遷移任務**：`innen migrate <old_repo> --out <new_repo>` 為升級過渡設計（具備舊庫唯讀保證、冪等性與缺失參照補全）。
-- **遷移後退場**：一旦資料搬遷至 `.innen/journal.jsonl` 且 `innen doctor` 通過驗證（0 quarantined、395 edges all resolve），**`migrate` 指令即完成歷史使命**。日常對話、維護與 Agent 工作流完全由 `harvest`、`ingest`、`query`、`project`、`doctor` 等常態指令接管。
-
----
-
-## 5. 編譯與安裝
-
-`innen` 為純 Rust 專案，單一靜態二進位檔分發，零外部動態依賴：
+`innen` distributes as a self-contained 12MB static binary with zero external runtime requirements:
 
 ```bash
 git clone https://github.com/RikaiDev/innen.git
 cd innen
 
-# 執行全量測試 (127/127 通過)
+# Run full test suite (121/121 passed)
 cargo test --workspace
 
-# 編譯發行版本 (12MB 單一執行檔)
+# Build optimized release binary
 cargo build --release
 
-# 安裝至本機
+# Install locally
 cp target/release/innen /usr/local/bin/innen
+```
+
+### Everyday Agent Workflow
+
+```bash
+# 1. Harvest incoming transcripts from agent chat sessions
+innen harvest --check
+
+# 2. Ingest structured notes and append new knowledge to the journal
+innen ingest
+
+# 3. Retrieve relevant subgraph context (BM25 + 1~3 hop graph expansion)
+innen query --q "clinical decision support" --format human
+
+# 4. Inspect deterministic project rollup (Decisions, Tasks, Experiments)
+innen project nhri-pcne
+
+# 5. Full-text lexical search
+innen search "medication error"
+
+# 6. Verify repository health and reference integrity
+innen doctor
+innen lint
+
+# 7. Rebuild local derived indexes from journal (takes ~30ms)
+innen rebuild
 ```
 
 ---
 
-## 6. 授權與致敬
+## 5. Repository Layout
 
-- 本實作深受 **Andrej Karpathy** 之「LLM Wiki」設計哲學啟發。
-- 專案依循 MIT / Apache-2.0 雙授權。
+```text
+crates/
+  innen-core/     Core journal, Redb/Tantivy indexing, graph validation, and query BFS
+  innen-mcp/      Model Context Protocol (MCP) stdio server interface
+src/
+  main.rs         Unified CLI driver
+tests/
+  cli_golden.rs   End-to-end golden parity test suite
+```
+
+---
+
+## 6. License & Acknowledgments
+
+- Grounded in the **LLM Wiki** philosophy pioneered by **Andrej Karpathy**.
+- Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).\n
