@@ -665,13 +665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "innen-mcp"
-version = "0.1.0"
-dependencies = [
- "innen-core",
-]
-
-[[package]]
 name = "inventory"
 version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -6,7 +6,7 @@ edition = "2021"
 rust-version = "1.90"
 
 [workspace]
-members = [".", "crates/innen-core", "crates/innen-mcp"]
+members = [".", "crates/innen-core"]
 resolver = "2"
 
 [workspace.lints.rust]
