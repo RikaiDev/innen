@@ -17,6 +17,34 @@
 //! [`DirectoryTap::dir`] is the KB root (not the inbox dir itself): the inbox
 //! is `<dir>/00-inbox/harvest` and the watermark is
 //! [`crate::tap::watermark_path`]`(dir, "harvest-dir")`.
+//!
+//! ## Known limitations (P2)
+//!
+//! Struct shapes (`HarvestReport` / `IngestReport`) are frozen by plan —
+//! fixes that would change their shape (new error / warning fields) are
+//! deferred so P2 goldens stay byte-exact.
+//!
+//! - IO failures surface as empty: unreadable inbox dir yields an empty
+//!   report; [`check`] treats a per-file read failure as empty content;
+//!   [`ingest::run`] skips an unreadable file while still advancing the
+//!   watermark past it. Not surfaced as errors in P2 because reporting
+//!   them needs new fields on the frozen structs (would break golden
+//!   byte-exactness).
+//! - Three UTF-8 policies: `Tap::collect` strict-aborts on non-UTF8
+//!   (`TapError::Parse`); [`check`] reads with `unwrap_or_default` so a
+//!   non-UTF8 file looks empty (hence clean); [`ingest::run`] scans
+//!   `String::from_utf8_lossy`. Kept distinct in P2 because unifying them
+//!   changes `TapReport` / `IngestReport` shapes or P2 golden bytes.
+//! - No file-size cap: files are read whole (`fs::read` /
+//!   `read_to_string`); 64MB+ files will be slow. No cap in P2 by design;
+//!   adding truncation / streaming changes bytes / hashes in the report,
+//!   which is frozen for golden byte-exactness.
+//! - check-vs-ingest can disagree on unreadable / non-UTF8 files: check
+//!   sees empty which scans clean, while ingest lossy-scans the real
+//!   bytes and may skip for credentials. Accepted in P2 because the
+//!   normal (clean UTF-8) path agrees (see
+//!   `check_ingest_agree_on_clean_files`); reconciling the edge cases
+//!   needs struct changes deferred to preserve golden byte-exactness.
 
 use std::path::{Path, PathBuf};
 
@@ -237,8 +265,8 @@ pub mod ingest {
 }
 
 /// Redacted preview: first 6 chars starting at the first match of `pattern`
-/// + `"***"`. Falls back to the first 6 chars of content when the pattern
-/// has no locatable match.
+/// followed by `"***"`. Falls back to the first 6 chars of content when
+/// the pattern has no locatable match.
 fn credential_preview(content: &str, pattern: &str) -> String {
     let off = match pattern {
         "aws-access-key" => find_aws_offset(content.as_bytes()),
@@ -259,17 +287,13 @@ fn find_aws_offset(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 20 {
         return None;
     }
-    for i in 0..=(bytes.len() - 4) {
-        if bytes[i..].starts_with(b"AKIA")
+    (0..=(bytes.len() - 4)).find(|&i| {
+        bytes[i..].starts_with(b"AKIA")
             && i + 20 <= bytes.len()
             && bytes[i + 4..i + 20]
                 .iter()
                 .all(|&b| matches!(b, b'0'..=b'9' | b'A'..=b'Z'))
-        {
-            return Some(i);
-        }
-    }
-    None
+    })
 }
 
 fn find_github_offset(bytes: &[u8]) -> Option<usize> {
@@ -419,5 +443,28 @@ mod tests {
         assert_eq!(wm.trim(), "1");
         let ing2 = ingest::run(dir.path());
         assert_eq!(ing2.added, 0);
+    }
+
+    #[test]
+    fn check_empty_inbox_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("00-inbox/harvest")).unwrap();
+        let r = check(dir.path());
+        assert!(r.taps.iter().all(|t| t.new_files.is_empty()));
+        assert!(r.taps.iter().all(|t| t.skipped.is_empty()));
+    }
+
+    #[test]
+    fn check_ingest_agree_on_clean_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_inbox(&dir, &[("a.md", "hello"), ("b.md", "world")]);
+        let r = check(dir.path());
+        assert_eq!(
+            r.taps[0].new_files,
+            vec!["a.md".to_string(), "b.md".to_string()]
+        );
+        let ing = ingest::run(dir.path());
+        assert_eq!(ing.added, 2);
+        assert!(ing.skipped.is_empty());
     }
 }
