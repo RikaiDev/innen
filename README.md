@@ -260,4 +260,4 @@ tests/
 ## 8. License & Acknowledgments
 
 - Grounded in the **LLM Wiki** philosophy pioneered by **Andrej Karpathy**.
-- Dual-licensed under [MIT](LICENSE) or [Apache-2.0](LICENSE-APACHE).
+- Licensed under the [MIT License](LICENSE).
