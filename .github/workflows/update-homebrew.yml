@@ -1,0 +1,75 @@
+# This workflow updates the Homebrew formula when a new release is published
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE_URL="https://github.com/RikaiDev/innen/releases/download/v${VERSION}"
+          
+          AARCH64_DARWIN=$(curl -sL "${BASE_URL}/innen-aarch64-apple-darwin.tar.gz" | sha256sum | cut -d' ' -f1)
+          
+          echo "aarch64_darwin=$AARCH64_DARWIN" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: RikaiDev/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_AARCH64_DARWIN: ${{ steps.checksums.outputs.aarch64_darwin }}
+        run: |
+          cat > homebrew-tap/Formula/innen.rb << EOF
+          # typed: false
+          # frozen_string_literal: true
+
+          # Homebrew Formula for innen - Deterministic, zero-daemon CLI knowledge engine for LLM agents
+          class Innen < Formula
+            desc "Deterministic, zero-daemon CLI knowledge engine for LLM agents (Karpathy LLM Wiki)"
+            homepage "https://github.com/RikaiDev/innen"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/RikaiDev/innen/releases/download/v#{version}/innen-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_DARWIN}"
+              end
+            end
+
+            def install
+              bin.install "innen"
+            end
+
+            test do
+              assert_match "innen", shell_output("#{bin}/innen --help")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/innen.rb
+          git commit -m "chore: update innen to v${{ steps.version.outputs.version }}" || exit 0
+          git push
