@@ -1,4 +1,4 @@
-//! P1 CLI dispatch (Task 8d).
+//! P1+P2 CLI dispatch (Tasks 8d, 12).
 //!
 //! Thin dispatch: parse → core calls → print. No business logic here.
 //!
@@ -9,6 +9,20 @@
 //! only — no TTY sniffing, no env fallback for rendering. Deterministic:
 //! `--format json` is compact `serde_json::to_string` (single line +
 //! trailing newline); struct field order is the wire order.
+//!
+//! P2 commands (Task 12): `guide`, `search --keyword --limit`, `status`,
+//! `timeline [filter]`, `project <id>`, `profile`, `artifact add --file`,
+//! `cloud status|doctor`. P2 JSON shapes (field order is wire order):
+//! guide `{"text"}`, search `{"hits":[{node_id,excerpt}]}`,
+//! status `{"nodes","edges","events","artifacts"}`,
+//! timeline `{"entries":[{observed_utc,op,summary}]}`,
+//! project `{"id","render"}`, profile `{"render"}`,
+//! artifact `{"sha256","path","bytes"}`,
+//! cloud status `{"remote","output"}`, cloud doctor `{"output"}`.
+//! P2 human renders raw markdown for project/profile (byte-exact via
+//! `print!`, no extra newline) and TSV tables elsewhere; P2 errors print
+//! the core message raw to stderr (no `error:` prefix) so
+//! `unknown project: <id>` matches byte-for-byte.
 
 use std::path::PathBuf;
 
@@ -31,8 +45,8 @@ fn resolve_root(cli_root: Option<PathBuf>) -> PathBuf {
 #[command(
     name = "innen",
     version,
-    about = "innen P1 knowledge CLI",
-    long_about = "innen P1 knowledge CLI.\n\nKB root resolution: --root <dir> > INNEN_ROOT env (non-empty) > cwd."
+    about = "innen P1+P2 knowledge CLI",
+    long_about = "innen P1+P2 knowledge CLI.\n\nKB root resolution: --root <dir> > INNEN_ROOT env (non-empty) > cwd."
 )]
 struct Cli {
     /// Output format (explicit only; no TTY sniffing). Applies to all commands.
@@ -73,6 +87,28 @@ enum Commands {
         /// Shell to generate completions for.
         #[arg(value_parser = ["bash", "zsh", "fish", "powershell"])]
         shell: String,
+    },
+    /// Short navigation text (Task 9 core `guide_text`).
+    Guide,
+    /// Lexical-only search over label/body (Task 9 core `search`).
+    Search(SearchArgs),
+    /// Journal counts (Task 9 core `status`).
+    Status,
+    /// Journal history in order (Task 9 core `timeline`).
+    Timeline(TimelineArgs),
+    /// Project page render grouped by member kind (Task 10).
+    Project(ProjectArgs),
+    /// Profile page render from profile/profile.toml (Task 10).
+    Profile,
+    /// Content-addressed artifact writes (Task 11a).
+    Artifact {
+        #[command(subcommand)]
+        op: ArtifactOp,
+    },
+    /// Stubbed rclone cloud harness (Task 11b; `rclone` via PATH lookup).
+    Cloud {
+        #[command(subcommand)]
+        op: CloudOp,
     },
 }
 
@@ -179,6 +215,132 @@ enum ConfigOp {
         /// Value to store.
         value: String,
     },
+}
+
+/// P2 `search --keyword <kw> [--limit <n>]`: lexical-only, no graph walk.
+#[derive(clap::Args)]
+struct SearchArgs {
+    /// Keyword (tantivy query over label/body; empty matches nothing).
+    #[arg(long)]
+    keyword: String,
+    /// Max hits (default 20).
+    #[arg(long, default_value_t = 20)]
+    limit: u16,
+}
+
+/// P2 `timeline [filter]`: journal order; filter is a `YYYY[-MM]` prefix.
+#[derive(clap::Args)]
+struct TimelineArgs {
+    /// Optional prefix filter, e.g. `2026-09`.
+    filter: Option<String>,
+}
+
+/// P2 `project <id>`: project page render.
+#[derive(clap::Args)]
+struct ProjectArgs {
+    /// Project node id.
+    id: String,
+}
+
+#[derive(Subcommand)]
+enum ArtifactOp {
+    /// Store a file content-addressed + record artifact node/edge.
+    Add(ArtifactAddArgs),
+}
+
+/// P2 `artifact add --file <path> [--project <id>]`.
+#[derive(clap::Args)]
+struct ArtifactAddArgs {
+    /// Source file to store.
+    #[arg(long)]
+    file: PathBuf,
+    /// Optional project id for a BELONGS_TO edge.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum CloudOp {
+    /// `rclone lsd <remote>:` (canned `canned-dir` under the test stub).
+    Status(CloudStatusArgs),
+    /// `rclone version` (stub reports canned version).
+    Doctor,
+}
+
+/// P2 `cloud status [--remote <name>]` (default `myremote` so bare
+/// `cloud status` works against the stub).
+#[derive(clap::Args)]
+struct CloudStatusArgs {
+    /// Remote name (stub ignores the value).
+    #[arg(long, default_value = "myremote")]
+    remote: String,
+}
+
+// --- P2 JSON wire structs (field order is the wire order) ---
+
+#[derive(serde::Serialize)]
+struct GuideJson {
+    text: String,
+}
+
+#[derive(serde::Serialize)]
+struct SearchHitJson {
+    node_id: String,
+    excerpt: String,
+}
+
+#[derive(serde::Serialize)]
+struct SearchJson {
+    hits: Vec<SearchHitJson>,
+}
+
+#[derive(serde::Serialize)]
+struct StatusJson {
+    nodes: u64,
+    edges: u64,
+    events: u64,
+    artifacts: u64,
+}
+
+#[derive(serde::Serialize)]
+struct TimelineEntryJson {
+    observed_utc: String,
+    op: String,
+    summary: String,
+}
+
+#[derive(serde::Serialize)]
+struct TimelineJson {
+    entries: Vec<TimelineEntryJson>,
+}
+
+#[derive(serde::Serialize)]
+struct ProjectJson {
+    id: String,
+    render: String,
+}
+
+#[derive(serde::Serialize)]
+struct ProfileJson {
+    render: String,
+}
+
+#[derive(serde::Serialize)]
+struct ArtifactJson {
+    sha256: String,
+    path: String,
+    bytes: u64,
+}
+
+#[derive(serde::Serialize)]
+struct CloudStatusJson {
+    remote: String,
+    output: String,
+}
+
+#[derive(serde::Serialize)]
+struct CloudDoctorJson {
+    output: String,
 }
 
 fn is_human(format: &str) -> bool {
@@ -514,6 +676,262 @@ fn cmd_config_set(root: &std::path::Path, format: &str, key: &str, value: &str) 
     0
 }
 
+/// Resolve the `rclone` binary via PATH lookup (CLI-only; unit tests
+/// inject the fixture path directly into `Rclone { bin }`).
+fn resolve_rclone_bin() -> Result<PathBuf, String> {
+    let path_var =
+        std::env::var_os("PATH").ok_or_else(|| "rclone not found in PATH".to_string())?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let cand = dir.join("rclone");
+        if cand.is_file() {
+            return Ok(cand);
+        }
+    }
+    Err("rclone not found in PATH".to_string())
+}
+
+fn cmd_guide(format: &str) -> i32 {
+    let text = innen_core::parity::guide_text();
+    if is_human(format) {
+        println!("{text}");
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&GuideJson {
+                text: text.to_string(),
+            })
+            .expect("guide output serializes")
+        );
+    }
+    0
+}
+
+fn cmd_search(root: &std::path::Path, format: &str, args: &SearchArgs) -> i32 {
+    let hits = innen_core::parity::search(root, &args.keyword, args.limit);
+    if is_human(format) {
+        println!("node_id\texcerpt");
+        for h in &hits {
+            println!(
+                "{}\t{}",
+                escape_tsv_field(&h.node_id),
+                escape_tsv_field(&h.excerpt)
+            );
+        }
+    } else {
+        let out = SearchJson {
+            hits: hits
+                .into_iter()
+                .map(|h| SearchHitJson {
+                    node_id: h.node_id,
+                    excerpt: h.excerpt,
+                })
+                .collect(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&out).expect("search output serializes")
+        );
+    }
+    0
+}
+
+fn cmd_status(root: &std::path::Path, format: &str) -> i32 {
+    let s = innen_core::parity::status(root);
+    if is_human(format) {
+        println!("nodes\tedges\tevents\tartifacts");
+        println!("{}\t{}\t{}\t{}", s.nodes, s.edges, s.events, s.artifacts);
+    } else {
+        let out = StatusJson {
+            nodes: s.nodes,
+            edges: s.edges,
+            events: s.events,
+            artifacts: s.artifacts,
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&out).expect("status output serializes")
+        );
+    }
+    0
+}
+
+fn cmd_timeline(root: &std::path::Path, format: &str, args: &TimelineArgs) -> i32 {
+    let rows = innen_core::parity::timeline(root, args.filter.as_deref());
+    if is_human(format) {
+        println!("observed_utc\top\tsummary");
+        for e in &rows {
+            println!(
+                "{}\t{}\t{}",
+                escape_tsv_field(&e.observed_utc),
+                escape_tsv_field(&e.op),
+                escape_tsv_field(&e.summary)
+            );
+        }
+    } else {
+        let out = TimelineJson {
+            entries: rows
+                .into_iter()
+                .map(|e| TimelineEntryJson {
+                    observed_utc: e.observed_utc,
+                    op: e.op,
+                    summary: e.summary,
+                })
+                .collect(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&out).expect("timeline output serializes")
+        );
+    }
+    0
+}
+
+fn cmd_project(root: &std::path::Path, format: &str, id: &str) -> i32 {
+    match innen_core::parity::project_render(root, id) {
+        Ok(render) => {
+            if is_human(format) {
+                print!("{render}");
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&ProjectJson {
+                        id: id.to_string(),
+                        render,
+                    })
+                    .expect("project output serializes")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+fn cmd_profile(root: &std::path::Path, format: &str) -> i32 {
+    match innen_core::parity::profile_render(root) {
+        Ok(render) => {
+            if is_human(format) {
+                print!("{render}");
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&ProfileJson { render })
+                        .expect("profile output serializes")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+fn cmd_artifact_add(root: &std::path::Path, format: &str, args: &ArtifactAddArgs) -> i32 {
+    match innen_core::artifact::add(root, &args.file, args.project.as_deref()) {
+        Ok(r) => {
+            if is_human(format) {
+                println!("sha256\tpath\tbytes");
+                println!(
+                    "{}\t{}\t{}",
+                    escape_tsv_field(&r.sha256),
+                    escape_tsv_field(&r.stored_path.to_string_lossy()),
+                    r.bytes
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&ArtifactJson {
+                        sha256: r.sha256,
+                        path: r.stored_path.to_string_lossy().into_owned(),
+                        bytes: r.bytes,
+                    })
+                    .expect("artifact output serializes")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+fn cmd_cloud_status(format: &str, remote: &str) -> i32 {
+    let bin = match resolve_rclone_bin() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let r = innen_core::cloud::Rclone { bin };
+    match r.status(remote) {
+        Ok(output) => {
+            if is_human(format) {
+                print!("{output}");
+                if !output.ends_with('\n') {
+                    println!();
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&CloudStatusJson {
+                        remote: remote.to_string(),
+                        output,
+                    })
+                    .expect("cloud status serializes")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+fn cmd_cloud_doctor(format: &str) -> i32 {
+    let bin = match resolve_rclone_bin() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let r = innen_core::cloud::Rclone { bin };
+    match r.doctor() {
+        Ok(output) => {
+            if is_human(format) {
+                print!("{output}");
+                if !output.ends_with('\n') {
+                    println!();
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&CloudDoctorJson { output })
+                        .expect("cloud doctor serializes")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
 fn cmd_completions(shell: &str) -> i32 {
     let clap_shell = match shell {
         "bash" => clap_complete::Shell::Bash,
@@ -567,6 +985,37 @@ fn main() {
             }
         }
         Commands::Completions { shell } => cmd_completions(shell),
+        Commands::Guide => cmd_guide(&cli.format),
+        Commands::Search(args) => {
+            let root = resolve_root(cli.root.clone());
+            cmd_search(&root, &cli.format, args)
+        }
+        Commands::Status => {
+            let root = resolve_root(cli.root.clone());
+            cmd_status(&root, &cli.format)
+        }
+        Commands::Timeline(args) => {
+            let root = resolve_root(cli.root.clone());
+            cmd_timeline(&root, &cli.format, args)
+        }
+        Commands::Project(args) => {
+            let root = resolve_root(cli.root.clone());
+            cmd_project(&root, &cli.format, &args.id)
+        }
+        Commands::Profile => {
+            let root = resolve_root(cli.root.clone());
+            cmd_profile(&root, &cli.format)
+        }
+        Commands::Artifact { op } => {
+            let root = resolve_root(cli.root.clone());
+            match op {
+                ArtifactOp::Add(a) => cmd_artifact_add(&root, &cli.format, a),
+            }
+        }
+        Commands::Cloud { op } => match op {
+            CloudOp::Status(a) => cmd_cloud_status(&cli.format, &a.remote),
+            CloudOp::Doctor => cmd_cloud_doctor(&cli.format),
+        },
     };
     std::process::exit(code);
 }

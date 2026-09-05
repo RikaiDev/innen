@@ -644,6 +644,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "innen-core",
+ "serde",
  "serde_json",
  "tempfile",
 ]

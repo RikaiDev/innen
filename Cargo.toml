@@ -30,11 +30,13 @@ tempfile = "3"
 innen-core = { path = "crates/innen-core" }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 innen-core = { path = "crates/innen-core" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 
