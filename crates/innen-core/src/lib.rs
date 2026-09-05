@@ -8,3 +8,4 @@ pub mod index;
 pub mod journal;
 pub mod parity;
 pub mod query;
+pub mod tap;
