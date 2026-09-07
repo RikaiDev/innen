@@ -7,7 +7,7 @@
 //! [`validate`] order: provenance check first ([`AdjacencyError::MissingProvenance`),
 //! then URI rules ([`AdjacencyError::IllegalPair`] for a URI under any edge
 //! other than `LOCATED_AT`/`ORIGINATED_AT`, [`AdjacencyError::BadUri`] for a
-//! malformed URI), then the 42-row adjacency table. Any `Custom` party with
+//! malformed URI), then the 43-row adjacency table. Any `Custom` party with
 //! valid provenance bypasses the table (open world); core triples must match
 //! a table row literally.
 
@@ -198,7 +198,7 @@ fn illegal(from: &NodeType, edge: &EdgeType, to: &Endpoint) -> AdjacencyError {
 /// * A `Uri` endpoint is legal only under `LOCATED_AT`/`ORIGINATED_AT`
 ///   (else [`AdjacencyError::IllegalPair`]) and must be non-empty and start
 ///   with `/` or contain `://` (else [`AdjacencyError::BadUri`]).
-/// * Otherwise the triple must match one of the 42 adjacency rows below.
+/// * Otherwise the triple must match one of the 43 adjacency rows below.
 pub fn validate(
     from: &NodeType,
     edge: &EdgeType,
@@ -247,11 +247,12 @@ pub fn validate(
     };
     let ok = matches!(
         (from, edge, to_node),
-        // BELONGS_TO (4)
+        // BELONGS_TO (5)
         (NodeType::Conversation, EdgeType::BelongsTo, NodeType::Project)
             | (NodeType::Task, EdgeType::BelongsTo, NodeType::Project)
             | (NodeType::Decision, EdgeType::BelongsTo, NodeType::Project)
             | (NodeType::Experiment, EdgeType::BelongsTo, NodeType::Project)
+            | (NodeType::Artifact, EdgeType::BelongsTo, NodeType::Project)
             // FOLLOWS_UP (8)
             | (
                 NodeType::Conversation,
@@ -375,6 +376,8 @@ pub struct StoredEdge {
     pub valid_until: Option<String>,
     pub retracted: bool,
     pub observed_utc: String,
+    /// Provenance attached to this edge assertion, when present.
+    pub provenance: Option<String>,
 }
 
 /// Replay result: merged nodes by id plus edge rows in assertion order.
@@ -533,6 +536,10 @@ pub fn materialize(
                     .or(env_observed)
                     .unwrap_or_default()
                     .to_string();
+                let provenance = payload
+                    .get("provenance")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 if !valid_from.is_empty() && !is_canonical_ts(&valid_from) {
                     continue;
                 }
@@ -551,6 +558,7 @@ pub fn materialize(
                     valid_until,
                     retracted: false,
                     observed_utc,
+                    provenance,
                 });
             }
             "edge.retract" => {
@@ -909,6 +917,11 @@ mod tests {
                 Endpoint::Node(NodeType::Project),
             ),
             (
+                NodeType::Artifact,
+                EdgeType::BelongsTo,
+                Endpoint::Node(NodeType::Project),
+            ),
+            (
                 NodeType::Decision,
                 EdgeType::FollowsUp,
                 Endpoint::Node(NodeType::Task),
@@ -1074,7 +1087,7 @@ mod tests {
                 Endpoint::Node(NodeType::Project),
             ),
         ];
-        assert_eq!(rows.len(), 42, "plan lists exactly 42 triples");
+        assert_eq!(rows.len(), 43, "plan lists exactly 43 triples");
         for (from, edge, to) in &rows {
             assert!(
                 validate(from, edge, to, Some("test")).is_ok(),
@@ -1121,7 +1134,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(accepted, 42, "core table must accept exactly 42 triples");
+        assert_eq!(accepted, 43, "core table must accept exactly 43 triples");
     }
 
     #[test]

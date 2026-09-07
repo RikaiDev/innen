@@ -34,17 +34,12 @@ use std::path::PathBuf;
 
 use clap::{CommandFactory as _, Parser, Subcommand};
 
-/// KB root resolution: `--root` flag > `INNEN_ROOT` env (non-empty) > cwd.
-fn resolve_root(cli_root: Option<PathBuf>) -> PathBuf {
-    if let Some(r) = cli_root {
-        return r;
-    }
-    if let Ok(s) = std::env::var("INNEN_ROOT") {
-        if !s.trim().is_empty() {
-            return PathBuf::from(s);
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+/// KB root resolution: `--root` flag > `INNEN_ROOT` env (non-empty) > user-level global config.
+/// Fails with an actionable error if unconfigured. Never silently falls back to cwd.
+fn resolve_root(
+    cli_root: Option<PathBuf>,
+) -> Result<PathBuf, innen_core::config::RootResolutionError> {
+    innen_core::config::resolve_root(cli_root)
 }
 
 #[derive(Parser)]
@@ -52,13 +47,13 @@ fn resolve_root(cli_root: Option<PathBuf>) -> PathBuf {
     name = "innen",
     version,
     about = "innen P1+P2 knowledge CLI",
-    long_about = "innen P1+P2 knowledge CLI.\n\nKB root resolution: --root <dir> > INNEN_ROOT env (non-empty) > cwd."
+    long_about = "innen P1+P2 knowledge CLI.\n\nKB root resolution: --root <dir> > INNEN_ROOT env (non-empty) > user-level persisted root (~/.config/innen/config.json).\n\nOperational boundaries:\n  harvest: imports conversation transcripts into knowledge graph entities\n  checkpoint: records progress snapshots in append-only storage outside Git\n  unfinished: discovers candidate unfinished conversations using structural evidence\n  resume / pickup: reconstructs working context and provides continuation instructions"
 )]
 struct Cli {
     /// Output format (explicit only; no TTY sniffing). Applies to all commands.
     #[arg(long, global = true, default_value = "json", value_parser = ["json", "human"])]
     format: String,
-    /// KB root dir. Precedence: --root > INNEN_ROOT env > cwd.
+    /// KB root dir. Precedence: --root > INNEN_ROOT env > global config.
     #[arg(long, global = true)]
     root: Option<PathBuf>,
     #[command(subcommand)]
@@ -67,6 +62,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Read a local conversation by UUID without ingesting it.
+    #[command(visible_alias = "read")]
+    Conversation(ConversationArgs),
+    /// Resume a conversation into working context with compact factoring.
+    Resume(ResumeArgs),
+    /// Record, show, or list progress checkpoints in append-only storage outside Git.
+    Checkpoint(CheckpointArgs),
+    /// Discover recent unfinished candidate conversations across coding agents.
+    Unfinished(UnfinishedArgs),
+    /// Pick up an unambiguous unfinished conversation with exact continuation instructions.
+    Pickup(PickupArgs),
     /// Ranked query over the journal (replay + FTS + graph BFS).
     Query(QueryArgs),
     /// Typed graph writes (journal appends).
@@ -102,7 +108,7 @@ enum Commands {
     Status,
     /// Journal history in order (Task 9 core `timeline`).
     Timeline(TimelineArgs),
-    /// Project page render grouped by member kind (Task 10).
+    /// What remains across projects, or in one project; expand evidence on demand.
     Project(ProjectArgs),
     /// Profile page render from profile/profile.toml (Task 10).
     Profile,
@@ -123,8 +129,204 @@ enum Commands {
 }
 
 #[derive(clap::Args)]
+struct ConversationArgs {
+    /// UUID or native session ID (for example OpenCode ses_...).
+    uuid: String,
+    /// Source store directory (or OpenCode database file). Requires --source.
+    #[arg(long)]
+    source_root: Option<PathBuf>,
+    /// Tool to read; auto searches standard local stores and rejects ambiguity.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    source: String,
+    /// Dialogue is text; events retains native fields; index is incomplete navigation previews.
+    #[arg(long, default_value = "dialogue", value_parser = ["dialogue", "events", "index", "context"])]
+    view: String,
+    /// Factor repeated event fields without summarizing. Falls back if bytes grow.
+    #[arg(long)]
+    compact: bool,
+    /// Experimentally share exact string prefixes/suffixes; no semantic edits.
+    #[arg(long, requires = "compact")]
+    deltas: bool,
+    /// Reference image data URIs and known encrypted fields. Requires events view.
+    #[arg(long, conflicts_with = "attachment")]
+    attachment_refs: bool,
+    /// Retrieve a source string at this JSON pointer; uses events view and limit 1.
+    #[arg(long, requires = "expect_sha256", conflicts_with = "compact")]
+    attachment: Option<String>,
+    /// Expected UTF-8 string hash from an attachment reference; fail on changes.
+    #[arg(long, requires = "attachment")]
+    expect_sha256: Option<String>,
+    /// Batch exact one-based source lines (comma-separated); returns raw events in source order.
+    #[arg(long, value_delimiter = ',', conflicts_with_all = ["offset", "limit", "attachment"])]
+    lines: Vec<usize>,
+    /// Zero-based physical JSONL row; use next_offset from the previous page.
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
+    /// Maximum matching events per page (1..100).
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
+    limit: u16,
+}
+
+#[derive(clap::Args)]
+struct ResumeArgs {
+    /// UUID or native session ID. If omitted, inspects project metadata for an unambiguous candidate.
+    uuid: Option<String>,
+    /// Project root directory. Defaults to the current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Source store directory (or OpenCode database file). Requires --source.
+    #[arg(long)]
+    source_root: Option<PathBuf>,
+    /// Tool to read; auto searches standard local stores and rejects ambiguity.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    source: String,
+    /// Projection view: brief (default), context, dialogue, events, index.
+    #[arg(long, value_parser = ["brief", "dialogue", "events", "index", "context"])]
+    view: Option<String>,
+    /// Omit compact factoring (compact is enabled by default for resume).
+    #[arg(long)]
+    no_compact: bool,
+    /// Omit delta prefix/suffix sharing (deltas is enabled by default for resume).
+    #[arg(long)]
+    no_deltas: bool,
+    /// Reference image data URIs and known encrypted fields. Requires events view.
+    #[arg(long, conflicts_with = "attachment")]
+    attachment_refs: bool,
+    /// Retrieve a source string at this JSON pointer; uses events view and limit 1.
+    #[arg(long, requires = "expect_sha256")]
+    attachment: Option<String>,
+    /// Expected UTF-8 string hash from an attachment reference; fail on changes.
+    #[arg(long, requires = "attachment")]
+    expect_sha256: Option<String>,
+    /// Batch exact one-based source lines (comma-separated); returns raw events in source order.
+    #[arg(long, value_delimiter = ',', conflicts_with_all = ["offset", "limit", "attachment"])]
+    lines: Vec<usize>,
+    /// Zero-based physical JSONL row; use next_offset from the previous page.
+    #[arg(long)]
+    offset: Option<usize>,
+    /// Maximum matching events per page (1..100).
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=100))]
+    limit: Option<u16>,
+}
+
+#[derive(clap::Args)]
+struct CheckpointArgs {
+    #[command(subcommand)]
+    op: Option<CheckpointOp>,
+    /// Session UUID or native ID (when no subcommand provided).
+    #[arg(long)]
+    session: Option<String>,
+    /// Project root directory. Defaults to current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum CheckpointOp {
+    /// Record or update a progress checkpoint (append-only history).
+    Record(Box<CheckpointRecordArgs>),
+    /// Show the latest checkpoint for a session.
+    Show(CheckpointShowArgs),
+    /// List latest checkpoints for the project.
+    List(CheckpointListArgs),
+}
+
+#[derive(clap::Args)]
+struct CheckpointRecordArgs {
+    /// Session UUID or native ID. If omitted, checks project metadata for an unambiguous candidate.
+    #[arg(long)]
+    session: Option<String>,
+    /// Tool source (auto, agy, codex, ...).
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    source: String,
+    /// Project root directory. Defaults to current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Checkpoint status: active, blocked, completed, superseded.
+    #[arg(long, default_value = "active", value_parser = ["active", "blocked", "completed", "superseded"])]
+    status: String,
+    /// High-level goal or objective.
+    #[arg(long)]
+    objective: Option<String>,
+    /// Completed work items (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    completed: Vec<String>,
+    /// Current evidence / observations (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    evidence: Vec<String>,
+    /// Known blockers or open questions (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    blocker: Vec<String>,
+    /// Immediate next action for continuation.
+    #[arg(long)]
+    next_action: Option<String>,
+    /// Verification command or criteria.
+    #[arg(long)]
+    verification: Option<String>,
+    /// Load checkpoint JSON from file or '-' for stdin.
+    #[arg(long)]
+    file: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct CheckpointShowArgs {
+    /// Session UUID or native ID. If omitted, checks project metadata for an unambiguous candidate.
+    session: Option<String>,
+    /// Project root directory. Defaults to current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct CheckpointListArgs {
+    /// Project root directory. Defaults to current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct UnfinishedArgs {
+    /// Discover unfinished candidates across all projects (portfolio discovery).
+    #[arg(long, conflicts_with = "project")]
+    all_projects: bool,
+    /// Project root directory. Defaults to current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Source store directory (or OpenCode database file). Requires --source.
+    #[arg(long)]
+    source_root: Option<PathBuf>,
+    /// Tool to filter (auto, agy, codex, ...).
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    source: String,
+    /// Time cutoff (default yesterday+today; YYYY-MM-DD, RFC3339, 2d, 48h, today, yesterday).
+    #[arg(long)]
+    since: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct PickupArgs {
+    /// Discover candidates across all projects (portfolio discovery).
+    #[arg(long, conflicts_with = "project")]
+    all_projects: bool,
+    /// Optional UUID or native session ID. If omitted, discovers recent unfinished candidate.
+    uuid: Option<String>,
+    /// Project root directory. Defaults to current working directory.
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Source store directory (or OpenCode database file). Requires --source.
+    #[arg(long)]
+    source_root: Option<PathBuf>,
+    /// Tool to filter (auto, agy, codex, ...).
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    source: String,
+    /// Time cutoff (default yesterday+today; YYYY-MM-DD, RFC3339, 2d, 48h, today, yesterday).
+    #[arg(long)]
+    since: Option<String>,
+}
+
+#[derive(clap::Args)]
 struct QueryArgs {
-    /// Query string (FTS over label/body UNION exact node-id substring).
+    /// Query string (natural text or literal identifier/filename).
     #[arg(long)]
     q: String,
     /// As-of cutoff `YYYY-MM-DDTHH:MM:SSZ` (defaults to now).
@@ -133,9 +335,15 @@ struct QueryArgs {
     /// Max hits (default 20, max 100; >100 clamps with `truncated`).
     #[arg(long, default_value_t = 20)]
     limit: u16,
+    /// Zero-based task/event offset for pagination.
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
     /// Bypass validity filtering (keep expired edges).
     #[arg(long = "include-expired")]
     include_expired: bool,
+    /// View mode: context (default compact task-context brief), hits (legacy FTS+graph hits), or evidence (full payload + physical history).
+    #[arg(long, default_value = "context", value_parser = ["context", "hits", "evidence"])]
+    view: String,
 }
 
 #[derive(Subcommand)]
@@ -217,13 +425,19 @@ enum ConfigOp {
     Get {
         /// Key: root | format | rebuild_on_open.
         key: String,
+        /// Read from user-level global config (~/.config/innen/config.json).
+        #[arg(long)]
+        global: bool,
     },
-    /// Persist one key into .innen/machine.json.
+    /// Persist one key into .innen/machine.json (or global config with --global).
     Set {
         /// Key: root | format | rebuild_on_open.
         key: String,
         /// Value to store.
         value: String,
+        /// Persist to user-level global config (~/.config/innen/config.json).
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -256,14 +470,138 @@ struct TimelineArgs {
 /// P2 `project <id>`: project page render.
 #[derive(clap::Args)]
 struct ProjectArgs {
-    /// Project node id.
-    id: String,
+    /// Project id or slug. Omit for the portfolio of recorded tasks.
+    id: Option<String>,
+    /// Brief pending tasks (default), evidence with history, or legacy full project page.
+    #[arg(long, default_value = "brief", value_parser = ["brief", "evidence", "full"])]
+    view: String,
+    /// Maximum task rows, with an explicit next_offset when more remain.
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=1000))]
+    limit: u16,
+    /// Zero-based task offset for the next page.
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
 }
 
 #[derive(Subcommand)]
 enum ArtifactOp {
     /// Store a file content-addressed + record artifact node/edge.
     Add(ArtifactAddArgs),
+    /// Maintain a project archive ledger without copying source bytes.
+    Ledger {
+        #[command(subcommand)]
+        op: Box<LedgerOp>,
+    },
+}
+
+#[derive(Subcommand)]
+enum LedgerOp {
+    /// Initialize or reopen an exact-title archive root.
+    Init(LedgerInitArgs),
+    /// Register a source receipt and mirror its typed identity into the KB journal.
+    Add(LedgerAddArgs),
+    /// Append a note, supersession, hash-verified relocation, or reclassification event.
+    Event(LedgerEventArgs),
+    /// Check source hashes and lifecycle state.
+    Check(LedgerCheckArgs),
+}
+
+#[derive(clap::Args)]
+struct LedgerInitArgs {
+    #[arg(long = "archive-root")]
+    archive_root: PathBuf,
+    #[arg(long)]
+    project_id: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    downloads_root: Option<PathBuf>,
+    #[arg(long, value_delimiter = ',')]
+    categories: Vec<String>,
+}
+
+#[derive(clap::Args)]
+struct LedgerAddArgs {
+    #[arg(long = "archive-root")]
+    archive_root: PathBuf,
+    #[arg(long)]
+    file: PathBuf,
+    #[arg(long)]
+    source_kind: String,
+    #[arg(long)]
+    role: String,
+    #[arg(long)]
+    stage: String,
+    #[arg(long)]
+    owner_project: String,
+    /// Archive project identity (A); owner_project may identify a separate
+    /// project (B) for a reference receipt.
+    #[arg(long)]
+    archive_project_id: Option<String>,
+    #[arg(long)]
+    relation: String,
+    #[arg(long)]
+    document_date: Option<String>,
+    #[arg(long)]
+    authority: Option<String>,
+    #[arg(long)]
+    evidence_status: Option<String>,
+    #[arg(long)]
+    document_id: Option<String>,
+    #[arg(long)]
+    approval_valid_from: Option<String>,
+    #[arg(long)]
+    approval_valid_until: Option<String>,
+    #[arg(long)]
+    provenance: String,
+    #[arg(long)]
+    downloads_root: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct LedgerCheckArgs {
+    #[arg(long = "archive-root")]
+    archive_root: PathBuf,
+    #[arg(long)]
+    project_id: String,
+    #[arg(long)]
+    title: String,
+}
+
+#[derive(clap::Args)]
+struct LedgerEventArgs {
+    #[arg(long = "archive-root")]
+    archive_root: PathBuf,
+    #[arg(long)]
+    project_id: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    kind: String,
+    #[arg(long)]
+    receipt_id: String,
+    #[arg(long)]
+    superseded_receipt_id: Option<String>,
+    #[arg(long)]
+    new_path: Option<PathBuf>,
+    #[arg(long)]
+    expected_sha256: Option<String>,
+    #[arg(long)]
+    event_date: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+    /// New owner project for a reclassification; omitted keeps the recorded owner.
+    #[arg(long)]
+    new_owner_project: Option<String>,
+    /// New relation (`belongs_to` or `reference`) for a reclassification.
+    #[arg(long)]
+    new_relation: Option<String>,
+    /// Evidence explaining a reclassification (required for that event kind).
+    #[arg(long)]
+    provenance: Option<String>,
+    /// Archive project identity to retain when mirroring a lifecycle event.
+    #[arg(long)]
+    archive_project_id: Option<String>,
 }
 
 /// P2 `artifact add --file <path> [--project <id>]`.
@@ -434,24 +772,52 @@ fn print_report_human(report: &innen_core::doctor::Report) {
 }
 
 fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) -> i32 {
-    let params = innen_core::query::QueryParams {
-        q: args.q.clone(),
-        as_of: args.as_of.clone(),
-        limit: args.limit,
-        include_expired: args.include_expired,
-    };
-    match innen_core::query::query(root, &params) {
-        Ok(out) => {
-            if is_human(format) {
-                print_query_human(&out);
-            } else {
-                print_query_json(&out);
+    if args.view == "hits" {
+        let params = innen_core::query::QueryParams {
+            q: args.q.clone(),
+            as_of: args.as_of.clone(),
+            limit: args.limit,
+            include_expired: args.include_expired,
+        };
+        match innen_core::query::query(root, &params) {
+            Ok(out) => {
+                if is_human(format) {
+                    print_query_human(&out);
+                } else {
+                    print_query_json(&out);
+                }
+                0
             }
-            0
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
+    } else {
+        let options = innen_core::task_entry::TaskEntryOptions {
+            q: args.q.clone(),
+            as_of: args.as_of.clone(),
+            limit: usize::from(args.limit),
+            offset: args.offset,
+            include_expired: args.include_expired,
+            view: args.view.clone(),
+        };
+        match innen_core::task_entry::task_entry(root, &options) {
+            Ok(out) => {
+                if is_human(format) {
+                    print!("{}", innen_core::task_entry::render(&out));
+                } else {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&out).expect("task entry output serializes")
+                    );
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
         }
     }
 }
@@ -694,6 +1060,50 @@ fn cmd_config_set(root: &std::path::Path, format: &str, key: &str, value: &str) 
     0
 }
 
+fn cmd_config_get_global(format: &str, key: &str) -> i32 {
+    let value = match innen_core::config::get_global_value(key) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            eprintln!("error: key '{key}' is not set in global config");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    if is_human(format) {
+        println!("{key} = {}", escape_tsv_field(&value));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({"key": key, "value": value}))
+                .expect("config output serializes")
+        );
+    }
+    0
+}
+
+fn cmd_config_set_global(format: &str, key: &str, value: &str) -> i32 {
+    let echo = match innen_core::config::set_global_value(key, value) {
+        Ok(echo) => echo,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    if is_human(format) {
+        println!("{key} = {}", escape_tsv_field(&echo));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({"key": key, "value": echo}))
+                .expect("config output serializes")
+        );
+    }
+    0
+}
+
 /// Resolve the `rclone` binary via PATH lookup (CLI-only; unit tests
 /// inject the fixture path directly into `Rclone { bin }`).
 fn resolve_rclone_bin() -> Result<PathBuf, String> {
@@ -883,6 +1293,511 @@ fn cmd_artifact_add(root: &std::path::Path, format: &str, args: &ArtifactAddArgs
     }
 }
 
+fn ledger_source_kind(value: &str) -> Result<innen_core::artifact::ledger::SourceKind, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "document" => Ok(innen_core::artifact::ledger::SourceKind::Document),
+        "event" => Ok(innen_core::artifact::ledger::SourceKind::Event),
+        "dataset" => Ok(innen_core::artifact::ledger::SourceKind::Dataset),
+        "other" => Ok(innen_core::artifact::ledger::SourceKind::Other),
+        _ => Err(format!("invalid ledger source kind: {value}")),
+    }
+}
+
+fn ledger_stage(value: &str) -> Result<innen_core::artifact::ledger::LifecycleStage, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "intake" => Ok(innen_core::artifact::ledger::LifecycleStage::Intake),
+        "authoring" => Ok(innen_core::artifact::ledger::LifecycleStage::Authoring),
+        "verification" => Ok(innen_core::artifact::ledger::LifecycleStage::Verification),
+        "delivery" => Ok(innen_core::artifact::ledger::LifecycleStage::Delivery),
+        _ => Err(format!("invalid ledger lifecycle stage: {value}")),
+    }
+}
+
+fn existing_ledger_project_id(root: &std::path::Path) -> Result<Option<String>, String> {
+    let manifest = root.join(".innen-ledger/manifest.json");
+    if !manifest.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&manifest).map_err(|e| format!("read ledger manifest: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse ledger manifest: {e}"))?;
+    value
+        .get("project_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "ledger manifest has no project_id".to_string())
+        .map(Some)
+}
+
+fn mirror_ledger_receipt(
+    kb_root: &std::path::Path,
+    receipt: &innen_core::artifact::ledger::Receipt,
+    archive_project: Option<&str>,
+) -> Result<(), String> {
+    let journal = innen_core::journal::Journal::open(kb_root).map_err(|e| e.to_string())?;
+    // A content hash identifies bytes, while a receipt identifies this
+    // immutable revision in the archive. Keep the latter in the graph so two
+    // receipts with identical bytes cannot collapse into one revision node.
+    let id = format!("artifact-revision:{}", receipt.id);
+    let payload = serde_json::json!({
+        "id": id,
+        "type": "Artifact",
+        "label": std::path::Path::new(&receipt.path)
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("artifact"),
+        "path": receipt.path,
+        "sha256": receipt.sha256,
+        "bytes": receipt.bytes,
+        "status": format!("{:?}", receipt.stage).to_ascii_lowercase(),
+        "owner_project": receipt.owner_project,
+        "relation": receipt.relation,
+        "authority": receipt.authority,
+        "evidence_status": receipt.evidence_status,
+        "provenance": receipt.provenance,
+        "document_id": receipt.document_id,
+        "revision_id": receipt.id,
+        "approval_valid_from": receipt.approval_valid_from,
+        "approval_valid_until": receipt.approval_valid_until,
+        "archive_project": archive_project,
+    });
+    journal
+        .append("node.upsert", &payload)
+        .map_err(|e| format!("ledger receipt appended but KB node sync failed: {e}"))?;
+    if let Some(document_id) = receipt.document_id.as_deref() {
+        journal
+            .append(
+                "node.upsert",
+                &serde_json::json!({
+                    "id": document_id,
+                    "type": "Document",
+                    "label": document_id,
+                    "archive_project": archive_project,
+                    "provenance": receipt.provenance,
+                }),
+            )
+            .map_err(|e| {
+                format!("ledger artifact synced but document identity sync failed: {e}")
+            })?;
+        journal
+            .append(
+                "edge.assert",
+                &serde_json::json!({
+                    "from": id,
+                    "to": document_id,
+                    "type": "REVISION_OF",
+                    "provenance": receipt.provenance,
+                }),
+            )
+            .map_err(|e| format!("ledger document synced but revision link failed: {e}"))?;
+    }
+    if receipt.relation == "belongs_to" && !receipt.owner_project.trim().is_empty() {
+        journal
+            .append(
+                "edge.assert",
+                &serde_json::json!({
+                    "from": id,
+                    "to": receipt.owner_project,
+                    "type": "BELONGS_TO",
+                    "provenance": receipt.provenance,
+                }),
+            )
+            .map_err(|e| format!("ledger node synced but KB membership sync failed: {e}"))?;
+    }
+    if receipt.relation == "reference" && !receipt.owner_project.trim().is_empty() {
+        journal
+            .append(
+                "edge.assert",
+                &serde_json::json!({
+                    "from": id,
+                    "to": receipt.owner_project,
+                    "type": "REFERENCES_PROJECT",
+                    "provenance": receipt.provenance,
+                }),
+            )
+            .map_err(|e| format!("ledger node synced but owner reference sync failed: {e}"))?;
+    }
+    if let Some(archive_project) = archive_project
+        .filter(|archive| !archive.trim().is_empty())
+        .filter(|archive| *archive != receipt.owner_project)
+    {
+        journal
+            .append(
+                "edge.assert",
+                &serde_json::json!({
+                    "from": id,
+                    "to": archive_project,
+                    "type": "REFERENCES_PROJECT",
+                    "provenance": receipt.provenance,
+                }),
+            )
+            .map_err(|e| format!("ledger owner synced but archive reference sync failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn mirror_ledger_event(
+    kb_root: &std::path::Path,
+    previous: &innen_core::artifact::ledger::Receipt,
+    current: &innen_core::artifact::ledger::Receipt,
+    event: &innen_core::artifact::ledger::EventRecord,
+    archive_project: Option<&str>,
+) -> Result<(), String> {
+    let journal = innen_core::journal::Journal::open(kb_root).map_err(|e| e.to_string())?;
+    let revision_id = format!("artifact-revision:{}", current.id);
+    let retained_archive = archive_project.map(str::to_owned).or_else(|| {
+        std::fs::read_to_string(kb_root.join(".innen/journal.jsonl"))
+            .ok()?
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event.get("op").and_then(|v| v.as_str()) == Some("node.upsert"))
+            .filter_map(|event| event.get("payload").cloned())
+            .filter(|payload| payload.get("id").and_then(|v| v.as_str()) == Some(&revision_id))
+            .filter_map(|payload| {
+                payload
+                    .get("archive_project")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .next_back()
+    });
+    let event_id = format!(
+        "artifact-ledger-event:{}:{}",
+        event.receipt_id, event.sequence
+    );
+    journal
+        .append(
+            "node.upsert",
+            &serde_json::json!({
+                "id": event_id,
+                "type": "ArtifactLedgerEvent",
+                "label": format!("{} {}", event.kind, event.receipt_id),
+                "receipt_id": event.receipt_id,
+                "event_date": event.event_date,
+                "new_owner_project": event.new_owner_project,
+                "new_relation": event.new_relation,
+                "provenance": event.provenance,
+            }),
+        )
+        .map_err(|e| format!("ledger event appended but KB event sync failed: {e}"))?;
+    if event.kind == "reclassify" {
+        let old_edge = if previous.relation == "belongs_to" {
+            "BELONGS_TO"
+        } else {
+            "REFERENCES_PROJECT"
+        };
+        if !previous.owner_project.trim().is_empty() {
+            journal
+                .append(
+                    "edge.retract",
+                    &serde_json::json!({
+                        "from": format!("artifact-revision:{}", previous.id),
+                        "to": previous.owner_project,
+                        "type": old_edge,
+                    }),
+                )
+                .map_err(|e| format!("ledger event synced but old edge retract failed: {e}"))?;
+        }
+        mirror_ledger_receipt(kb_root, current, retained_archive.as_deref())?;
+    } else if event.kind == "relocate" {
+        mirror_ledger_receipt(kb_root, current, retained_archive.as_deref())?;
+    }
+    if event.kind == "supersede" {
+        let old_id = event
+            .supersedes
+            .as_deref()
+            .ok_or_else(|| "supersede event has no superseded receipt".to_string())?;
+        let journal = innen_core::journal::Journal::open(kb_root).map_err(|e| e.to_string())?;
+        journal
+            .append(
+                "node.upsert",
+                &serde_json::json!({
+                    "id": format!("artifact-revision:{}", old_id),
+                    "status": "superseded",
+                    "superseded_by": format!("artifact-revision:{}", current.id),
+                    "provenance": event.provenance,
+                }),
+            )
+            .map_err(|e| format!("ledger event synced but superseded node update failed: {e}"))?;
+        journal
+            .append(
+                "edge.assert",
+                &serde_json::json!({
+                    "from": format!("artifact-revision:{}", current.id),
+                    "to": format!("artifact-revision:{}", old_id),
+                    "type": "SUPERSEDES",
+                    "provenance": event.provenance,
+                }),
+            )
+            .map_err(|e| format!("ledger event synced but supersession link failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn cmd_artifact_ledger(kb_root: &std::path::Path, format: &str, op: &LedgerOp) -> i32 {
+    use innen_core::artifact::ledger::{AddOptions, InitOptions, Ledger};
+    match op {
+        LedgerOp::Init(args) => match Ledger::init(InitOptions {
+            root: args.archive_root.clone(),
+            project_id: args.project_id.clone(),
+            title: args.title.clone(),
+            downloads_root: args.downloads_root.clone(),
+            categories: args.categories.clone(),
+        }) {
+            Ok(_) => {
+                if is_human(format) {
+                    println!("ledger initialized\t{}", args.archive_root.display());
+                } else {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "initialized",
+                            "root": args.archive_root,
+                        })
+                    );
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+        LedgerOp::Add(args) => {
+            let source_kind = match ledger_source_kind(&args.source_kind) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            let stage = match ledger_stage(&args.stage) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            let ledger_project_id = match existing_ledger_project_id(&args.archive_root) {
+                Ok(Some(id)) => id,
+                Ok(None) => args
+                    .archive_project_id
+                    .clone()
+                    .unwrap_or_else(|| args.owner_project.clone()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            let ledger = match Ledger::init(InitOptions {
+                root: args.archive_root.clone(),
+                project_id: ledger_project_id,
+                title: args
+                    .archive_root
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+                downloads_root: args.downloads_root.clone(),
+                categories: vec![],
+            }) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            let receipt = match ledger.add(AddOptions {
+                path: args.file.clone(),
+                document_id: args.document_id.clone(),
+                source_kind,
+                role: args.role.clone(),
+                stage,
+                owner_project: args.owner_project.clone(),
+                relation: args.relation.clone(),
+                document_date: args.document_date.clone(),
+                authority: args.authority.clone(),
+                evidence_status: args.evidence_status.clone(),
+                provenance: Some(args.provenance.clone()),
+                approval_valid_from: args.approval_valid_from.clone(),
+                approval_valid_until: args.approval_valid_until.clone(),
+                downloads_root: args.downloads_root.clone(),
+            }) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            if let Err(e) =
+                mirror_ledger_receipt(kb_root, &receipt, args.archive_project_id.as_deref())
+            {
+                eprintln!("error: {e}");
+                return 1;
+            }
+            if is_human(format) {
+                println!("receipt\t{}\t{}", receipt.id, receipt.path);
+            } else {
+                println!(
+                    "{}",
+                    serde_json::json!({"receipt": receipt, "kb_sync": "ok"})
+                );
+            }
+            0
+        }
+        LedgerOp::Event(args) => {
+            use innen_core::artifact::ledger::{Ledger, LedgerEvent};
+            let ledger = match Ledger::init(InitOptions {
+                root: args.archive_root.clone(),
+                project_id: args.project_id.clone(),
+                title: args.title.clone(),
+                downloads_root: None,
+                categories: vec![],
+            }) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            let event = match args.kind.to_ascii_lowercase().as_str() {
+                "note" => LedgerEvent::Note {
+                    receipt_id: args.receipt_id.clone(),
+                    note: args.note.clone().unwrap_or_default(),
+                    event_date: args.event_date.clone(),
+                },
+                "supersede" => LedgerEvent::Supersede {
+                    receipt_id: args.receipt_id.clone(),
+                    superseded_receipt_id: match &args.superseded_receipt_id {
+                        Some(v) => v.clone(),
+                        None => {
+                            eprintln!("error: --superseded-receipt-id is required for supersede");
+                            return 1;
+                        }
+                    },
+                    event_date: args.event_date.clone(),
+                },
+                "relocate" => LedgerEvent::Relocate {
+                    receipt_id: args.receipt_id.clone(),
+                    new_path: match &args.new_path {
+                        Some(v) => v.clone(),
+                        None => {
+                            eprintln!("error: --new-path is required for relocate");
+                            return 1;
+                        }
+                    },
+                    expected_sha256: match &args.expected_sha256 {
+                        Some(v) => v.clone(),
+                        None => {
+                            eprintln!("error: --expected-sha256 is required for relocate");
+                            return 1;
+                        }
+                    },
+                    event_date: args.event_date.clone(),
+                },
+                "reclassify" => LedgerEvent::Reclassify {
+                    receipt_id: args.receipt_id.clone(),
+                    new_owner_project: args.new_owner_project.clone(),
+                    new_relation: match &args.new_relation {
+                        Some(v) => v.clone(),
+                        None => {
+                            eprintln!("error: --new-relation is required for reclassify");
+                            return 1;
+                        }
+                    },
+                    provenance: match &args.provenance {
+                        Some(v) => v.clone(),
+                        None => {
+                            eprintln!("error: --provenance is required for reclassify");
+                            return 1;
+                        }
+                    },
+                    event_date: args.event_date.clone(),
+                },
+                other => {
+                    eprintln!("error: invalid ledger event kind: {other}");
+                    return 1;
+                }
+            };
+            let previous = match ledger.receipt(&args.receipt_id) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            match ledger.event(event) {
+                Ok(record) => {
+                    let current = match ledger.receipt(&args.receipt_id) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return 1;
+                        }
+                    };
+                    if let Err(e) = mirror_ledger_event(
+                        kb_root,
+                        &previous,
+                        &current,
+                        &record,
+                        args.archive_project_id.as_deref(),
+                    ) {
+                        eprintln!("error: {e}");
+                        return 1;
+                    }
+                    if is_human(format) {
+                        println!("event\t{}\t{}", args.kind, args.receipt_id);
+                    } else {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": args.kind,
+                                "receipt_id": args.receipt_id,
+                                "sequence": record.sequence,
+                            })
+                        );
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        LedgerOp::Check(args) => match Ledger::init(InitOptions {
+            root: args.archive_root.clone(),
+            project_id: args.project_id.clone(),
+            title: args.title.clone(),
+            downloads_root: None,
+            categories: vec![],
+        })
+        .and_then(|ledger| ledger.check())
+        {
+            Ok(report) => {
+                if is_human(format) {
+                    println!(
+                        "active\t{}\nmissing\t{}\nchanged\t{}",
+                        report.active,
+                        report.missing.len(),
+                        report.changed.len()
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        serde_json::json!({"active": report.active, "missing": report.missing, "changed": report.changed, "superseded": report.superseded})
+                    );
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+    }
+}
+
 fn cmd_cloud_status(format: &str, remote: &str) -> i32 {
     let bin = match resolve_rclone_bin() {
         Ok(b) => b,
@@ -1025,15 +1940,883 @@ fn cmd_completions(shell: &str) -> i32 {
     0
 }
 
-fn main() {
+fn cmd_conversation(format: &str, args: &ConversationArgs) -> i32 {
+    let result = if !args.lines.is_empty() {
+        innen_core::conversation::read_lines(
+            args.source_root.as_deref(),
+            &args.source,
+            &args.uuid,
+            &args.lines,
+        )
+    } else {
+        innen_core::conversation::read(
+            args.source_root.as_deref(),
+            &args.source,
+            &args.uuid,
+            if args.attachment.is_some() {
+                "events"
+            } else {
+                &args.view
+            },
+            args.offset,
+            if args.attachment.is_some() {
+                1
+            } else {
+                usize::from(args.limit)
+            },
+        )
+    };
+    match result {
+        Ok(page) => {
+            match innen_core::conversation::format_page(
+                page,
+                args.compact,
+                args.deltas,
+                args.attachment_refs,
+                args.attachment.as_deref(),
+                args.expect_sha256.as_deref(),
+                args.offset,
+            ) {
+                Ok(formatted) => {
+                    let output = if is_human(format) {
+                        serde_json::to_string_pretty(&formatted)
+                    } else {
+                        serde_json::to_string(&formatted)
+                    };
+                    println!("{}", output.expect("formatted page serializes"));
+                    0
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
+}
+
+fn cmd_resume(format: &str, args: &ResumeArgs) -> i32 {
+    let (uuid, source_override) = match &args.uuid {
+        Some(id) => (id.clone(), None),
+        None => {
+            let project_dir = match &args.project {
+                Some(p) => p.clone(),
+                None => match std::env::current_dir() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("error: failed to determine current working directory: {e}");
+                        return 1;
+                    }
+                },
+            };
+            match innen_core::conversation::resume::resolve_resume_target(
+                &project_dir,
+                &args.source,
+                args.source_root.as_deref(),
+            ) {
+                Ok(innen_core::conversation::resume::ResumeTarget::Unambiguous(c)) => {
+                    (c.id, Some(c.source.as_str().to_string()))
+                }
+                Ok(innen_core::conversation::resume::ResumeTarget::Ambiguous {
+                    project,
+                    candidates,
+                }) => {
+                    let report = serde_json::json!({
+                        "status": "ambiguous",
+                        "project": project,
+                        "count": candidates.len(),
+                        "candidates": candidates,
+                        "message": "multiple candidate sessions found for project; specify session ID with: innen resume <session-id>"
+                    });
+                    if is_human(format) {
+                        eprintln!(
+                            "Multiple candidate sessions found for project {}:",
+                            project.display()
+                        );
+                        for c in &candidates {
+                            eprintln!(
+                                "  - {} ({}, modified: {})",
+                                c.id,
+                                c.source.as_str(),
+                                c.modified.as_deref().unwrap_or("unknown")
+                            );
+                        }
+                        eprintln!("Specify session ID with: innen resume <session-id>");
+                    } else {
+                        println!("{}", serde_json::to_string(&report).unwrap());
+                    }
+                    return 1;
+                }
+                Ok(innen_core::conversation::resume::ResumeTarget::NotFound { project }) => {
+                    let report = serde_json::json!({
+                        "status": "not_found",
+                        "project": project,
+                        "message": format!(
+                            "no candidate sessions found for project {}; specify session ID with: innen resume <session-id>",
+                            project.display()
+                        )
+                    });
+                    if is_human(format) {
+                        eprintln!(
+                            "No candidate sessions found for project {}.",
+                            project.display()
+                        );
+                        eprintln!("Specify session ID with: innen resume <session-id>");
+                    } else {
+                        println!("{}", serde_json::to_string(&report).unwrap());
+                    }
+                    return 1;
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return 1;
+                }
+            }
+        }
+    };
+
+    let source = source_override.as_deref().unwrap_or(&args.source);
+    let view = args.view.as_deref().unwrap_or("brief");
+    let offset = args.offset.unwrap_or(0);
+    let limit = usize::from(args.limit.unwrap_or(20));
+    let mut brief_fallback_warning = None;
+    if view == "brief"
+        && args.lines.is_empty()
+        && args.attachment.is_none()
+        && args.offset.is_none()
+        && args.limit.is_none()
+    {
+        match innen_core::conversation::brief(args.source_root.as_deref(), source, &uuid) {
+            Ok(mut brief) => {
+                if !brief.supported {
+                    if args.view.is_some() {
+                        eprintln!("error: --view brief is unavailable for this source; use --view context or --view events");
+                        return 1;
+                    }
+                    // The default remains useful for non-Codex adapters: use
+                    // the established bounded context reader and state why.
+                    brief_fallback_warning = Some("brief unavailable for this source adapter; returned bounded context projection".to_string());
+                } else {
+                    let checkpoint_project = args
+                        .project
+                        .clone()
+                        .or_else(|| brief.project.clone().map(std::path::PathBuf::from));
+                    if let Some(project) = checkpoint_project.as_deref() {
+                        match innen_core::conversation::checkpoint::latest_checkpoint_for_session(
+                            project, &uuid,
+                        ) {
+                            Ok(checkpoint) => brief.checkpoint = checkpoint,
+                            Err(error) => {
+                                eprintln!("error: {error}");
+                                return 1;
+                            }
+                        }
+                    }
+                    let value = serde_json::to_value(&brief).expect("resume brief serializes");
+                    if is_human(format) {
+                        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+                    } else {
+                        println!("{}", serde_json::to_string(&value).unwrap());
+                    }
+                    return 0;
+                }
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return 1;
+            }
+        }
+    }
+    let compact = !args.no_compact;
+    let deltas = !args.no_deltas;
+
+    let result = if !args.lines.is_empty() {
+        innen_core::conversation::read_lines(
+            args.source_root.as_deref(),
+            source,
+            &uuid,
+            &args.lines,
+        )
+    } else {
+        innen_core::conversation::read(
+            args.source_root.as_deref(),
+            source,
+            &uuid,
+            if args.attachment.is_some() {
+                "events"
+            } else if view == "brief" {
+                "context"
+            } else {
+                view
+            },
+            offset,
+            if args.attachment.is_some() { 1 } else { limit },
+        )
+    };
+
+    match result {
+        Ok(mut page) => {
+            if let Some(warning) = brief_fallback_warning {
+                page.warnings.push(warning);
+            }
+            match innen_core::conversation::format_page(
+                page,
+                compact,
+                deltas,
+                args.attachment_refs,
+                args.attachment.as_deref(),
+                args.expect_sha256.as_deref(),
+                offset,
+            ) {
+                Ok(formatted) => {
+                    let output = if is_human(format) {
+                        serde_json::to_string_pretty(&formatted)
+                    } else {
+                        serde_json::to_string(&formatted)
+                    };
+                    println!("{}", output.expect("formatted page serializes"));
+                    0
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
+}
+
+fn cmd_checkpoint(format: &str, args: &CheckpointArgs) -> i32 {
+    let project_dir = match &args.project {
+        Some(p) => p.clone(),
+        None => match std::env::current_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("error: failed to determine current working directory: {e}");
+                return 1;
+            }
+        },
+    };
+
+    match &args.op {
+        Some(CheckpointOp::Record(rec)) => {
+            let checkpoint = if let Some(ref file_arg) = rec.file {
+                let content = if file_arg == "-" {
+                    let mut s = String::new();
+                    if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut s) {
+                        eprintln!("error: failed to read checkpoint JSON from stdin: {e}");
+                        return 1;
+                    }
+                    s
+                } else {
+                    match std::fs::read_to_string(file_arg) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("error: failed to read checkpoint file {file_arg}: {e}");
+                            return 1;
+                        }
+                    }
+                };
+                match serde_json::from_str::<innen_core::conversation::Checkpoint>(&content) {
+                    Ok(cp) => cp,
+                    Err(e) => {
+                        eprintln!("error: invalid checkpoint JSON: {e}");
+                        return 1;
+                    }
+                }
+            } else {
+                let session = match &rec.session {
+                    Some(s) => s.clone(),
+                    None => {
+                        match innen_core::conversation::resume::resolve_resume_target(
+                            &project_dir,
+                            &rec.source,
+                            None,
+                        ) {
+                            Ok(innen_core::conversation::resume::ResumeTarget::Unambiguous(c)) => {
+                                c.id
+                            }
+                            Ok(innen_core::conversation::resume::ResumeTarget::Ambiguous {
+                                ..
+                            }) => {
+                                eprintln!("error: multiple candidate sessions found; specify --session <id>");
+                                return 1;
+                            }
+                            _ => {
+                                eprintln!("error: --session <id> is required when no unambiguous session exists");
+                                return 1;
+                            }
+                        }
+                    }
+                };
+
+                let existing = innen_core::conversation::checkpoint::latest_checkpoint_for_session(
+                    &project_dir,
+                    &session,
+                )
+                .ok()
+                .flatten();
+
+                let status = match innen_core::conversation::CheckpointStatus::parse(&rec.status) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return 1;
+                    }
+                };
+
+                let objective = if let Some(ref obj) = rec.objective {
+                    obj.clone()
+                } else if let Some(ref ex) = existing {
+                    ex.objective.clone()
+                } else {
+                    eprintln!("error: --objective is required for a new checkpoint");
+                    return 1;
+                };
+
+                let source = if rec.source != "auto" {
+                    match innen_core::conversation::Source::parse(&rec.source) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return 1;
+                        }
+                    }
+                } else if let Some(ref ex) = existing {
+                    ex.source
+                } else {
+                    innen_core::conversation::Source::Codex
+                };
+
+                let completed_work = if !rec.completed.is_empty() {
+                    rec.completed.clone()
+                } else if let Some(ref ex) = existing {
+                    ex.completed_work.clone()
+                } else {
+                    Vec::new()
+                };
+
+                let current_evidence = if !rec.evidence.is_empty() {
+                    rec.evidence.clone()
+                } else if let Some(ref ex) = existing {
+                    ex.current_evidence.clone()
+                } else {
+                    Vec::new()
+                };
+
+                let blockers = if !rec.blocker.is_empty() {
+                    rec.blocker.clone()
+                } else if let Some(ref ex) = existing {
+                    ex.blockers.clone()
+                } else {
+                    Vec::new()
+                };
+
+                let next_action = rec.next_action.clone().unwrap_or_else(|| {
+                    existing
+                        .as_ref()
+                        .map(|e| e.next_action.clone())
+                        .unwrap_or_default()
+                });
+
+                let verification = rec.verification.clone().unwrap_or_else(|| {
+                    existing
+                        .as_ref()
+                        .map(|e| e.verification.clone())
+                        .unwrap_or_default()
+                });
+
+                innen_core::conversation::checkpoint::new_checkpoint(
+                    session,
+                    source,
+                    project_dir.clone(),
+                    status,
+                    objective,
+                    completed_work,
+                    current_evidence,
+                    blockers,
+                    next_action,
+                    verification,
+                )
+            };
+
+            if let Err(e) =
+                innen_core::conversation::checkpoint::record_checkpoint(&project_dir, &checkpoint)
+            {
+                eprintln!("error: {e}");
+                return 1;
+            }
+
+            if is_human(format) {
+                println!(
+                    "Recorded checkpoint for session {} ({})",
+                    checkpoint.session,
+                    checkpoint.status.as_str()
+                );
+                println!("  Objective:   {}", checkpoint.objective);
+                println!("  Status:      {}", checkpoint.status.as_str());
+                println!("  Next action: {}", checkpoint.next_action);
+            } else {
+                let out = serde_json::json!({
+                    "status": "recorded",
+                    "checkpoint": checkpoint
+                });
+                println!("{}", serde_json::to_string(&out).unwrap());
+            }
+            0
+        }
+        Some(CheckpointOp::Show(show_args)) => {
+            let session = match &show_args.session {
+                Some(s) => s.clone(),
+                None => match &args.session {
+                    Some(s) => s.clone(),
+                    None => {
+                        match innen_core::conversation::resume::resolve_resume_target(
+                            &project_dir,
+                            "auto",
+                            None,
+                        ) {
+                            Ok(innen_core::conversation::resume::ResumeTarget::Unambiguous(c)) => {
+                                c.id
+                            }
+                            _ => {
+                                eprintln!("error: specify session ID with: innen checkpoint show <session-id>");
+                                return 1;
+                            }
+                        }
+                    }
+                },
+            };
+
+            match innen_core::conversation::checkpoint::latest_checkpoint_for_session(
+                &project_dir,
+                &session,
+            ) {
+                Ok(Some(cp)) => {
+                    if is_human(format) {
+                        println!("Session:      {} ({})", cp.session, cp.source.as_str());
+                        println!("Status:       {}", cp.status.as_str());
+                        println!("Objective:    {}", cp.objective);
+                        println!("Updated:      {}", cp.updated_at);
+                        println!("Next action:  {}", cp.next_action);
+                        println!("Verification: {}", cp.verification);
+                        if !cp.completed_work.is_empty() {
+                            println!("Completed work:");
+                            for item in &cp.completed_work {
+                                println!("  - {item}");
+                            }
+                        }
+                        if !cp.current_evidence.is_empty() {
+                            println!("Current evidence:");
+                            for item in &cp.current_evidence {
+                                println!("  - {item}");
+                            }
+                        }
+                        if !cp.blockers.is_empty() {
+                            println!("Blockers:");
+                            for item in &cp.blockers {
+                                println!("  - {item}");
+                            }
+                        }
+                    } else {
+                        println!("{}", serde_json::to_string(&cp).unwrap());
+                    }
+                    0
+                }
+                Ok(None) => {
+                    let out = serde_json::json!({
+                        "status": "not_found",
+                        "session": session,
+                        "message": format!("no checkpoint found for session {session}")
+                    });
+                    if is_human(format) {
+                        eprintln!("No checkpoint found for session {session}.");
+                    } else {
+                        println!("{}", serde_json::to_string(&out).unwrap());
+                    }
+                    1
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        Some(CheckpointOp::List(_)) | None => {
+            if let Some(ref session) = args.session {
+                return cmd_checkpoint(
+                    format,
+                    &CheckpointArgs {
+                        op: Some(CheckpointOp::Show(CheckpointShowArgs {
+                            session: Some(session.clone()),
+                            project: Some(project_dir),
+                        })),
+                        session: None,
+                        project: None,
+                    },
+                );
+            }
+            match innen_core::conversation::checkpoint::latest_checkpoints(&project_dir) {
+                Ok(list) => {
+                    if is_human(format) {
+                        if list.is_empty() {
+                            println!(
+                                "No checkpoints found for project {}.",
+                                project_dir.display()
+                            );
+                        } else {
+                            println!("Checkpoints for project {}:", project_dir.display());
+                            for cp in &list {
+                                println!(
+                                    "  - {} [{}] {} (updated: {})",
+                                    cp.session,
+                                    cp.status.as_str(),
+                                    cp.objective,
+                                    cp.updated_at
+                                );
+                            }
+                        }
+                    } else {
+                        let out = serde_json::json!({
+                            "status": "ok",
+                            "project": project_dir,
+                            "count": list.len(),
+                            "checkpoints": list
+                        });
+                        println!("{}", serde_json::to_string(&out).unwrap());
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+    }
+}
+
+fn cmd_unfinished(format: &str, args: &UnfinishedArgs) -> i32 {
+    let source_filter = if args.source == "auto" {
+        None
+    } else {
+        match innen_core::conversation::Source::parse(&args.source) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    };
+
+    if args.all_projects {
+        match innen_core::conversation::unfinished::find_all_unfinished_candidates(
+            source_filter,
+            args.source_root.as_deref(),
+            args.since.as_deref(),
+        ) {
+            Ok(candidates) => {
+                if is_human(format) {
+                    if candidates.is_empty() {
+                        println!("No unfinished candidate sessions found across all projects.");
+                    } else {
+                        println!("Unfinished candidate sessions across all projects:");
+                        for c in &candidates {
+                            println!(
+                                "  - {} ({}, project: {}, modified: {}, confidence: {:?})",
+                                c.id,
+                                c.source.as_str(),
+                                c.project,
+                                c.modified.as_deref().unwrap_or("unknown"),
+                                c.confidence
+                            );
+                            for r in &c.reasons {
+                                println!("      * {}: {}", r.code, r.detail);
+                            }
+                            if let Some(ref cp) = c.checkpoint {
+                                println!(
+                                    "      Objective: {} [{}]",
+                                    cp.objective,
+                                    cp.status.as_str()
+                                );
+                            }
+                            println!("      Resume with: innen resume {}", c.id);
+                        }
+                    }
+                } else {
+                    let out = serde_json::json!({
+                        "status": "ok",
+                        "all_projects": true,
+                        "since": args.since,
+                        "count": candidates.len(),
+                        "candidates": candidates
+                    });
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        }
+    } else {
+        let project_dir = match &args.project {
+            Some(p) => p.clone(),
+            None => match std::env::current_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: failed to determine current working directory: {e}");
+                    return 1;
+                }
+            },
+        };
+
+        match innen_core::conversation::unfinished::find_unfinished_candidates(
+            &project_dir,
+            source_filter,
+            args.source_root.as_deref(),
+            args.since.as_deref(),
+        ) {
+            Ok(candidates) => {
+                if is_human(format) {
+                    if candidates.is_empty() {
+                        println!(
+                            "No unfinished candidate sessions found for project {}.",
+                            project_dir.display()
+                        );
+                    } else {
+                        println!(
+                            "Unfinished candidate sessions for project {}:",
+                            project_dir.display()
+                        );
+                        for c in &candidates {
+                            println!(
+                                "  - {} ({}, modified: {}, confidence: {:?})",
+                                c.id,
+                                c.source.as_str(),
+                                c.modified.as_deref().unwrap_or("unknown"),
+                                c.confidence
+                            );
+                            for r in &c.reasons {
+                                println!("      * {}: {}", r.code, r.detail);
+                            }
+                            if let Some(ref cp) = c.checkpoint {
+                                println!(
+                                    "      Objective: {} [{}]",
+                                    cp.objective,
+                                    cp.status.as_str()
+                                );
+                            }
+                            println!("      Resume with: innen resume {}", c.id);
+                        }
+                    }
+                } else {
+                    let out = serde_json::json!({
+                        "status": "ok",
+                        "project": project_dir,
+                        "since": args.since,
+                        "count": candidates.len(),
+                        "candidates": candidates
+                    });
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        }
+    }
+}
+
+fn cmd_pickup(format: &str, args: &PickupArgs) -> i32 {
+    let source_filter = if args.source == "auto" {
+        None
+    } else {
+        match innen_core::conversation::Source::parse(&args.source) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    };
+
+    let target_result = if args.all_projects {
+        innen_core::conversation::pickup::resolve_all_projects_pickup(
+            source_filter,
+            args.source_root.as_deref(),
+            args.since.as_deref(),
+        )
+    } else {
+        let project_dir = match &args.project {
+            Some(p) => p.clone(),
+            None => match std::env::current_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: failed to determine current working directory: {e}");
+                    return 1;
+                }
+            },
+        };
+        innen_core::conversation::pickup::resolve_pickup(
+            &project_dir,
+            args.uuid.as_deref(),
+            source_filter,
+            args.source_root.as_deref(),
+            args.since.as_deref(),
+        )
+    };
+
+    match target_result {
+        Ok(innen_core::conversation::pickup::PickupTarget::PickedUp(session)) => {
+            if is_human(format) {
+                println!(
+                    "Picked up session: {} ({})",
+                    session.session_id,
+                    session.source.as_str()
+                );
+                println!("Project:        {}", session.project.display());
+                if let Some(ref cp) = session.checkpoint {
+                    println!("Status:         {}", cp.status.as_str());
+                    println!("Objective:      {}", cp.objective);
+                }
+                println!("Confidence:     {:?}", session.evidence_pointers.confidence);
+                println!("Reasons:");
+                for r in &session.evidence_pointers.reasons {
+                    println!("  - {}: {}", r.code, r.detail);
+                }
+                println!("Next action:    {}", session.next_action);
+                println!("Verification:   {}", session.verification);
+                println!("Resume command: {}", session.resume_command);
+            } else {
+                let out = serde_json::json!({
+                    "status": "picked_up",
+                    "session_id": session.session_id,
+                    "source": session.source,
+                    "project": session.project,
+                    "checkpoint": session.checkpoint,
+                    "evidence_pointers": session.evidence_pointers,
+                    "next_action": session.next_action,
+                    "verification": session.verification,
+                    "resume_command": session.resume_command
+                });
+                println!("{}", serde_json::to_string(&out).unwrap());
+            }
+            0
+        }
+        Ok(innen_core::conversation::pickup::PickupTarget::Ambiguous {
+            project,
+            count,
+            candidates,
+            message,
+        }) => {
+            let out = serde_json::json!({
+                "status": "ambiguous",
+                "project": project,
+                "count": count,
+                "candidates": candidates,
+                "message": message
+            });
+            if is_human(format) {
+                if project.to_string_lossy() == "all-projects" {
+                    eprintln!("Multiple candidate sessions found across projects:");
+                    for c in &candidates {
+                        eprintln!(
+                            "  - {} ({}, project: {}, modified: {}, confidence: {:?})",
+                            c.id,
+                            c.source.as_str(),
+                            c.project,
+                            c.modified.as_deref().unwrap_or("unknown"),
+                            c.confidence
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "Multiple candidate sessions found for project {}:",
+                        project.display()
+                    );
+                    for c in &candidates {
+                        eprintln!(
+                            "  - {} ({}, modified: {}, confidence: {:?})",
+                            c.id,
+                            c.source.as_str(),
+                            c.modified.as_deref().unwrap_or("unknown"),
+                            c.confidence
+                        );
+                    }
+                }
+                eprintln!("Pick up explicit session with: innen pickup <session-id>");
+            } else {
+                println!("{}", serde_json::to_string(&out).unwrap());
+            }
+            1
+        }
+        Ok(innen_core::conversation::pickup::PickupTarget::NotFound { project, message }) => {
+            let out = serde_json::json!({
+                "status": "not_found",
+                "project": project,
+                "count": 0,
+                "candidates": [],
+                "message": message
+            });
+            if is_human(format) {
+                if project.to_string_lossy() == "all-projects" {
+                    eprintln!("No candidate sessions found across any projects.");
+                } else {
+                    eprintln!(
+                        "No candidate sessions found for project {}.",
+                        project.display()
+                    );
+                }
+                eprintln!("{message}");
+            } else {
+                println!("{}", serde_json::to_string(&out).unwrap());
+            }
+            1
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+fn run() -> i32 {
     let cli = Cli::parse();
-    let code = match &cli.command {
+    macro_rules! resolve_or_exit {
+        ($cli_root:expr) => {
+            match resolve_root($cli_root) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            }
+        };
+    }
+    match &cli.command {
+        Commands::Conversation(args) => cmd_conversation(&cli.format, args),
+        Commands::Resume(args) => cmd_resume(&cli.format, args),
+        Commands::Checkpoint(args) => cmd_checkpoint(&cli.format, args),
+        Commands::Unfinished(args) => cmd_unfinished(&cli.format, args),
+        Commands::Pickup(args) => cmd_pickup(&cli.format, args),
         Commands::Query(args) => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_query(&root, &cli.format, args)
         }
         Commands::Graph { op } => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             match op {
                 GraphOp::Node(a) => cmd_graph_node(&root, &cli.format, a),
                 GraphOp::Relate(a) => cmd_graph_relate(&root, &cli.format, a),
@@ -1041,52 +2824,94 @@ fn main() {
             }
         }
         Commands::Index { op } => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             match op {
                 IndexOp::Rebuild => cmd_index_rebuild(&root, &cli.format),
             }
         }
         Commands::Doctor => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_doctor(&root, &cli.format)
         }
         Commands::Lint => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_lint(&root, &cli.format)
         }
-        Commands::Config { op } => {
-            let root = resolve_root(cli.root.clone());
-            match op {
-                ConfigOp::Get { key } => cmd_config_get(&root, &cli.format, key),
-                ConfigOp::Set { key, value } => cmd_config_set(&root, &cli.format, key, value),
+        Commands::Config { op } => match op {
+            ConfigOp::Get { key, global } => {
+                if *global {
+                    cmd_config_get_global(&cli.format, key)
+                } else {
+                    let root = resolve_or_exit!(cli.root.clone());
+                    cmd_config_get(&root, &cli.format, key)
+                }
             }
-        }
+            ConfigOp::Set { key, value, global } => {
+                if *global {
+                    cmd_config_set_global(&cli.format, key, value)
+                } else {
+                    let root = resolve_or_exit!(cli.root.clone());
+                    cmd_config_set(&root, &cli.format, key, value)
+                }
+            }
+        },
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Guide => cmd_guide(&cli.format),
         Commands::Search(args) => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_search(&root, &cli.format, args)
         }
         Commands::Status => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_status(&root, &cli.format)
         }
         Commands::Timeline(args) => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_timeline(&root, &cli.format, args)
         }
         Commands::Project(args) => {
-            let root = resolve_root(cli.root.clone());
-            cmd_project(&root, &cli.format, &args.id)
+            let root = resolve_or_exit!(cli.root.clone());
+            if args.view == "full" {
+                match &args.id {
+                    Some(id) => cmd_project(&root, &cli.format, id),
+                    None => {
+                        eprintln!("--view full requires a project id");
+                        1
+                    }
+                }
+            } else {
+                let options = innen_core::project_brief::TaskOptions {
+                    project: args.id.as_deref(),
+                    all: args.view == "evidence",
+                    detail: args.view == "evidence",
+                    offset: args.offset,
+                    limit: usize::from(args.limit),
+                };
+                match innen_core::project_brief::list(&root, &options) {
+                    Ok(out) => {
+                        if is_human(&cli.format) {
+                            print!("{}", innen_core::project_brief::render(&out));
+                        } else {
+                            println!("{}", out);
+                        }
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                }
+            }
         }
         Commands::Profile => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_profile(&root, &cli.format)
         }
         Commands::Artifact { op } => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             match op {
                 ArtifactOp::Add(a) => cmd_artifact_add(&root, &cli.format, a),
+                ArtifactOp::Ledger { op } => cmd_artifact_ledger(&root, &cli.format, op),
             }
         }
         Commands::Cloud { op } => match op {
@@ -1094,15 +2919,18 @@ fn main() {
             CloudOp::Doctor => cmd_cloud_doctor(&cli.format),
         },
         Commands::Harvest(args) => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_harvest(&root, &cli.format, args)
         }
         Commands::Ingest => {
-            let root = resolve_root(cli.root.clone());
+            let root = resolve_or_exit!(cli.root.clone());
             cmd_ingest(&root, &cli.format)
         }
-    };
-    std::process::exit(code);
+    }
+}
+
+fn main() {
+    std::process::exit(run());
 }
 
 #[cfg(test)]

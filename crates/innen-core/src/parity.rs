@@ -19,9 +19,10 @@ use crate::query::excerpt_of;
 /// Short navigation text: what innen is, start with query, core commands.
 pub fn guide_text() -> &'static str {
     "innen is a local-first knowledge graph over an append-only journal.\n\
-     Start with query to ask the graph (lexical + graph walk).\n\
-     Core commands: query, search, status, timeline, guide.\n\
-     Use search for lexical-only hits, status for counts, timeline for history."
+     What remains? project [id] returns compact recorded tasks across projects or one project.\n\
+     Need evidence? project <id> --view evidence; legacy project page: --view full.\n\
+     Find prior knowledge: query --q <term>. Continue a conversation: resume <session-id>.\n\
+     Task status is recorded evidence; unknown status and heuristic conversation candidates are not confirmed unfinished work."
 }
 
 pub struct SearchHit {

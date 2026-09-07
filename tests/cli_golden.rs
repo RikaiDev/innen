@@ -74,7 +74,8 @@ fn cli_query_golden_via_cli() {
         .expect("as_of str")
         .to_string();
     let (code, got) = cli_stdout_trimmed(&[
-        "--root", &root, "--format", "json", "query", "--q", &q, "--as-of", &as_of,
+        "--root", &root, "--format", "json", "query", "--view", "hits", "--q", &q, "--as-of",
+        &as_of,
     ]);
     assert_eq!(code, 0, "query golden must exit 0, got: {got:?}");
 
@@ -95,6 +96,8 @@ fn cli_empty_kb_query_is_empty() {
         "--format",
         "json",
         "query",
+        "--view",
+        "hits",
         "--q",
         "qqqzzzqqq",
         "--as-of",

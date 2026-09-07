@@ -1,75 +1,82 @@
-# This workflow updates the Homebrew formula when a new release is published
 name: Update Homebrew Formula
 
 on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-release
+  cancel-in-progress: false
+
 jobs:
   update-homebrew:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Extract version
-        id: version
+      - name: Check cross-repository publishing configuration
+        id: token
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [ -n "$TAP_TOKEN" ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::HOMEBREW_TAP_TOKEN is not configured. Update the tap manually from verified release assets.'
+          fi
 
-      - name: Compute SHA256 checksums
-        id: checksums
+      - name: Verify release assets
+        id: assets
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BASE_URL="https://github.com/RikaiDev/innen/releases/download/v${VERSION}"
-          
-          AARCH64_DARWIN=$(curl -sL "${BASE_URL}/innen-aarch64-apple-darwin.tar.gz" | sha256sum | cut -d' ' -f1)
-          
-          echo "aarch64_darwin=$AARCH64_DARWIN" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          BASE_URL="https://github.com/RikaiDev/innen/releases/download/$RELEASE_TAG"
+          ASSET=innen-aarch64-apple-darwin.tar.gz
+          curl --fail --show-error --location --retry 3 "$BASE_URL/$ASSET" -o "$ASSET"
+          curl --fail --show-error --location --retry 3 "$BASE_URL/SHA256SUMS" -o SHA256SUMS
+          awk '$2 == "innen-aarch64-apple-darwin.tar.gz" { print }' SHA256SUMS > selected.sha256
+          test "$(wc -l < selected.sha256)" -eq 1
+          sha256sum --check selected.sha256
+          tar -tzf "$ASSET" | grep -qx innen
+          SHA=$(sha256sum "$ASSET" | cut -d' ' -f1)
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+      - name: Checkout Homebrew tap
+        if: steps.token.outputs.configured == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: RikaiDev/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
       - name: Update formula
+        if: steps.token.outputs.configured == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SHA_AARCH64_DARWIN: ${{ steps.checksums.outputs.aarch64_darwin }}
+          VERSION: ${{ steps.assets.outputs.version }}
+          SHA: ${{ steps.assets.outputs.sha256 }}
         run: |
-          cat > homebrew-tap/Formula/innen.rb << EOF
-          # typed: false
-          # frozen_string_literal: true
-
-          # Homebrew Formula for innen - Deterministic, zero-daemon CLI knowledge engine for LLM agents
-          class Innen < Formula
-            desc "Deterministic, zero-daemon CLI knowledge engine for LLM agents (Karpathy LLM Wiki)"
-            homepage "https://github.com/RikaiDev/innen"
-            version "${VERSION}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/RikaiDev/innen/releases/download/v#{version}/innen-aarch64-apple-darwin.tar.gz"
-                sha256 "${SHA_AARCH64_DARWIN}"
-              end
-            end
-
-            def install
-              bin.install "innen"
-            end
-
-            test do
-              assert_match "innen", shell_output("#{bin}/innen --help")
-            end
-          end
-          EOF
-
-      - name: Commit and push
-        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          path = pathlib.Path('homebrew-tap/Formula/innen.rb')
+          text = path.read_text()
+          text, versions = re.subn(r'version "[^"]+"', f'version "{os.environ["VERSION"]}"', text)
+          text, sums = re.subn(r'sha256 "[0-9a-f]{64}"', f'sha256 "{os.environ["SHA"]}"', text)
+          if versions != 1 or sums != 1:
+              raise SystemExit('Unexpected formula shape; refusing ambiguous update')
+          path.write_text(text)
+          PY
           cd homebrew-tap
+          git diff --check
+          ruby -c Formula/innen.rb
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/innen.rb
-          git commit -m "chore: update innen to v${{ steps.version.outputs.version }}" || exit 0
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "chore: update innen to v$VERSION"
           git push

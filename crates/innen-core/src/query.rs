@@ -212,15 +212,7 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
         ids.sort();
         for id in ids {
             let node = &materialized.nodes[id];
-            let label = node_text(node, "label");
-            let body = node_text(node, "body");
-            let text = if body.is_empty() {
-                label.to_string()
-            } else if label.is_empty() {
-                body.to_string()
-            } else {
-                format!("{label} {body}")
-            };
+            let text = crate::task_entry::node_searchable_text(node);
             writer.add_document(doc!(
                 body_field => text,
                 id_field => id.clone(),
@@ -235,7 +227,36 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
     let mut fts_hits: Vec<(String, f64)> = Vec::new();
     if !params.q.is_empty() {
         let parser = QueryParser::for_index(&index, vec![body_field]);
-        if let Ok(parsed) = parser.parse_query(&params.q) {
+        let query_res = parser.parse_query(&params.q).or_else(|_| {
+            let sanitized: String = params
+                .q
+                .chars()
+                .map(|c| {
+                    if matches!(
+                        c,
+                        '-' | '+'
+                            | '!'
+                            | '('
+                            | ')'
+                            | ':'
+                            | '^'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '~'
+                            | '*'
+                            | '?'
+                    ) {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            parser.parse_query(&sanitized)
+        });
+        if let Ok(parsed) = query_res {
             if let Ok(top) =
                 searcher.search(&parsed, &TopDocs::with_limit(FTS_TOP_K).order_by_score())
             {
@@ -261,14 +282,15 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
         }
     }
 
-    // --- Seeds: FTS ids + exact node-id substring match. ---
+    // --- Seeds: FTS ids + exact node-id/label substring match. ---
     let mut seeds: HashSet<String> = HashSet::new();
     for (id, _) in &fts_hits {
         seeds.insert(id.clone());
     }
     if !params.q.is_empty() {
-        for id in materialized.nodes.keys() {
-            if id.contains(params.q.as_str()) {
+        for (id, node) in &materialized.nodes {
+            let label = node_text(node, "label");
+            if id.contains(params.q.as_str()) || label.contains(params.q.as_str()) {
                 seeds.insert(id.clone());
             }
         }
@@ -288,7 +310,12 @@ pub fn query(root: impl AsRef<Path>, params: &QueryParams) -> Result<QueryOutput
         };
         let from_ty: NodeType = node_text(from_node, "type").parse().unwrap();
         let to_ty: NodeType = node_text(to_node, "type").parse().unwrap();
-        let provenance = from_node.get("provenance").and_then(|v| v.as_str());
+        // Edge assertions carry their own provenance. Fall back to the source
+        // node only for legacy rows that predate edge provenance.
+        let provenance = edge
+            .provenance
+            .as_deref()
+            .or_else(|| from_node.get("provenance").and_then(|v| v.as_str()));
         if validate(&from_ty, &edge.edge, &Endpoint::Node(to_ty), provenance).is_err() {
             continue;
         }

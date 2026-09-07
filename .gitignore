@@ -1,2 +1,4 @@
 /target
 .innen/
+research/**/__pycache__/
+research/conversation/artifacts/

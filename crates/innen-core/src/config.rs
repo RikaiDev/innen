@@ -390,8 +390,309 @@ pub enum ConfigSetError {
     InvalidBool,
     #[error("{0} must be non-empty")]
     EmptyValue(String),
+    #[error("root must be an absolute path: {0}")]
+    NotAbsolute(String),
+    #[error("{var} must be an absolute path: {path}")]
+    RelativeConfigHome { var: &'static str, path: PathBuf },
+    #[error("corrupt global config at {}: {detail}", path.display())]
+    CorruptGlobal { path: PathBuf, detail: String },
+    #[error("global configuration directory could not be determined; set HOME or XDG_CONFIG_HOME")]
+    NoGlobalDir,
     #[error("{0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Global config directory:
+/// 1. `$XDG_CONFIG_HOME/innen` if `XDG_CONFIG_HOME` is non-empty (must be absolute)
+/// 2. Else `$HOME/.config/innen` if `HOME` is non-empty (must be absolute)
+pub fn global_config_dir() -> Result<PathBuf, RootResolutionError> {
+    global_config_dir_with_env(None)
+}
+
+/// Global config directory with optional injected env map for tests.
+pub fn global_config_dir_with_env(
+    env: Option<&HashMap<String, String>>,
+) -> Result<PathBuf, RootResolutionError> {
+    let get_var = |k: &str| -> Option<String> {
+        if let Some(map) = env {
+            map.get(k).cloned()
+        } else {
+            std::env::var(k).ok()
+        }
+    };
+    if let Some(val) = get_var("XDG_CONFIG_HOME") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if !p.is_absolute() {
+                return Err(RootResolutionError::RelativeConfigHome {
+                    var: "XDG_CONFIG_HOME",
+                    path: p,
+                });
+            }
+            return Ok(p.join("innen"));
+        }
+    }
+    if let Some(val) = get_var("HOME") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if !p.is_absolute() {
+                return Err(RootResolutionError::RelativeConfigHome {
+                    var: "HOME",
+                    path: p,
+                });
+            }
+            return Ok(p.join(".config").join("innen"));
+        }
+    }
+    Err(RootResolutionError::NoGlobalDir)
+}
+
+/// Canonical global config file path: `<global_config_dir>/config.json`.
+pub fn global_config_path() -> Result<PathBuf, RootResolutionError> {
+    global_config_path_with_env(None)
+}
+
+/// Global config file path with optional injected env map for tests.
+pub fn global_config_path_with_env(
+    env: Option<&HashMap<String, String>>,
+) -> Result<PathBuf, RootResolutionError> {
+    let dir = global_config_dir_with_env(env)?;
+    Ok(dir.join("config.json"))
+}
+
+/// Validate `key`/`value` and persist one key into the global user config file.
+///
+/// Requires `root` to be an absolute path, normalizes consistently, and preserves unrelated keys.
+pub fn set_global_value(key: &str, value: &str) -> Result<String, ConfigSetError> {
+    set_global_value_with_env(key, value, None)
+}
+
+/// Injected-env variant of [`set_global_value`].
+pub fn set_global_value_with_env(
+    key: &str,
+    value: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<String, ConfigSetError> {
+    if !matches!(key, "root" | "format" | "rebuild_on_open") {
+        return Err(ConfigSetError::UnknownKey(key.to_string()));
+    }
+    let normalized = value.trim();
+    if (key == "root" || key == "format") && normalized.is_empty() {
+        return Err(ConfigSetError::EmptyValue(key.to_string()));
+    }
+    if key == "rebuild_on_open"
+        && !matches!(normalized.to_ascii_lowercase().as_str(), "true" | "false")
+    {
+        return Err(ConfigSetError::InvalidBool);
+    }
+    if key == "root" && !Path::new(normalized).is_absolute() {
+        return Err(ConfigSetError::NotAbsolute(normalized.to_string()));
+    }
+    let (stored, echo) = if key == "rebuild_on_open" {
+        let b = normalized.eq_ignore_ascii_case("true");
+        (serde_json::Value::Bool(b), normalized.to_ascii_lowercase())
+    } else {
+        (
+            serde_json::Value::String(normalized.to_string()),
+            normalized.to_string(),
+        )
+    };
+    let global_path = global_config_path_with_env(env).map_err(|e| match e {
+        RootResolutionError::NoGlobalDir => ConfigSetError::NoGlobalDir,
+        RootResolutionError::RelativeConfigHome { var, path } => {
+            ConfigSetError::RelativeConfigHome { var, path }
+        }
+        _ => ConfigSetError::CorruptGlobal {
+            path: PathBuf::new(),
+            detail: e.to_string(),
+        },
+    })?;
+    if let Some(parent) = global_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut map: BTreeMap<String, serde_json::Value> = match std::fs::read(&global_path) {
+        Ok(bytes) => {
+            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            serde_json::from_slice(bytes).map_err(|e| ConfigSetError::CorruptGlobal {
+                path: global_path.clone(),
+                detail: e.to_string(),
+            })?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => return Err(ConfigSetError::Io(e)),
+    };
+    map.insert(key.to_string(), stored);
+    let text = serde_json::to_string(&map).expect("global config serializes");
+    std::fs::write(&global_path, format!("{text}\n"))?;
+    Ok(echo)
+}
+
+/// Read one value from global user configuration.
+pub fn get_global_value(key: &str) -> Result<Option<String>, ConfigSetError> {
+    get_global_value_with_env(key, None)
+}
+
+/// Injected-env variant of [`get_global_value`].
+pub fn get_global_value_with_env(
+    key: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<Option<String>, ConfigSetError> {
+    if !matches!(key, "root" | "format" | "rebuild_on_open") {
+        return Err(ConfigSetError::UnknownKey(key.to_string()));
+    }
+    let global_path = match global_config_path_with_env(env) {
+        Ok(p) => p,
+        Err(RootResolutionError::NoGlobalDir) => return Ok(None),
+        Err(RootResolutionError::RelativeConfigHome { var, path }) => {
+            return Err(ConfigSetError::RelativeConfigHome { var, path });
+        }
+        Err(e) => {
+            return Err(ConfigSetError::CorruptGlobal {
+                path: PathBuf::new(),
+                detail: e.to_string(),
+            });
+        }
+    };
+    let bytes = match std::fs::read(&global_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(ConfigSetError::Io(e)),
+    };
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let val: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| ConfigSetError::CorruptGlobal {
+            path: global_path.clone(),
+            detail: e.to_string(),
+        })?;
+    let Some(obj) = val.as_object() else {
+        return Err(ConfigSetError::CorruptGlobal {
+            path: global_path,
+            detail: "expected JSON object".to_string(),
+        });
+    };
+    match key {
+        "root" => Ok(obj
+            .get("root")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())),
+        "format" => Ok(obj
+            .get("format")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())),
+        "rebuild_on_open" => Ok(obj
+            .get("rebuild_on_open")
+            .and_then(|v| v.as_bool())
+            .map(|b| b.to_string())),
+        _ => Ok(None),
+    }
+}
+
+/// Root resolution failure.
+#[derive(Debug, thiserror::Error)]
+pub enum RootResolutionError {
+    #[error("knowledge base root is not configured; set --root, INNEN_ROOT, or register globally with 'innen config set --global root <path>'")]
+    Unconfigured,
+    #[error("INNEN_ROOT must be an absolute path: {}", .0.display())]
+    RelativeEnvRoot(PathBuf),
+    #[error("'root' in global config must be an absolute path: {}", .0.display())]
+    RelativeGlobalRoot(PathBuf),
+    #[error("{var} must be an absolute path: {}", path.display())]
+    RelativeConfigHome { var: &'static str, path: PathBuf },
+    #[error("corrupt global config at {}: {detail}", path.display())]
+    CorruptConfig { path: PathBuf, detail: String },
+    #[error("unreadable global config at {}: {detail}", path.display())]
+    UnreadableConfig { path: PathBuf, detail: String },
+    #[error("global configuration directory could not be determined; set HOME or XDG_CONFIG_HOME")]
+    NoGlobalDir,
+}
+
+/// KB root resolution: `--root <dir>` > `INNEN_ROOT` env > user-level persisted root.
+///
+/// Fails with an actionable error if unconfigured. Never silently falls back to cwd.
+/// Explicit `--root` is a deliberate caller scope override.
+/// INNEN_ROOT and global persisted root require absolute paths.
+pub fn resolve_root(cli_root: Option<PathBuf>) -> Result<PathBuf, RootResolutionError> {
+    resolve_root_with_env(cli_root, None)
+}
+
+/// Injected-env variant of [`resolve_root`] for tests.
+pub fn resolve_root_with_env(
+    cli_root: Option<PathBuf>,
+    env: Option<&HashMap<String, String>>,
+) -> Result<PathBuf, RootResolutionError> {
+    // 1. Explicit CLI --root flag wins (deliberate scope override)
+    if let Some(r) = cli_root {
+        if !r.as_os_str().is_empty() {
+            return Ok(r);
+        }
+    }
+    // 2. INNEN_ROOT env (non-empty; must be absolute)
+    let env_root = if let Some(map) = env {
+        map.get("INNEN_ROOT").cloned()
+    } else {
+        std::env::var("INNEN_ROOT").ok()
+    };
+    if let Some(s) = env_root {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if !p.is_absolute() {
+                return Err(RootResolutionError::RelativeEnvRoot(p));
+            }
+            return Ok(p);
+        }
+    }
+    // 3. User-level persisted root in canonical config.json
+    let config_path = match global_config_path_with_env(env) {
+        Ok(p) => p,
+        Err(RootResolutionError::NoGlobalDir) => return Err(RootResolutionError::Unconfigured),
+        Err(e) => return Err(e),
+    };
+    let bytes = match std::fs::read(&config_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(RootResolutionError::Unconfigured);
+        }
+        Err(e) => {
+            return Err(RootResolutionError::UnreadableConfig {
+                path: config_path,
+                detail: e.to_string(),
+            });
+        }
+    };
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let val: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| RootResolutionError::CorruptConfig {
+            path: config_path.clone(),
+            detail: e.to_string(),
+        })?;
+    let Some(obj) = val.as_object() else {
+        return Err(RootResolutionError::CorruptConfig {
+            path: config_path,
+            detail: "expected JSON object at root".to_string(),
+        });
+    };
+    if let Some(root_val) = obj.get("root") {
+        if let Some(s) = root_val.as_str() {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                if !p.is_absolute() {
+                    return Err(RootResolutionError::RelativeGlobalRoot(p));
+                }
+                return Ok(p);
+            }
+        }
+        return Err(RootResolutionError::CorruptConfig {
+            path: config_path,
+            detail: "'root' value must be a non-empty string".to_string(),
+        });
+    }
+
+    // 4. No silent cwd fallback!
+    Err(RootResolutionError::Unconfigured)
 }
 
 /// Validate `key`/`value` and persist one key into `<root>/.innen/machine.json`.
@@ -473,5 +774,77 @@ mod tests {
                 .any(|w| w == "warning: machine.json overrides innen.toml: format"),
             "must emit exact override warning, got: {warnings:?}"
         );
+    }
+
+    #[test]
+    fn resolve_root_precedence_and_error_cases() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let kb_dir = tempfile::tempdir().expect("tempdir");
+        let kb_path = kb_dir.path().to_path_buf();
+        let mut env = HashMap::new();
+        env.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            home.path().to_string_lossy().into_owned(),
+        );
+
+        // 1. Unconfigured fails without mutation
+        let err = resolve_root_with_env(None, Some(&env)).unwrap_err();
+        assert!(matches!(err, RootResolutionError::Unconfigured));
+
+        // 2. Global bootstrap registration requires absolute path
+        let rel_err = set_global_value_with_env("root", "relative/path", Some(&env)).unwrap_err();
+        assert!(matches!(rel_err, ConfigSetError::NotAbsolute(_)));
+
+        // 3. Global bootstrap sets root and preserves unrelated keys
+        set_global_value_with_env("format", "json", Some(&env)).expect("set format");
+        set_global_value_with_env("root", &kb_path.to_string_lossy(), Some(&env))
+            .expect("set root");
+        let got_root = resolve_root_with_env(None, Some(&env)).expect("resolve root");
+        assert_eq!(got_root, kb_path);
+        let format_val = get_global_value_with_env("format", Some(&env))
+            .expect("get format")
+            .expect("format present");
+        assert_eq!(format_val, "json");
+
+        // 4. INNEN_ROOT overrides global config
+        let override_kb = tempfile::tempdir().expect("tempdir");
+        env.insert(
+            "INNEN_ROOT".to_string(),
+            override_kb.path().to_string_lossy().into_owned(),
+        );
+        let got_override = resolve_root_with_env(None, Some(&env)).expect("env override");
+        assert_eq!(got_override, override_kb.path());
+
+        // 5. CLI --root overrides INNEN_ROOT and global config
+        let cli_kb = tempfile::tempdir().expect("tempdir");
+        let got_cli =
+            resolve_root_with_env(Some(cli_kb.path().to_path_buf()), Some(&env)).expect("cli");
+        assert_eq!(got_cli, cli_kb.path());
+
+        // 6. Malformed global config fails explicitly
+        env.remove("INNEN_ROOT");
+        let cfg_file = home.path().join("innen").join("config.json");
+        fs::write(&cfg_file, "{corrupt json").expect("corrupt write");
+        let corrupt_err = resolve_root_with_env(None, Some(&env)).unwrap_err();
+        assert!(matches!(
+            corrupt_err,
+            RootResolutionError::CorruptConfig { .. }
+        ));
+
+        // 7. Relative root in global config fails explicitly
+        fs::write(&cfg_file, r#"{"root": "relative/path"}"#).expect("write relative root");
+        let rel_global_err = resolve_root_with_env(None, Some(&env)).unwrap_err();
+        assert!(matches!(
+            rel_global_err,
+            RootResolutionError::RelativeGlobalRoot(_)
+        ));
+
+        // 8. Relative INNEN_ROOT fails explicitly
+        env.insert("INNEN_ROOT".to_string(), "relative/kb".to_string());
+        let rel_env_err = resolve_root_with_env(None, Some(&env)).unwrap_err();
+        assert!(matches!(
+            rel_env_err,
+            RootResolutionError::RelativeEnvRoot(_)
+        ));
     }
 }

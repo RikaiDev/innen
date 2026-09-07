@@ -1,0 +1,90 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      # The repository's sccache wrapper is a local workstation optimization.
+      RUSTC_WRAPPER: ""
+      CARGO_BUILD_JOBS: "2"
+      RUST_TEST_THREADS: "2"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install the repository toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+          sqlite3 --version
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "${{ matrix.target }}"
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Build and test the workspace
+        run: cargo test --workspace --locked
+      - name: Build and verify release package
+        if: github.event_name != 'pull_request'
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "$TARGET"
+          VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          BIN="target/$TARGET/release/innen"
+          test "$("$BIN" --version)" = "innen $VERSION"
+          "$BIN" --help > /dev/null
+          mkdir -p dist/package
+          cp "$BIN" LICENSE dist/package/
+          tar -czf "dist/innen-$TARGET.tar.gz" -C dist/package innen LICENSE
+          export VERSION
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          target = os.environ['TARGET']
+          archive = pathlib.Path(f'dist/innen-{target}.tar.gz')
+          metadata = {
+              'version': os.environ['VERSION'], 'target': target,
+              'source_commit': os.environ['GITHUB_SHA'],
+              'run_url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'archive': archive.name,
+              'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+              'rustc': subprocess.check_output(['rustc', '-Vv'], text=True).strip(),
+              'provenance_type': 'build metadata; not a cryptographic attestation',
+          }
+          pathlib.Path(f'dist/build-{target}.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+      - name: Upload verified release package
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: innen-${{ matrix.target }}
+          path: |
+            dist/innen-${{ matrix.target }}.tar.gz
+            dist/build-${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 14

@@ -37,6 +37,7 @@
 //!   fallen behind the journal (post-build appends) is also
 //!   stale-but-rebuildable → exit `1`.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -205,34 +206,45 @@ fn check_quarantine(root: &Path) -> Check {
     }
 }
 
-/// Parsed-event count in the journal: non-empty lines that parse as
-/// [`JournalEntry`]. Missing file is `Some(0)`; `None` only when an existing
-/// file cannot be read. Read-only (`fs::read_to_string`).
-fn journal_parsed_count(root: &Path) -> Option<usize> {
+fn journal_expected_events(root: &Path) -> Option<BTreeMap<String, String>> {
     let content = match fs::read_to_string(journal_path(root)) {
         Ok(content) => content,
-        Err(e) if is_not_found(&e) => return Some(0),
+        Err(e) if is_not_found(&e) => return Some(BTreeMap::new()),
         Err(_) => return None,
     };
-    let mut count = 0usize;
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if serde_json::from_str::<JournalEntry>(line).is_ok() {
-            count += 1;
-        }
+    let mut expected = BTreeMap::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let entry = serde_json::from_str::<JournalEntry>(line).ok()?;
+        let raw = serde_json::to_string(&entry).ok()?;
+        expected.insert(entry.id, raw);
     }
-    Some(count)
+    Some(expected)
 }
 
-/// Row count of the redb `events` table from an already-open database.
-/// `None` when the transaction or table cannot be read. Read-only (read txn).
-fn redb_event_count_in(db: &redb::Database) -> Option<u64> {
+fn redb_matches_expected(
+    db: &redb::Database,
+    expected: &BTreeMap<String, String>,
+) -> Result<(), String> {
     use redb::{ReadableDatabase as _, ReadableTableMetadata as _};
-    let txn = db.begin_read().ok()?;
-    let table = txn.open_table(EVENTS).ok()?;
-    table.len().ok()
+    let txn = db.begin_read().map_err(|e| e.to_string())?;
+    let table = txn.open_table(EVENTS).map_err(|e| e.to_string())?;
+    let actual = table.len().map_err(|e| e.to_string())?;
+    if actual != expected.len() as u64 {
+        return Err(format!(
+            "event key count differs (index has {actual} events, journal has {} unique IDs)",
+            expected.len()
+        ));
+    }
+    for (id, raw_expected) in expected {
+        let raw_actual = table
+            .get(id.as_str())
+            .map_err(|e| e.to_string())?
+            .map(|value| value.value().to_owned());
+        if raw_actual.as_deref() != Some(raw_expected.as_str()) {
+            return Err(format!("event {id} content differs"));
+        }
+    }
+    Ok(())
 }
 
 /// Open `index.redb` without touching the original file.
@@ -294,25 +306,25 @@ fn check_index(root: &Path, journal_clean: bool) -> Check {
     if redb_exists && fts_exists {
         // Single open per check: probe + count share one `Database` opened
         // from an in-memory copy (original mtime untouched).
-        let (redb_ok, redb_count) = match open_redb_readonly(&redb) {
-            Some(db) => {
-                let count = redb_event_count_in(&db);
-                (true, count)
-            }
-            None => (false, None),
-        };
+        let db = open_redb_readonly(&redb);
+        let redb_ok = db.is_some();
         let fts_ok = tantivy::Index::open_in_dir(&fts).is_ok();
         if redb_ok && fts_ok {
-            if let (Some(index_n), Some(journal_m)) = (redb_count, journal_parsed_count(root)) {
-                if index_n != journal_m as u64 {
+            if let Some(expected) = journal_expected_events(root) {
+                if let Err(reason) = redb_matches_expected(db.as_ref().expect("redb_ok"), &expected)
+                {
                     return Check {
                         name,
                         ok: false,
-                        detail: format!(
-                            "stale index (index has {index_n} events, journal has {journal_m}); {rebuildable}"
-                        ),
+                        detail: format!("stale index ({reason}); {rebuildable}"),
                     };
                 }
+            } else {
+                return Check {
+                    name,
+                    ok: false,
+                    detail: format!("stale index (journal freshness unavailable); {rebuildable}"),
+                };
             }
             return Check {
                 name,
@@ -718,6 +730,61 @@ mod tests {
         for check in &report.checks {
             assert!(check.ok, "{} must be ok: {}", check.name, check.detail);
         }
+    }
+
+    #[test]
+    fn doctor_accepts_rebuilt_index_with_duplicate_event_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fixture_two_nodes_one_edge(dir.path());
+        let journal = Journal::open(dir.path()).expect("reopen");
+        journal
+            .append("node.upsert", &json!({"id": "n:1", "label": "one"}))
+            .expect("duplicate n:1");
+        drop(journal);
+        crate::index::build(dir.path()).expect("build");
+        let report = run(dir.path());
+        assert_eq!(
+            report.exit_code, 0,
+            "duplicate IDs are represented by latest values: {report:?}"
+        );
+        assert!(report.checks[2].ok, "rebuilt duplicate index must be fresh");
+    }
+
+    #[test]
+    fn doctor_detects_same_id_content_change_without_mutating_index() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fixture_two_nodes_one_edge(dir.path());
+        crate::index::build(dir.path()).expect("build");
+        let journal = Journal::open(dir.path()).expect("reopen");
+        journal
+            .append("node.upsert", &json!({"id": "n:1", "label": "one"}))
+            .expect("duplicate n:1");
+        drop(journal);
+        let journal_path = dir.path().join(".innen/journal.jsonl");
+        let mut lines: Vec<String> = fs::read_to_string(&journal_path)
+            .expect("journal")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let last = lines.last_mut().expect("duplicate line");
+        *last = last.replacen(
+            "\"observed_utc\":\"",
+            "\"observed_utc\":\"2099-01-01T00:00:00Z\",\"original_observed_utc\":\"",
+            1,
+        );
+        fs::write(&journal_path, format!("{}\n", lines.join("\n"))).expect("rewrite fixture");
+        let before_index = snapshot_innen(dir.path());
+        let report = run(dir.path());
+        assert_eq!(
+            report.exit_code, 1,
+            "same ID with changed content is stale: {report:?}"
+        );
+        assert!(report.checks[2].detail.contains("content differs"));
+        assert_eq!(
+            snapshot_innen(dir.path()),
+            before_index,
+            "doctor is read-only"
+        );
     }
 
     #[test]

@@ -122,7 +122,7 @@ fn guide_contains_query() {
     // Pinned guide text — byte-exact means byte-exact. Hardcoded here (not
     // `guide_text()`) so drift fails the test. Keep in sync with
     // `innen_core::parity::guide_text`.
-    const GUIDE_TEXT: &str = "innen is a local-first knowledge graph over an append-only journal.\nStart with query to ask the graph (lexical + graph walk).\nCore commands: query, search, status, timeline, guide.\nUse search for lexical-only hits, status for counts, timeline for history.";
+    const GUIDE_TEXT: &str = "innen is a local-first knowledge graph over an append-only journal.\nWhat remains? project [id] returns compact recorded tasks across projects or one project.\nNeed evidence? project <id> --view evidence; legacy project page: --view full.\nFind prior knowledge: query --q <term>. Continue a conversation: resume <session-id>.\nTask status is recorded evidence; unknown status and heuristic conversation candidates are not confirmed unfinished work.";
     // Exact first line + contains query (robustness probes on the decoded text).
     let first_line = GUIDE_TEXT.lines().next().expect("guide has first line");
     assert_eq!(
