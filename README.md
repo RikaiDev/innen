@@ -6,7 +6,7 @@
 [![Zero-Daemon](https://img.shields.io/badge/Runtime-Zero--Daemon%20CLI%20Binary-black.svg)](#why-zero-daemon-cli-over-mcp)
 [![Read: Local Sessions](https://img.shields.io/badge/Read-Local%20Sessions-blue.svg)](#read-a-conversation-directly-by-session-id)
 
-**innen is an open-source, high-performance knowledge engine and graph runtime designed for LLM coding agents. Built as a single, zero-daemon Rust binary, it implements an append-only event-sourced journal, dual embedded derived indexes (Redb + Tantivy CJK BM25), and read-only coding-tool conversation adapters. Source retrieval and durable knowledge ingestion are separate operations.**
+**innen is an open-source knowledge engine built to reduce the context and tokens an LLM agent must reload to continue work, while preserving explicit evidence boundaries.** As a single, zero-daemon Rust binary, it implements an append-only event-sourced journal, dual embedded derived indexes (Redb + Tantivy CJK BM25), and read-only coding-tool conversation adapters. Source retrieval and durable knowledge ingestion are separate operations.
 
 *The name reads from Buddhist philosophy: **因縁** (innen) — dependent origination, causal connection. In genuine knowledge management, no claim exists in a vacuum. Every decision, task, experiment, and code artifact arises out of prior conditions and leaves traceable consequences. innen does not merely store text; it captures the causal graph of why things are the way they are.*
 
@@ -289,31 +289,18 @@ answer accuracy, knowledge completeness, or billed-token savings.
 
 ---
 
-## 5. Empirical Retrieval Benchmarks
+## 5. Context and Token Efficiency
 
-Tested on a production research knowledge base comprising **635 events, 395 relational edges, 85 structured wiki pages, and 11 active project ledgers** on Apple Silicon:
+Reducing task-relevant context is innen's primary product objective. In a dated
+fixed-snapshot measurement, the default project brief used 2,046 `o200k_base`
+reference tokens versus 21,758 for the complete evidence view (90.60% shorter),
+or 16,564 after limiting both sides to the same task set (87.65% shorter).
 
-### A. Historical Execution Latency & Memory Footprint
-
-| Command | Description | Mean Latency | Peak Memory (RSS) |
-|---|---|---|---|
-| `innen --help` | CLI cold startup & argument parsing | **17.3 ms** | **2.9 MB** |
-| `innen lint` | Full journal & reference integrity audit | **33.4 ms** | **5.5 MB** |
-| `innen status` | Materialized graph census & node breakdown | **29.4 ms** | **6.6 MB** |
-| `innen project <id>` | Deterministic project page synthesis | **21.3 ms** | **6.4 MB** |
-| `innen index rebuild` | Full Redb + Tantivy index regeneration | **30.1 ms** | **2.8 MB** |
-| `innen query --q <term>` | Jieba tokenize + BM25 + 3-hop BFS expansion | **309.7 ms** | **76.4 MB** (includes CJK dict) |
-
-The table itself reports `query` at 309.7 ms and 76.4 MB. The earlier blanket claim that all inspection commands take under 35 ms and under 7 MB was incorrect. These historical measurements have not been rerun for the new reader.
-
-### B. Output-Length Claims
-
-This README does not publish a token-reduction percentage. Output size depends
-on the fixed source snapshot, query, selected view, tokenizer, pagination, and
-required evidence. A shorter response does not establish equivalent information,
-model comprehension, lower total agent tokens, provider billing savings, or a
-better answer. Measure a fixed paired workload for the deployed version before
-making a performance claim.
+Those figures establish historical output-length reduction for that paired
+workload. They are not provider billing savings, total session usage, equivalent
+information, comprehension quality, or a guarantee for v0.3.0. Current-version
+claims require a rerun with a fixed public fixture. See [BENCHMARKS.md](BENCHMARKS.md)
+for the measurement contract and claim boundaries.
 
 ---
 
@@ -321,7 +308,7 @@ making a performance claim.
 
 ### Installation
 
-If the v0.2.0 formula has been published to the configured tap, install it via Homebrew on macOS:
+Install the current stable formula via Homebrew on macOS:
 
 ```bash
 brew install rikaidev/tap/innen
