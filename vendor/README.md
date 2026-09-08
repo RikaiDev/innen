@@ -4,6 +4,8 @@
 for its normalized `Cargo.toml`: `lru = "0.16.3"` is replaced by exact
 `lru = "=0.18.4"`. The package version and upstream Rust implementation are not
 relabelled or rewritten. Upstream license and source metadata remain included.
+The archived upstream `Cargo.lock` is retained as source provenance; dependency
+resolution and security auditing use the repository's root workspace `Cargo.lock`.
 
 - Source: https://crates.io/api/v1/crates/tantivy/0.26.1/download
 - Archive SHA-256: `edde6a10743fff00a4e1a8c9ef020bf5f3cbad301b7d2d39f2b07f123c4eac07`
