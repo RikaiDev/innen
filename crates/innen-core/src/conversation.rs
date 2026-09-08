@@ -15,6 +15,7 @@ pub mod pickup;
 mod prefixes;
 mod projection;
 pub mod resume;
+pub mod scan;
 mod sources;
 pub mod unfinished;
 pub use checkpoint::{Checkpoint, CheckpointStatus};
@@ -22,6 +23,7 @@ pub use pickup::{
     resolve_all_projects_pickup, resolve_pickup, EvidencePointers, PickedUpSession, PickupTarget,
 };
 pub use resume::{find_all_candidates, find_project_candidates, Candidate, ResumeTarget};
+pub use scan::{ScanLimits, ScanResult};
 pub use sources::{Located, Source};
 pub use unfinished::{
     find_all_unfinished_candidates, find_unfinished_candidates, Confidence, Reason,

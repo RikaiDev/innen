@@ -111,6 +111,24 @@ The runtime does not repair malformed model JSON or refresh invalid quotations.
 Malformed model output remains an error; diagnostic repair and controller review
 must never be promoted to automatic success.
 
+### v0.4.0: source tracing and context middleware
+
+Run `innen wiki sync` after wiki edits to project source references into the
+graph, then `innen trace --q 'your clue'` to retrieve bounded source passages.
+Use each result's hash-checked `expand_argv` to recover its exact record.
+See [source tracing](docs/trace.md) and [v0.4.0 release notes](docs/release-v0.4.0.md)
+for supported sources, cache behavior, and coverage limits.
+
+Executors can prepare a token-budgeted input packet before sending a new model
+request with `innen middleware prepare --file request.json --packet-only`.
+Required context, the stable prefix, and task are retained; optional items use
+caller-supplied priorities. Exact omitted items can be expanded against the
+source hash. Stdin is supported with `--file -`.
+
+See [the middleware contract](docs/middleware.md) for the request schema and
+integration boundary. This offline command does not automatically replace the
+history of an already-running agent session.
+
 ### v0.3.0 migration
 
 Project lookup now accepts canonical IDs, namespace-free slugs, unique labels,

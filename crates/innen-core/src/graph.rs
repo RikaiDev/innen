@@ -770,6 +770,132 @@ pub fn validate_relate_request(
     }
 }
 
+/// Why a strict CLI `graph relate` preflight failed before any journal write.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RelateRequestError {
+    #[error("cannot read graph journal {path}: {detail}")]
+    JournalRead { path: String, detail: String },
+    #[error("invalid graph journal {path} at line {line}: {detail}")]
+    InvalidJournal {
+        path: String,
+        line: usize,
+        detail: String,
+    },
+    #[error("missing graph endpoint: {role} {id:?}")]
+    MissingEndpoint { role: &'static str, id: String },
+    #[error(transparent)]
+    Adjacency(#[from] AdjacencyError),
+}
+
+/// Strict CLI `graph relate` validation over exact node IDs.
+///
+/// Unlike [`validate_relate_request`], this preflight reads the journal
+/// without opening it through [`crate::journal::Journal`], so corrupt input is
+/// reported without quarantine or repair. Missing journals represent an empty
+/// graph. Every non-empty line must deserialize as a complete journal entry.
+///
+/// `allow_dangling` permits missing node endpoints for intentional migrations
+/// and out-of-order ingestion. It does not bypass URI legality, custom-party
+/// provenance, or adjacency validation when both endpoint kinds are known.
+pub fn validate_relate_request_strict(
+    root: &Path,
+    from: &str,
+    edge: &EdgeType,
+    to: &str,
+    provenance: Option<&str>,
+    allow_dangling: bool,
+) -> Result<(), RelateRequestError> {
+    let journal_path = root.join(".innen/journal.jsonl");
+    let content = match std::fs::read_to_string(&journal_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(RelateRequestError::JournalRead {
+                path: journal_path.display().to_string(),
+                detail: error.to_string(),
+            });
+        }
+    };
+    let mut events = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: crate::journal::JournalEntry =
+            serde_json::from_str(line).map_err(|error| RelateRequestError::InvalidJournal {
+                path: journal_path.display().to_string(),
+                line: index + 1,
+                detail: error.to_string(),
+            })?;
+        events.push(serde_json::json!({
+            "op": entry.op,
+            "payload": entry.payload,
+            "observed_utc": entry.observed_utc,
+        }));
+    }
+
+    let graph = materialize(&events, None, true);
+    let from_ty = graph.nodes.get(from).map(|node| {
+        node.get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Custom")
+            .parse::<NodeType>()
+            .unwrap()
+    });
+    let to_endpoint = if is_uri_shape(to) {
+        Some(Endpoint::Uri(to.to_string()))
+    } else {
+        graph.nodes.get(to).map(|node| {
+            let kind = node
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Custom")
+                .parse::<NodeType>()
+                .unwrap();
+            Endpoint::Node(kind)
+        })
+    };
+
+    if from_ty.is_none() && !allow_dangling {
+        return Err(RelateRequestError::MissingEndpoint {
+            role: "--from",
+            id: from.to_string(),
+        });
+    }
+    if to_endpoint.is_none() && !allow_dangling {
+        return Err(RelateRequestError::MissingEndpoint {
+            role: "--to",
+            id: to.to_string(),
+        });
+    }
+
+    if let (Some(from_ty), Some(to_endpoint)) = (&from_ty, &to_endpoint) {
+        return validate(from_ty, edge, to_endpoint, provenance).map_err(Into::into);
+    }
+
+    if let Some(Endpoint::Uri(uri)) = &to_endpoint {
+        if !matches!(
+            edge,
+            EdgeType::LocatedAt | EdgeType::OriginatedAt | EdgeType::Custom(_)
+        ) {
+            return Err(AdjacencyError::IllegalPair {
+                from: "?".to_string(),
+                edge: edge.to_string(),
+                to: uri.clone(),
+            }
+            .into());
+        }
+    }
+
+    let custom_party = matches!(from_ty, Some(NodeType::Custom(_)))
+        || matches!(edge, EdgeType::Custom(_))
+        || matches!(to_endpoint, Some(Endpoint::Node(NodeType::Custom(_))));
+    if custom_party && !has_valid_provenance(provenance) {
+        return Err(AdjacencyError::MissingProvenance.into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

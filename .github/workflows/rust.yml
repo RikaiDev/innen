@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: ""
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned advisory auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Reject vulnerabilities and all advisory warnings
+        run: cargo audit --file Cargo.lock --deny warnings
+
   test:
     strategy:
       fail-fast: false
@@ -46,7 +61,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build and test the workspace
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
       - name: Build and verify release package
         if: github.event_name != 'pull_request'
         env:

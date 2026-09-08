@@ -21,7 +21,12 @@ fn tokenizer() -> Result<&'static tiktoken_rs::CoreBPE, String> {
 }
 
 pub fn tokens(value: &Value) -> Result<usize, String> {
-    Ok(tokenizer()?.encode_ordinary(&value.to_string()).len())
+    tokens_text(&value.to_string())
+}
+
+/// Count the exact JSON text a caller will send, using the reference tokenizer.
+pub fn tokens_text(text: &str) -> Result<usize, String> {
+    Ok(tokenizer()?.encode_ordinary(text).len())
 }
 
 #[derive(Clone)]
