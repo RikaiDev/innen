@@ -131,7 +131,20 @@ enum Commands {
 #[derive(clap::Args)]
 struct ConversationArgs {
     /// UUID or native session ID (for example OpenCode ses_...).
-    uuid: String,
+    #[arg(required_unless_present_any = ["decode_packet", "validate_packet", "encode_json"])]
+    uuid: Option<String>,
+    /// Validate and restore a saved self-describing conversation packet, offline.
+    #[arg(long, conflicts_with_all = ["uuid", "validate_packet", "encode_json"])]
+    decode_packet: Option<PathBuf>,
+    /// Validate a saved packet and emit it unchanged for model input, offline.
+    #[arg(long, conflicts_with_all = ["uuid", "decode_packet", "encode_json"])]
+    validate_packet: Option<PathBuf>,
+    /// Encode a saved ordinary conversation JSON page, offline.
+    #[arg(long, conflicts_with_all = ["uuid", "decode_packet", "validate_packet"])]
+    encode_json: Option<PathBuf>,
+    /// Opt-in reference-token-selected conversation grammar; legacy remains default.
+    #[arg(long, default_value = "legacy", value_parser = ["legacy", "conversation"])]
+    codec: String,
     /// Source store directory (or OpenCode database file). Requires --source.
     #[arg(long)]
     source_root: Option<PathBuf>,
@@ -329,6 +342,28 @@ struct QueryArgs {
     /// Query string (natural text or literal identifier/filename).
     #[arg(long)]
     q: String,
+    /// Evaluate pinned fact alternatives and dependency closure against the journal.
+    #[arg(long, conflicts_with_all = ["as_of", "include_expired", "view", "limit", "offset"])]
+    evidence_contract: Option<PathBuf>,
+    /// Prepare inspected source context for an external model; never invokes one.
+    #[arg(
+        long,
+        requires = "evidence_contract",
+        conflicts_with = "proposal_input"
+    )]
+    prepare_proposal: bool,
+    /// Validate an external model's cited task proposal against the trusted scope.
+    #[arg(long, requires = "evidence_contract", group = "proposal_input")]
+    task_proposal: Option<PathBuf>,
+    /// Validate ID-only output inside a controller-bound context envelope.
+    #[arg(long, requires = "evidence_contract", group = "proposal_input")]
+    task_draft: Option<PathBuf>,
+    /// Prepare source IDs and a native model output schema.
+    #[arg(long, requires = "prepare_proposal")]
+    evidence_ids: bool,
+    /// Caller review receipt bound to exact context and proposal hashes.
+    #[arg(long, requires = "proposal_input")]
+    proposal_review: Option<PathBuf>,
     /// As-of cutoff `YYYY-MM-DDTHH:MM:SSZ` (defaults to now).
     #[arg(long = "as-of")]
     as_of: Option<String>,
@@ -487,6 +522,8 @@ struct ProjectArgs {
 enum ArtifactOp {
     /// Store a file content-addressed + record artifact node/edge.
     Add(ArtifactAddArgs),
+    /// Inventory a directory and archive its hash-bound metadata manifest.
+    AddTree(ArtifactAddTreeArgs),
     /// Maintain a project archive ledger without copying source bytes.
     Ledger {
         #[command(subcommand)]
@@ -615,6 +652,19 @@ struct ArtifactAddArgs {
     project: Option<String>,
 }
 
+#[derive(clap::Args)]
+struct ArtifactAddTreeArgs {
+    /// Directory to inventory without following symlinks.
+    #[arg(long)]
+    directory: PathBuf,
+    /// Manifest output path outside the inventoried directory.
+    #[arg(long)]
+    manifest: PathBuf,
+    /// Optional project id for a BELONGS_TO edge.
+    #[arg(long)]
+    project: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum CloudOp {
     /// `rclone lsd <remote>:` (canned `canned-dir` under the test stub).
@@ -686,6 +736,18 @@ struct ArtifactJson {
     sha256: String,
     path: String,
     bytes: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ArtifactTreeJson {
+    tree_sha256: String,
+    files: u64,
+    symlinks: u64,
+    source_bytes: u64,
+    manifest_sha256: String,
+    manifest_path: String,
+    stored_path: String,
+    metadata_only: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -772,6 +834,85 @@ fn print_report_human(report: &innen_core::doctor::Report) {
 }
 
 fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) -> i32 {
+    if let Some(path) = &args.evidence_contract {
+        let result = (|| -> Result<serde_json::Value, String> {
+            if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
+                return Err("evidence contract exceeds 1 MiB bound".into());
+            }
+            let contract: innen_core::evidence_closure::Contract =
+                serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            if args.prepare_proposal {
+                let raw = innen_core::evidence_closure::read_journal(root)?;
+                let mut out = if args.evidence_ids {
+                    innen_core::task_proposal::id_context(&raw, &contract, &args.q)?
+                } else {
+                    innen_core::evidence_closure::proposal_context(&raw, &contract, &args.q)?
+                };
+                out["resolution"] = serde_json::json!("proposal_context_prepared");
+                Ok(out)
+            } else if let Some(path) = args.task_proposal.as_ref().or(args.task_draft.as_ref()) {
+                fn read_json(path: &std::path::Path) -> Result<serde_json::Value, String> {
+                    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
+                        return Err("proposal/review file exceeds 1 MiB".into());
+                    }
+                    serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())
+                }
+                let raw = innen_core::evidence_closure::read_journal(root)?;
+                let proposal = if args.task_draft.is_some() {
+                    let draft = serde_json::from_value::<innen_core::task_proposal::DraftEnvelope>(
+                        read_json(path)?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    innen_core::task_proposal::bind_draft(&raw, &contract, &args.q, draft)?
+                } else {
+                    serde_json::from_value::<innen_core::task_proposal::Proposal>(read_json(path)?)
+                        .map_err(|e| e.to_string())?
+                };
+                let review = args
+                    .proposal_review
+                    .as_ref()
+                    .map(|p| {
+                        serde_json::from_value::<innen_core::task_proposal::Review>(read_json(p)?)
+                            .map_err(|e| e.to_string())
+                    })
+                    .transpose()?;
+                innen_core::task_proposal::evaluate(
+                    &raw,
+                    &contract,
+                    &args.q,
+                    &proposal,
+                    review.as_ref(),
+                )
+            } else {
+                innen_core::evidence_closure::query(root, &contract, &args.q)
+            }
+        })();
+        return match result {
+            Ok(out) => {
+                println!(
+                    "{}",
+                    if is_human(format) {
+                        serde_json::to_string_pretty(&out).unwrap()
+                    } else {
+                        out.to_string()
+                    }
+                );
+                if out["resolution"] == "covered"
+                    || out["resolution"] == "proposal_context_prepared"
+                {
+                    0
+                } else {
+                    2
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        };
+    }
     if args.view == "hits" {
         let params = innen_core::query::QueryParams {
             q: args.q.clone(),
@@ -1282,6 +1423,51 @@ fn cmd_artifact_add(root: &std::path::Path, format: &str, args: &ArtifactAddArgs
                         bytes: r.bytes,
                     })
                     .expect("artifact output serializes")
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+fn cmd_artifact_add_tree(root: &std::path::Path, format: &str, args: &ArtifactAddTreeArgs) -> i32 {
+    match innen_core::artifact::add_tree(
+        root,
+        &args.directory,
+        &args.manifest,
+        args.project.as_deref(),
+    ) {
+        Ok((tree, receipt)) => {
+            let output = ArtifactTreeJson {
+                tree_sha256: tree.tree_sha256,
+                files: tree.files,
+                symlinks: tree.symlinks,
+                source_bytes: tree.bytes,
+                manifest_sha256: receipt.sha256,
+                manifest_path: args.manifest.to_string_lossy().into_owned(),
+                stored_path: receipt.stored_path.to_string_lossy().into_owned(),
+                metadata_only: true,
+            };
+            if is_human(format) {
+                println!(
+                    "tree_sha256\tfiles\tsymlinks\tsource_bytes\tmanifest_path\tmetadata_only"
+                );
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\ttrue",
+                    output.tree_sha256,
+                    output.files,
+                    output.symlinks,
+                    output.source_bytes,
+                    escape_tsv_field(&output.manifest_path)
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&output).expect("artifact tree output serializes")
                 );
             }
             0
@@ -1941,18 +2127,73 @@ fn cmd_completions(shell: &str) -> i32 {
 }
 
 fn cmd_conversation(format: &str, args: &ConversationArgs) -> i32 {
+    if let Some(path) = args
+        .decode_packet
+        .as_ref()
+        .or(args.validate_packet.as_ref())
+        .or(args.encode_json.as_ref())
+    {
+        let result = (|| -> Result<serde_json::Value, String> {
+            if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 16 * 1024 * 1024 {
+                return Err("packet file exceeds 16 MiB admission bound".into());
+            }
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            if args.encode_json.is_some() {
+                if !value["records"].is_array() || value.get("encoding").is_some() {
+                    return Err(
+                        "encode-json requires an ordinary conversation page with records".into(),
+                    );
+                }
+                innen_core::conversation::grammar::encode(&value, &value)
+            } else {
+                let decoded = innen_core::conversation::grammar::decode(&value)?;
+                Ok(if args.validate_packet.is_some() {
+                    value
+                } else {
+                    decoded
+                })
+            }
+        })();
+        return match result {
+            Ok(value) => {
+                println!(
+                    "{}",
+                    if is_human(format) {
+                        serde_json::to_string_pretty(&value).unwrap()
+                    } else {
+                        value.to_string()
+                    }
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        };
+    }
+    let Some(uuid) = args.uuid.as_deref() else {
+        eprintln!("error: missing conversation ID");
+        return 1;
+    };
+    if args.codec == "conversation" && (args.attachment_refs || args.attachment.is_some()) {
+        eprintln!("error: conversation grammar requires complete page data, not attachment externalization");
+        return 1;
+    }
     let result = if !args.lines.is_empty() {
         innen_core::conversation::read_lines(
             args.source_root.as_deref(),
             &args.source,
-            &args.uuid,
+            uuid,
             &args.lines,
         )
     } else {
         innen_core::conversation::read(
             args.source_root.as_deref(),
             &args.source,
-            &args.uuid,
+            uuid,
             if args.attachment.is_some() {
                 "events"
             } else {
@@ -1968,6 +2209,7 @@ fn cmd_conversation(format: &str, args: &ConversationArgs) -> i32 {
     };
     match result {
         Ok(page) => {
+            let original = serde_json::to_value(&page).expect("page serializes");
             match innen_core::conversation::format_page(
                 page,
                 args.compact,
@@ -1978,6 +2220,17 @@ fn cmd_conversation(format: &str, args: &ConversationArgs) -> i32 {
                 args.offset,
             ) {
                 Ok(formatted) => {
+                    let formatted = if args.codec == "conversation" {
+                        match innen_core::conversation::grammar::encode(&original, &formatted) {
+                            Ok(value) => value,
+                            Err(e) => {
+                                eprintln!("error: {e}");
+                                return 1;
+                            }
+                        }
+                    } else {
+                        formatted
+                    };
                     let output = if is_human(format) {
                         serde_json::to_string_pretty(&formatted)
                     } else {
@@ -2911,6 +3164,7 @@ fn run() -> i32 {
             let root = resolve_or_exit!(cli.root.clone());
             match op {
                 ArtifactOp::Add(a) => cmd_artifact_add(&root, &cli.format, a),
+                ArtifactOp::AddTree(a) => cmd_artifact_add_tree(&root, &cli.format, a),
                 ArtifactOp::Ledger { op } => cmd_artifact_ledger(&root, &cli.format, op),
             }
         }

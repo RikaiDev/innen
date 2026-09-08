@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.3.0] - 2026-09-08
+
+### Added
+
+- Opt-in native conversation grammar with reversible, hash-bound packets.
+- Contract-scoped evidence closure, evidence IDs, reviewed premise state, and
+  exact support/counterevidence spans.
+- External task-proposal validation that keeps source matching, semantic
+  review, and domain authorization separate.
+- Metadata-only `artifact add-tree` inventories with bounded-memory hashing,
+  deterministic manifests, and symlink-safe traversal.
+- One-shot project resolution from canonical IDs, namespace-free slugs,
+  unique labels/basenames, and absolute Workspace paths.
+
+### Changed
+
+- Project brief, evidence, and full views now share one identity resolver;
+  ambiguous shorthand lists candidates instead of guessing.
+- Accepted proposal reviews must identify atomic supported, missing, or
+  refuted premises. Missing evidence remains unknown, and explicit refutation
+  cannot be erased by added support.
+
+### Fixed
+
+- Continuation integration fixtures now use the execution date for tests of
+  the default recent-session window; the explicit old-session boundary test
+  remains fixed to historical input.
+
+### Verification
+
+- 249 local workspace/all-target/all-feature tests passed with no failures or
+  ignored tests; strict Clippy and locked release build passed.
+- GitHub CI passed on macOS aarch64 and Ubuntu x86_64 for commit `031dbc9`.
+- Output-length research remains historical and is not a provider-usage,
+  billing, comprehension, or current-version performance claim.
+
 ## [0.2.0] - 2026-09-07
 
 ### Added

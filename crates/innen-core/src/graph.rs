@@ -387,6 +387,68 @@ pub struct Materialized {
     pub edges: Vec<StoredEdge>,
 }
 
+fn project_key(value: &str) -> String {
+    let normalized = value.trim().trim_end_matches('/').replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    lower
+        .split_once("/workspace/")
+        .map_or(lower.as_str(), |(_, relative)| relative)
+        .trim_start_matches("./")
+        .to_string()
+}
+
+/// Resolve human project references without guessing across ambiguous matches.
+/// Exact IDs win, followed by namespace-free slugs/paths, labels, then basename.
+pub fn resolve_project_id(graph: &Materialized, input: &str) -> Result<String, String> {
+    let query = project_key(input);
+    let bare_query = ["project:", "workspace:", "p:"]
+        .into_iter()
+        .find_map(|prefix| query.strip_prefix(prefix))
+        .unwrap_or(&query);
+    let mut ranked: std::collections::BTreeMap<u8, Vec<String>> = std::collections::BTreeMap::new();
+    for (id, node) in &graph.nodes {
+        if !node["type"]
+            .as_str()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("project"))
+        {
+            continue;
+        }
+        let id_key = project_key(id);
+        let bare_id = ["project:", "workspace:", "p:"]
+            .into_iter()
+            .find_map(|prefix| id_key.strip_prefix(prefix))
+            .unwrap_or(&id_key);
+        let label = project_key(node["label"].as_str().unwrap_or(""));
+        let path = project_key(node["path"].as_str().unwrap_or(""));
+        let rank = if query == id_key {
+            Some(0)
+        } else if bare_query == bare_id || (!path.is_empty() && bare_query == path) {
+            Some(1)
+        } else if !label.is_empty() && query == label {
+            Some(2)
+        } else if bare_id.rsplit('/').next() == Some(bare_query) {
+            Some(3)
+        } else {
+            None
+        };
+        if let Some(rank) = rank {
+            ranked.entry(rank).or_default().push(id.clone());
+        }
+    }
+    let Some((_rank, mut candidates)) = ranked.into_iter().next() else {
+        return Err(format!("unknown project: {input}"));
+    };
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() != 1 {
+        return Err(format!(
+            "ambiguous project: {input}; candidates: {}",
+            candidates.join(", ")
+        ));
+    }
+    Ok(candidates.remove(0))
+}
+
 /// Canonical `YYYY-MM-DDTHH:MM:SSZ` shape check.
 ///
 /// Lexicographic string order equals time order only for this fixed-width

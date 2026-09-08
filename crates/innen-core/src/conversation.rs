@@ -10,6 +10,7 @@ pub mod attachments;
 pub mod checkpoint;
 pub mod compact;
 pub mod deltas;
+pub mod grammar;
 pub mod pickup;
 mod prefixes;
 mod projection;

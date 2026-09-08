@@ -60,6 +60,72 @@ semantic certainty. A filename or `final` status alone is not an approved
 editable baseline; missing or conflicting authority remains `missing` or
 `ambiguous`.
 
+### Contract-scoped evidence closure (opt-in)
+
+```bash
+innen query --q '<entity or node ID>' --view evidence
+innen query --q '<exact contract question>' --evidence-contract /path/contract.json
+```
+
+Evidence views expose `node_sha256`. A controller can pin inspected source
+versions, declare permitted node IDs and fact alternatives, and request a
+dependency-closed packet. The Rust engine follows `DEPENDS_ON`, checks pins,
+journal observation windows and provenance at every hop, and retains direct
+journal citations for nodes and edges. `RELATED` does not expand the context.
+Active `CONTRADICTS` links block coverage rather than being hidden by another
+alternative. Missing permitted pins return `source_requests`; out-of-scope
+dependencies are redacted. No journal repair occurs during contract evaluation.
+
+The existing finite-alternative solver minimizes the fully rendered packet's
+`o200k_base` reference-token cost. It does not sum snippet estimates or prune
+partial sets under a false monotonic-token assumption. Shared evidence appears
+once. `covered` means the caller's declared fact alternatives are covered;
+entailment, upstream authentication/authorization and remote-source freshness
+remain outside this mechanical gate. Budget covers `packet`, not the CLI
+control envelope or subsequent model/runtime calls.
+
+Exit 0 means covered; exit 2 requires inspecting `blocked`, `conflict`,
+`budget_insufficient` or `search_limit_unknown`; exit 1 is an input/execution
+error. The contract owns time and selection bounds, so it cannot combine with
+query `--as-of`, `--include-expired`, `--view`, `--limit` or `--offset` overrides.
+The accepted contract shape is enforced by the native CLI and regression tests.
+
+### External-model task proposals (opt-in, review required)
+
+```bash
+innen query --q '<question>' --evidence-contract scope.json --prepare-proposal
+innen query --q '<question>' --evidence-contract scope.json --task-proposal proposal.json
+innen query --q '<question>' --evidence-contract scope.json --task-proposal proposal.json --proposal-review review.json
+```
+
+Use a trusted scope template with `facts: []`. The first command prepares pinned
+source context without invoking a model. The second validates an external
+proposal's exact question/context hash, unique source quotes and cited evidence
+alternatives. It cannot change scope, source pins or budget, and it rejects
+control-plane evidence for business requirements. Valid sources still return
+`source_validated_review_required`: quotation matching does not establish meaning
+or completeness. A caller review receipt must bind both hashes before an accepted
+investigation reaches evidence closure. Missing/conflicting proposals stay withheld.
+
+The runtime does not repair malformed model JSON or refresh invalid quotations.
+Malformed model output remains an error; diagnostic repair and controller review
+must never be promoted to automatic success.
+
+### v0.3.0 migration
+
+Project lookup now accepts canonical IDs, namespace-free slugs, unique labels,
+unique basenames, and absolute paths containing a `/Workspace/` suffix. An
+ambiguous shorthand fails with candidate IDs instead of guessing.
+
+`artifact add-tree` archives a content-addressed directory manifest, not the
+source bytes. Keep or separately archive the source directory until another
+verified byte copy exists. Accepted task-proposal reviews now require explicit
+premises with supported, missing, or counterevidence spans; source-valid model
+text alone remains insufficient.
+
+Conversation grammar, evidence contracts, and task proposals remain opt-in;
+existing conversation/query defaults are unchanged.
+
 ### v0.2.0 migration
 
 Register the knowledge-base root once with an absolute path:
@@ -153,6 +219,21 @@ create graph nodes or infer decisions. `harvest --check` currently inspects
 Markdown already present in `00-inbox/harvest`; `ingest` processes that inbox.
 A successful source read or pickup must not be reported as completed knowledge ingestion.
 
+Directory artifacts containing private or large source bytes can be inventoried without
+copying those bytes into the versionable knowledge base:
+
+```bash
+innen artifact add-tree \
+  --directory /absolute/source-directory \
+  --manifest /absolute/owner-repo/receipts/tree.json \
+  --project project:id
+```
+
+`add-tree` hashes regular files with bounded memory, records symlinks without following
+them, sorts relative paths, archives the resulting manifest content-addressably, and
+returns `metadata_only: true`. The receipt proves the observed tree; it is not a second
+copy or backup of source bytes. Put the manifest outside the inventoried directory.
+
 The dialogue view includes user and assistant text. Tool results, control events,
 and original source fields can be inspected with `--view events` when checking
 claims. Filtering text is not evidence that the remaining text preserves every
@@ -174,8 +255,8 @@ answer accuracy, knowledge completeness, or billed-token savings.
 │                            The LLM Agent                                │
 │          (Codex / Claude Code / Gemini / OpenCode / Grok)               │
 └───────────────────▲─────────────────────────────────┬───────────────────┘
-                    │ query / project (<35ms)         │ harvest / ingest / append
-                    │ (90% – 95% token reduction)     │ (append-only)
+                    │ query / project (bounded views) │ harvest / ingest / append
+                    │ (measure per fixed workload)    │ (append-only)
 ┌───────────────────┴─────────────────────────────────▼───────────────────┐
 │                               innen CLI                                 │
 │                      (Single Static Rust Binary)                        │
@@ -225,25 +306,14 @@ Tested on a production research knowledge base comprising **635 events, 395 rela
 
 The table itself reports `query` at 309.7 ms and 76.4 MB. The earlier blanket claim that all inspection commands take under 35 ms and under 7 MB was incorrect. These historical measurements have not been rerun for the new reader.
 
-### B. Historical Output-Length Comparison
+### B. Output-Length Claims
 
-When an agent needs context on a specific project or topic, retrieval strategies yield vastly different token loads:
-
-```text
-[Context Window Injection Comparison]
-────────────────────────────────────────────────────────────────────────────────────
-1. Naive Flat Dump (Raw Transcripts + Full Wiki)  ████████████████████ 2,500 tokens (100.0% Baseline)
-2. Verbose Project Ledger Dump                   ██████████████████   2,252 tokens (90.1%)
-3. Unranked Graph Entity List                    ██████               739 tokens (29.6%)
-4. innen query --q <term> (BM25 + 3-Hop BFS)     ██                   245 tokens (9.8%)  🔥 90.2% reduction
-5. innen project <id> (Structured Synthesis)     ▌                    102 tokens (4.1%)  🔥 95.9% reduction
-────────────────────────────────────────────────────────────────────────────────────
-```
-
-These are output-length comparisons against the stated baseline. They do not
-show that the commands returned equivalent information or that a model answered
-better. The previous claims of an "exact mental model" and "100% causal recall"
-were unsupported by a reported comprehension test.
+This README does not publish a token-reduction percentage. Output size depends
+on the fixed source snapshot, query, selected view, tokenizer, pagination, and
+required evidence. A shorter response does not establish equivalent information,
+model comprehension, lower total agent tokens, provider billing savings, or a
+better answer. Measure a fixed paired workload for the deployed version before
+making a performance claim.
 
 ---
 
@@ -290,6 +360,28 @@ innen read <session-id> --source claude --source-root /relocated/projects
 or native OpenCode `ses_...` IDs, never a fuzzy prefix. Use `--source` to select
 one tool. `--source-root` requires `--source` and overrides its store location.
 Multiple matching files are an explicit ambiguity error, not an arbitrary choice.
+
+### Opt-in native conversation grammar
+
+```bash
+innen conversation <session-id> --view context --compact --deltas --codec conversation
+innen conversation --encode-json /private/ordinary-page.json
+innen conversation --validate-packet /private/packet.json
+innen conversation --decode-packet /private/packet.json
+```
+
+The Rust codec compares ordinary and existing compact representations with
+line/content-defined chunks and bounded Re-Pair-style dictionary rules. It scores
+the complete self-describing output with `o200k_base` reference tokens, including
+the grammar guide, and retains the cheaper candidate. It preserves source lines,
+roles, order, corrections, warnings and pagination; it performs no semantic
+selection. Grammar packets verify a canonical source SHA-256 on restore.
+
+This is a reference-token representation guarantee, not provider billing or model
+comprehension evidence. Encoding admits pages up to 2 MiB; larger pages require
+pagination. Grammar mode cannot combine with attachment externalization.
+Existing defaults remain unchanged. Multi-hop evidence selection, authorization
+and claim sufficiency are separate responsibilities.
 
 ### Resume a conversation into working context
 
@@ -585,3 +677,5 @@ The Homebrew workflow validates the release tag, archive, and published checksum
 before updating the formula. It requires `HOMEBREW_TAP_TOKEN` for cross-repository
 writes; if absent, it emits a notice and the verified formula must be updated
 manually. This does not affect the release package checks.
+
+Evidence-ID proposal draft: prepare with `query --q QUESTION --evidence-contract scope.json --prepare-proposal --evidence-ids`; pass the emitted output schema to the model transport and only `model_context` as source data. Bind the returned draft with the original `context_sha256` in a trusted envelope and validate using `--task-draft envelope.json`. IDs resolve whole source-body spans; valid references still require semantic review through `--proposal-review`.

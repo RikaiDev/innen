@@ -3,6 +3,10 @@
 pub mod ledger;
 
 use std::path::{Path, PathBuf};
+use std::{fs::File, io::Read};
+
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactError {
@@ -17,6 +21,151 @@ pub struct ArtifactReceipt {
     pub sha256: String,
     pub stored_path: PathBuf,
     pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeEntry {
+    pub path: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeManifest {
+    pub format: &'static str,
+    pub source_path: String,
+    pub tree_sha256: String,
+    pub files: u64,
+    pub symlinks: u64,
+    pub bytes: u64,
+    pub entries: Vec<TreeEntry>,
+}
+
+fn file_sha256(path: &Path) -> Result<(String, u64), ArtifactError> {
+    let mut file =
+        File::open(path).map_err(|e| ArtifactError::Io(format!("open {}: {e}", path.display())))?;
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| ArtifactError::Io(format!("read {}: {e}", path.display())))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        total += read as u64;
+    }
+    let sha256 = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok((sha256, total))
+}
+
+/// Inventory one directory without following symlinks. This proves the
+/// observed tree and file bytes; it is not a second copy of those bytes.
+pub fn inventory_tree(src: &Path) -> Result<TreeManifest, ArtifactError> {
+    let src = src
+        .canonicalize()
+        .map_err(|e| ArtifactError::Io(format!("canonicalize {}: {e}", src.display())))?;
+    if !src.is_dir() {
+        return Err(ArtifactError::Io(format!(
+            "directory inventory requires a directory: {}",
+            src.display()
+        )));
+    }
+    let mut entries = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for child in std::fs::read_dir(&dir)
+            .map_err(|e| ArtifactError::Io(format!("read_dir {}: {e}", dir.display())))?
+        {
+            let path = child
+                .map_err(|e| ArtifactError::Io(format!("read_dir {}: {e}", dir.display())))?
+                .path();
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|e| ArtifactError::Io(format!("metadata {}: {e}", path.display())))?;
+            let relative = path
+                .strip_prefix(&src)
+                .map_err(|e| ArtifactError::Io(format!("relative path {}: {e}", path.display())))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if metadata.file_type().is_symlink() {
+                let target = std::fs::read_link(&path)
+                    .map_err(|e| ArtifactError::Io(format!("readlink {}: {e}", path.display())))?;
+                entries.push(TreeEntry {
+                    path: relative,
+                    kind: "symlink".into(),
+                    sha256: None,
+                    bytes: None,
+                    target: Some(target.to_string_lossy().into_owned()),
+                });
+            } else if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() {
+                let (sha256, bytes) = file_sha256(&path)?;
+                entries.push(TreeEntry {
+                    path: relative,
+                    kind: "file".into(),
+                    sha256: Some(sha256),
+                    bytes: Some(bytes),
+                    target: None,
+                });
+            } else {
+                return Err(ArtifactError::Io(format!(
+                    "unsupported filesystem entry: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let files = entries.iter().filter(|e| e.kind == "file").count() as u64;
+    let symlinks = entries.iter().filter(|e| e.kind == "symlink").count() as u64;
+    let bytes = entries.iter().filter_map(|e| e.bytes).sum();
+    let encoded = serde_json::to_vec(&entries)
+        .map_err(|e| ArtifactError::Io(format!("serialize tree entries: {e}")))?;
+    Ok(TreeManifest {
+        format: "innen.directory-tree.v1",
+        source_path: src.to_string_lossy().into_owned(),
+        tree_sha256: crate::ids::sha256_hex(&encoded),
+        files,
+        symlinks,
+        bytes,
+        entries,
+    })
+}
+
+pub fn add_tree(
+    root: &Path,
+    src: &Path,
+    manifest_path: &Path,
+    project: Option<&str>,
+) -> Result<(TreeManifest, ArtifactReceipt), ArtifactError> {
+    let manifest = inventory_tree(src)?;
+    if manifest_path.starts_with(src) {
+        return Err(ArtifactError::Io(
+            "tree manifest must be outside the inventoried directory".into(),
+        ));
+    }
+    let mut encoded = serde_json::to_vec_pretty(&manifest)
+        .map_err(|e| ArtifactError::Io(format!("serialize tree manifest: {e}")))?;
+    encoded.push(b'\n');
+    if let Some(parent) = manifest_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ArtifactError::Io(format!("create_dir {}: {e}", parent.display())))?;
+    }
+    write_atomic(manifest_path, &encoded)?;
+    let receipt = add(root, manifest_path, project)?;
+    Ok((manifest, receipt))
 }
 
 /// Sanitized stored file name for `src`.
@@ -262,6 +411,36 @@ mod tests {
         assert_eq!(prov["sha256"], serde_json::Value::String(r.sha256.clone()));
         let journal = std::fs::read_to_string(dir.path().join(".innen/journal.jsonl")).unwrap();
         assert!(journal.contains(&format!("artifact:{}", &r.sha256[..8])));
+    }
+
+    #[test]
+    fn directory_tree_is_sorted_hash_bound_and_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("tree");
+        std::fs::create_dir_all(src.join("nested")).unwrap();
+        std::fs::write(src.join("z.txt"), b"z").unwrap();
+        std::fs::write(src.join("nested/a.txt"), b"abc").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("z.txt", src.join("link")).unwrap();
+        let manifest_path = dir.path().join("tree-manifest.json");
+        let (manifest, receipt) = add_tree(dir.path(), &src, &manifest_path, Some("p:x")).unwrap();
+        assert_eq!(manifest.files, 2);
+        assert_eq!(manifest.bytes, 4);
+        assert_eq!(
+            manifest
+                .entries
+                .iter()
+                .find(|entry| entry.path == "nested/a.txt")
+                .and_then(|entry| entry.sha256.as_deref()),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        #[cfg(unix)]
+        assert_eq!(manifest.symlinks, 1);
+        assert!(manifest.entries.windows(2).all(|v| v[0].path < v[1].path));
+        assert_eq!(
+            std::fs::read(&receipt.stored_path).unwrap(),
+            std::fs::read(&manifest_path).unwrap()
+        );
     }
 
     #[test]

@@ -277,13 +277,12 @@ pub fn project_render(root: &Path, id: &str) -> Result<String, String> {
         Ok(events) => materialize(&events, None, true),
         Err(_) => materialize(&[], None, true),
     };
+    let resolved = crate::graph::resolve_project_id(&materialized, id)?;
     let (target_id, project) = materialized
         .nodes
-        .get_key_value(id)
-        .or_else(|| materialized.nodes.get_key_value(&format!("p:{id}")))
-        .or_else(|| materialized.nodes.get_key_value(&format!("project:{id}")))
-        .map(|(k, v)| (k.as_str(), v))
-        .ok_or_else(|| format!("unknown project: {id}"))?;
+        .get_key_value(&resolved)
+        .map(|(key, value)| (key.as_str(), value))
+        .expect("resolved project exists");
     let project_label = project
         .get("label")
         .and_then(|v| v.as_str())

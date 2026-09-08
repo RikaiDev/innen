@@ -4,11 +4,49 @@ use assert_cmd::Command;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ID_1: &str = "11111111-1111-4111-8111-111111111111";
 const ID_2: &str = "22222222-2222-4222-8222-222222222222";
 const ID_3: &str = "33333333-3333-4333-8333-333333333333";
 const ID_4: &str = "44444444-4444-4444-8444-444444444444";
+
+fn recent_rfc3339() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60
+    )
+}
+
+fn make_recent(events: &mut [Value]) {
+    let timestamp = Value::String(recent_rfc3339());
+    for event in events {
+        if event.get("timestamp").is_some() {
+            event["timestamp"] = timestamp.clone();
+        }
+        if event.get("created_at").is_some() {
+            event["created_at"] = timestamp.clone();
+        }
+    }
+}
 
 fn write_codex_session(root: &Path, id: &str, cwd: &str, events: &[Value]) {
     let session_dir = root.join("2026/09/06");
@@ -18,6 +56,7 @@ fn write_codex_session(root: &Path, id: &str, cwd: &str, events: &[Value]) {
         json!({"timestamp":"2026-09-06T00:00:00Z","ordinal":0,"type":"session_meta","payload":{"session_id":id,"cwd":cwd}}),
     ];
     all_events.extend_from_slice(events);
+    make_recent(&mut all_events);
     let content = all_events
         .iter()
         .map(Value::to_string)
@@ -34,6 +73,7 @@ fn write_antigravity_session(root: &Path, id: &str, cwd: &str, events: &[Value])
         json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-09-06T00:00:00Z","content":format!("<user_information>\nWorkspace: {}\n</user_information>\n<USER_REQUEST>\nWork on project in {}\n</USER_REQUEST>", cwd, cwd)}),
     ];
     all_events.extend_from_slice(events);
+    make_recent(&mut all_events);
     let content = all_events
         .iter()
         .map(Value::to_string)
@@ -50,6 +90,7 @@ fn write_antigravity_session_no_workspace(root: &Path, id: &str, events: &[Value
         json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-09-06T00:00:00Z","content":"<user_information>\nThe user does not have any active workspace.\n</user_information>"}),
     ];
     all_events.extend_from_slice(events);
+    make_recent(&mut all_events);
     let content = all_events
         .iter()
         .map(Value::to_string)

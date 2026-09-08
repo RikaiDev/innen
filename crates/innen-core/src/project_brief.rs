@@ -46,21 +46,10 @@ pub fn list(root: &Path, options: &TaskOptions<'_>) -> Result<Value, String> {
         .collect();
     let now = crate::journal::observed_utc_now();
     let graph = materialize(&events, Some(&now), false);
-    let project = options.project.map(|p| {
-        [p.to_string(), format!("project:{p}"), format!("p:{p}")]
-            .into_iter()
-            .find(|id| graph.nodes.contains_key(id))
-            .unwrap_or_else(|| p.to_string())
-    });
-    if let Some(id) = &project {
-        if !graph
-            .nodes
-            .get(id)
-            .is_some_and(|n| text(n, "type").eq_ignore_ascii_case("project"))
-        {
-            return Err(format!("unknown project: {id}"));
-        }
-    }
+    let project = options
+        .project
+        .map(|input| crate::graph::resolve_project_id(&graph, input))
+        .transpose()?;
     let mut tasks = Vec::new();
     let mut excluded = 0;
     for (id, node) in &graph.nodes {

@@ -24,6 +24,11 @@ fn fixture(root: &std::path::Path) {
             json!({"id":id,"type":"Project","label":id}),
         );
     }
+    append(
+        root,
+        "node.upsert",
+        json!({"id":"workspace:weemed-ai/hygieia","type":"Project","label":"Hygieia"}),
+    );
     for (id, status) in [
         ("task:open", "open"),
         ("task:done", "open"),
@@ -64,6 +69,58 @@ fn fixture(root: &std::path::Path) {
         "edge.retract",
         json!({"from":"task:retracted","to":"project:one","type":"BELONGS_TO"}),
     );
+}
+
+#[test]
+fn project_identity_accepts_id_slug_label_basename_and_absolute_workspace_path() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    for input in [
+        "workspace:weemed-ai/hygieia",
+        "weemed-ai/hygieia",
+        "Hygieia",
+        "hygieia",
+        "/Users/example/Workspace/weemed-ai/hygieia",
+    ] {
+        let out = run(dir.path(), &[input]);
+        assert!(out["projects"].get("workspace:weemed-ai/hygieia").is_some());
+    }
+    let full = run(
+        dir.path(),
+        &[
+            "/Users/example/Workspace/weemed-ai/hygieia",
+            "--view",
+            "full",
+        ],
+    );
+    assert_eq!(full["id"], "/Users/example/Workspace/weemed-ai/hygieia");
+}
+
+#[test]
+fn ambiguous_project_basename_lists_candidates_instead_of_guessing() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    for (id, label) in [
+        ("workspace:team-a/shared", "Alpha"),
+        ("workspace:team-b/shared", "Beta"),
+    ] {
+        append(
+            dir.path(),
+            "node.upsert",
+            json!({"id":id,"type":"Project","label":label}),
+        );
+    }
+    let output = Command::cargo_bin("innen")
+        .unwrap()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "shared"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8(output.stderr).unwrap().contains(
+        "ambiguous project: shared; candidates: workspace:team-a/shared, workspace:team-b/shared"
+    ));
 }
 
 #[test]

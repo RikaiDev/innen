@@ -70,6 +70,29 @@ impl ContextGraph {
         facts: &[Fact],
         state_limit: usize,
     ) -> Result<Selection, SelectionError> {
+        self.select_facts_inner(budget, facts, state_limit, None)
+    }
+
+    /// Minimize a caller-rendered packet cost over finite supplied alternatives.
+    /// BPE cost need not be monotone under set union: never prune a partial set
+    /// using its token cost. Search exhaustion remains unknown, not infeasible.
+    pub fn select_facts_by(
+        &self,
+        budget: u64,
+        facts: &[Fact],
+        state_limit: usize,
+        cost: &PacketCost<'_>,
+    ) -> Result<Selection, SelectionError> {
+        self.select_facts_inner(budget, facts, state_limit, Some(cost))
+    }
+
+    fn select_facts_inner(
+        &self,
+        budget: u64,
+        facts: &[Fact],
+        state_limit: usize,
+        packet_cost: Option<&PacketCost<'_>>,
+    ) -> Result<Selection, SelectionError> {
         let mut ids = BTreeSet::new();
         let mut closed = Vec::new();
         for fact in facts {
@@ -96,6 +119,8 @@ impl ContextGraph {
             state_limit,
             states: 0,
             best: None,
+            packet_cost,
+            visited: BTreeSet::new(),
         };
         search.visit(0, &BTreeSet::new())?;
         search
@@ -222,21 +247,39 @@ struct FactSearch<'a> {
     state_limit: usize,
     states: usize,
     best: Option<Selection>,
+    packet_cost: Option<&'a PacketCost<'a>>,
+    visited: BTreeSet<(usize, BTreeSet<u64>)>,
 }
+
+type PacketCost<'a> = dyn Fn(&BTreeSet<u64>) -> Result<u64, SelectionError> + 'a;
 
 impl FactSearch<'_> {
     fn visit(&mut self, index: usize, selected: &BTreeSet<u64>) -> Result<(), SelectionError> {
+        if !self.visited.insert((index, selected.clone())) {
+            return Ok(());
+        }
         if self.states >= self.state_limit {
             return Err(SelectionError::SearchLimit {
                 limit: self.state_limit,
             });
         }
         self.states += 1;
-        let cost = self.graph.cost(selected)?;
-        if cost > self.budget || self.best.as_ref().is_some_and(|b| cost >= b.cost) {
+        let leaf = index == self.alternatives.len();
+        let cost = if let Some(packet_cost) = self.packet_cost {
+            if leaf {
+                packet_cost(selected)?
+            } else {
+                0
+            }
+        } else {
+            self.graph.cost(selected)?
+        };
+        if (self.packet_cost.is_none() || leaf)
+            && (cost > self.budget || self.best.as_ref().is_some_and(|b| cost >= b.cost))
+        {
             return Ok(());
         }
-        if index == self.alternatives.len() {
+        if leaf {
             self.best = Some(Selection {
                 selected: selected.clone(),
                 cost,
@@ -255,6 +298,38 @@ impl FactSearch<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rendered_packet_cost_not_additive_and_not_monotone() {
+        let g = ContextGraph::new(
+            vec![node(1, 10, 0.), node(2, 10, 0.), node(3, 1, 0.)],
+            vec![],
+        )
+        .unwrap();
+        let facts = vec![
+            Fact {
+                id: "a".into(),
+                alternatives: vec![BTreeSet::from([1]), BTreeSet::from([3])],
+            },
+            Fact {
+                id: "b".into(),
+                alternatives: vec![BTreeSet::from([2])],
+            },
+        ];
+        let cost = |ids: &BTreeSet<u64>| {
+            Ok(if ids == &BTreeSet::from([1, 2]) {
+                5
+            } else {
+                100
+            })
+        };
+        let selected = g.select_facts_by(5, &facts, 100, &cost).unwrap();
+        assert_eq!(selected.selected, BTreeSet::from([1, 2]));
+        assert_eq!(selected.cost, 5);
+        assert!(matches!(
+            g.select_facts_by(5, &facts, 1, &cost),
+            Err(SelectionError::SearchLimit { .. })
+        ));
+    }
     fn node(id: u64, cost: u64, relevance: f64) -> Node {
         Node {
             id,

@@ -368,6 +368,42 @@ fn artifact_roundtrip_cli() {
     assert_eq!(bytes, b"hello-bytes", "stored bytes must be identical");
 }
 
+#[test]
+fn artifact_tree_cli_archives_metadata_not_source_bytes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = dir.path().join("source-tree");
+    std::fs::create_dir(&source).expect("mkdir source");
+    std::fs::write(source.join("data.bin"), b"private-source-bytes").expect("write source");
+    let manifest = dir.path().join("receipts/tree.json");
+    let root = dir.path().join("kb");
+    let assert = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .args([
+            "--root",
+            root.to_str().unwrap(),
+            "artifact",
+            "add-tree",
+            "--directory",
+            source.to_str().unwrap(),
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--project",
+            "project:test",
+        ])
+        .assert()
+        .code(0);
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("JSON output");
+    assert_eq!(value["files"], 1);
+    assert_eq!(value["source_bytes"], 20);
+    assert_eq!(value["metadata_only"], true);
+    assert!(manifest.is_file());
+    assert_eq!(
+        std::fs::read(source.join("data.bin")).unwrap(),
+        b"private-source-bytes"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Case 8: cloud status stub via PATH (byte-exact canned output)
 // ---------------------------------------------------------------------------

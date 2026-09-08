@@ -798,6 +798,7 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
                     "status": status,
                     "why": why,
                     "node": node,
+                    "node_sha256": crate::ids::sha256_hex(node.to_string().as_bytes()),
                     "history": history,
                 })
             })
