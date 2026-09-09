@@ -88,59 +88,63 @@ pub(super) fn mirror_ledger_receipt(
             .map_err(|e| {
                 format!("ledger artifact synced but document identity sync failed: {e}")
             })?;
-        journal
-            .append(
-                "edge.assert",
-                &serde_json::json!({
-                    "from": id,
-                    "to": document_id,
-                    "type": "REVISION_OF",
-                    "provenance": receipt.provenance,
-                }),
-            )
-            .map_err(|e| format!("ledger document synced but revision link failed: {e}"))?;
+        innen_core::edge_write::append_edge_assert(
+            kb_root,
+            &innen_core::edge_write::EdgeAssert {
+                provenance: receipt.provenance.as_deref(),
+                ..innen_core::edge_write::EdgeAssert::new(
+                    &id,
+                    "REVISION_OF".parse().unwrap(),
+                    document_id,
+                )
+            },
+        )
+        .map_err(|e| format!("ledger document synced but revision link failed: {e}"))?;
     }
     if receipt.relation == "belongs_to" && !receipt.owner_project.trim().is_empty() {
-        journal
-            .append(
-                "edge.assert",
-                &serde_json::json!({
-                    "from": id,
-                    "to": receipt.owner_project,
-                    "type": "BELONGS_TO",
-                    "provenance": receipt.provenance,
-                }),
-            )
-            .map_err(|e| format!("ledger node synced but KB membership sync failed: {e}"))?;
+        innen_core::edge_write::append_edge_assert(
+            kb_root,
+            &innen_core::edge_write::EdgeAssert {
+                provenance: receipt.provenance.as_deref(),
+                ..innen_core::edge_write::EdgeAssert::new(
+                    &id,
+                    "BELONGS_TO".parse().unwrap(),
+                    &receipt.owner_project,
+                )
+            },
+        )
+        .map_err(|e| format!("ledger node synced but KB membership sync failed: {e}"))?;
     }
     if receipt.relation == "reference" && !receipt.owner_project.trim().is_empty() {
-        journal
-            .append(
-                "edge.assert",
-                &serde_json::json!({
-                    "from": id,
-                    "to": receipt.owner_project,
-                    "type": "REFERENCES_PROJECT",
-                    "provenance": receipt.provenance,
-                }),
-            )
-            .map_err(|e| format!("ledger node synced but owner reference sync failed: {e}"))?;
+        innen_core::edge_write::append_edge_assert(
+            kb_root,
+            &innen_core::edge_write::EdgeAssert {
+                provenance: receipt.provenance.as_deref(),
+                ..innen_core::edge_write::EdgeAssert::new(
+                    &id,
+                    "REFERENCES_PROJECT".parse().unwrap(),
+                    &receipt.owner_project,
+                )
+            },
+        )
+        .map_err(|e| format!("ledger node synced but owner reference sync failed: {e}"))?;
     }
     if let Some(archive_project) = archive_project
         .filter(|archive| !archive.trim().is_empty())
         .filter(|archive| *archive != receipt.owner_project)
     {
-        journal
-            .append(
-                "edge.assert",
-                &serde_json::json!({
-                    "from": id,
-                    "to": archive_project,
-                    "type": "REFERENCES_PROJECT",
-                    "provenance": receipt.provenance,
-                }),
-            )
-            .map_err(|e| format!("ledger owner synced but archive reference sync failed: {e}"))?;
+        innen_core::edge_write::append_edge_assert(
+            kb_root,
+            &innen_core::edge_write::EdgeAssert {
+                provenance: receipt.provenance.as_deref(),
+                ..innen_core::edge_write::EdgeAssert::new(
+                    &id,
+                    "REFERENCES_PROJECT".parse().unwrap(),
+                    archive_project,
+                )
+            },
+        )
+        .map_err(|e| format!("ledger owner synced but archive reference sync failed: {e}"))?;
     }
     Ok(())
 }
@@ -227,17 +231,18 @@ pub(super) fn mirror_ledger_event(
                 }),
             )
             .map_err(|e| format!("ledger event synced but superseded node update failed: {e}"))?;
-        journal
-            .append(
-                "edge.assert",
-                &serde_json::json!({
-                    "from": format!("artifact-revision:{}", current.id),
-                    "to": format!("artifact-revision:{}", old_id),
-                    "type": "SUPERSEDES",
-                    "provenance": event.provenance,
-                }),
-            )
-            .map_err(|e| format!("ledger event synced but supersession link failed: {e}"))?;
+        innen_core::edge_write::append_edge_assert(
+            kb_root,
+            &innen_core::edge_write::EdgeAssert {
+                provenance: event.provenance.as_deref(),
+                ..innen_core::edge_write::EdgeAssert::new(
+                    &format!("artifact-revision:{}", current.id),
+                    "SUPERSEDES".parse().unwrap(),
+                    &format!("artifact-revision:{}", old_id),
+                )
+            },
+        )
+        .map_err(|e| format!("ledger event synced but supersession link failed: {e}"))?;
     }
     Ok(())
 }

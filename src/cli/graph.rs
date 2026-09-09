@@ -159,48 +159,23 @@ pub(super) fn cmd_graph_relate(
     format: &str,
     args: &GraphRelateArgs,
 ) -> i32 {
-    use serde_json::json;
+    use innen_core::edge_write::{append_edge_assert, EdgeAssert};
     let edge_ty: innen_core::graph::EdgeType = args.edge.parse().unwrap();
-    // Thin call: exact endpoint resolution, read-only journal integrity, and
-    // adjacency/provenance validation live in innen-core::graph.
-    if let Err(e) = innen_core::graph::validate_relate_request_strict(
-        root,
-        &args.from,
-        &edge_ty,
-        &args.to,
-        args.provenance.as_deref(),
-        args.allow_dangling,
-    ) {
-        eprintln!("error: {e}");
-        return 1;
-    }
-    let mut payload = json!({
-        "from": args.from,
-        "type": edge_ty.to_string(),
-        "to": args.to,
-    });
-    if let Some(w) = args.weight {
-        payload["weight"] = json!(w);
-    }
-    if let Some(vf) = &args.valid_from {
-        payload["valid_from"] = json!(vf);
-    }
-    if let Some(vu) = &args.valid_until {
-        payload["valid_until"] = json!(vu);
-    }
-    if let Some(prov) = &args.provenance {
-        payload["provenance"] = json!(prov);
-    }
-    // Re-open is cheap; reuse open handle would self-block on the fs2 lock,
-    // so open once more here for the append (sequential, not nested).
-    let journal = match innen_core::journal::Journal::open(root) {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
+    // Single choke point: validate-before-open + append live in
+    // innen-core::edge_write, shared by every edge writer. Validating the
+    // raw file first is load-bearing: opening would quarantine corrupt
+    // lines and rewrite the journal before validation sees them.
+    let req = EdgeAssert {
+        from: &args.from,
+        edge: edge_ty,
+        to: &args.to,
+        weight: args.weight,
+        valid_from: args.valid_from.as_deref(),
+        valid_until: args.valid_until.as_deref(),
+        provenance: args.provenance.as_deref(),
+        allow_dangling: args.allow_dangling,
     };
-    match journal.append("edge.assert", &payload) {
+    match append_edge_assert(root, &req) {
         Ok(id) => {
             if is_human(format) {
                 println!("created\t{}", escape_tsv_field(&id));

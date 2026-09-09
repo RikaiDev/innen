@@ -337,13 +337,13 @@ pub fn add(
         ))
     })?;
     if let Some(p) = project {
-        let edge_payload = serde_json::json!({
-            "from": artifact_id,
-            "to": p,
-            "type": crate::graph::EdgeType::BelongsTo.to_string(),
-            "provenance": "local file add",
-        });
-        journal.append("edge.assert", &edge_payload).map_err(|e| {
+        // Shared choke point: an unknown project fails closed instead of
+        // landing as a dangling edge (same semantics as `graph relate`).
+        let req = crate::edge_write::EdgeAssert {
+            provenance: Some("local file add"),
+            ..crate::edge_write::EdgeAssert::new(&artifact_id, crate::graph::EdgeType::BelongsTo, p)
+        };
+        crate::edge_write::append_edge_assert(root, &req).map_err(|e| {
             ArtifactError::Journal(format!(
                 "append edge.assert for {artifact_id} -> {p}: {e} (artifact files already stored at {})",
                 stored_path.display()
@@ -391,6 +391,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("note.txt");
         std::fs::write(&src, b"hello-bytes").unwrap(); // 11 bytes
+                                                       // Strict endpoint guard: the project must exist first.
+        let journal = crate::journal::Journal::open(dir.path()).unwrap();
+        journal
+            .append(
+                "node.upsert",
+                &serde_json::json!({"id": "p:x", "type": "Project", "label": "x"}),
+            )
+            .unwrap();
         let r = add(dir.path(), &src, Some("p:x")).unwrap();
         assert_eq!(r.bytes, 11);
         assert_eq!(std::fs::read(&r.stored_path).unwrap(), b"hello-bytes");
@@ -414,6 +422,19 @@ mod tests {
     }
 
     #[test]
+    fn add_with_unknown_project_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("note.txt");
+        std::fs::write(&src, b"hello-bytes").unwrap();
+        let err = add(dir.path(), &src, Some("project:ghost"))
+            .expect_err("unknown project must fail closed");
+        assert!(
+            err.to_string().contains("missing graph endpoint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn directory_tree_is_sorted_hash_bound_and_does_not_follow_symlinks() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("tree");
@@ -423,6 +444,14 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink("z.txt", src.join("link")).unwrap();
         let manifest_path = dir.path().join("tree-manifest.json");
+        // Strict endpoint guard: the project must exist first.
+        let journal = crate::journal::Journal::open(dir.path()).unwrap();
+        journal
+            .append(
+                "node.upsert",
+                &serde_json::json!({"id": "p:x", "type": "Project", "label": "x"}),
+            )
+            .unwrap();
         let (manifest, receipt) = add_tree(dir.path(), &src, &manifest_path, Some("p:x")).unwrap();
         assert_eq!(manifest.files, 2);
         assert_eq!(manifest.bytes, 4);

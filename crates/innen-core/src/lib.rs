@@ -6,6 +6,7 @@ pub mod context_evidence;
 pub mod context_selection;
 pub mod conversation;
 pub mod doctor;
+pub mod edge_write;
 pub mod evidence_closure;
 pub mod evidence_state;
 pub mod graph;
