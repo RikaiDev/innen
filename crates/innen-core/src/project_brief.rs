@@ -36,6 +36,13 @@ pub fn list(root: &Path, options: &TaskOptions<'_>) -> Result<Value, String> {
     let entries = Journal::open(root)
         .and_then(|j| j.read_all())
         .map_err(|e| e.to_string())?;
+    let harvest_report = crate::harvest::check(root);
+    let (harvest_pending, harvest_skipped) = harvest_report
+        .taps
+        .iter()
+        .fold((0usize, 0usize), |(pending, skipped), tap| {
+            (pending + tap.new_files.len(), skipped + tap.skipped.len())
+        });
     let events: Vec<Value> = entries
         .iter()
         .map(|e| {
@@ -101,7 +108,13 @@ pub fn list(root: &Path, options: &TaskOptions<'_>) -> Result<Value, String> {
     let next = options.offset.saturating_add(selected.len());
     let mut out = json!({"scope": "recorded tasks; unknown status is not proof of unfinished work",
         "total":total,"excluded_terminal":excluded,"next_offset":if next < total {Some(next)} else {None},
-        "detail":"innen project <project-id> --view evidence"});
+        "detail":"innen project <project-id> --view evidence",
+        "harvest": {
+            "pending": harvest_pending,
+            "skipped": harvest_skipped,
+            "check_command": "innen --format json harvest --check",
+            "ingest_command": "innen --format json ingest"
+        }});
     let projects: std::collections::BTreeMap<_, _> = graph
         .nodes
         .iter()
@@ -165,6 +178,13 @@ pub fn render(value: &Value) -> String {
         "Recorded tasks: {} (terminal excluded: {}); next_offset={}\n",
         value["total"], value["excluded_terminal"], value["next_offset"]
     );
+    let pending = value["harvest"]["pending"].as_u64().unwrap_or(0);
+    let skipped = value["harvest"]["skipped"].as_u64().unwrap_or(0);
+    if pending > 0 || skipped > 0 {
+        out.push_str(&format!(
+            "Harvest pending: {pending}; skipped: {skipped}; run `innen --format json ingest` after reviewing `innen --format json harvest --check`\n"
+        ));
+    }
     if let Some(rows) = value["rows"].as_array() {
         for row in rows {
             out.push_str(&format!(

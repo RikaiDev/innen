@@ -217,6 +217,35 @@ fn portfolio_retains_unassigned_tasks_empty_projects_and_pagination() {
 }
 
 #[test]
+fn brief_surfaces_harvest_backlog_without_transcript_body() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let inbox = dir.path().join("00-inbox/harvest");
+    std::fs::create_dir_all(&inbox).unwrap();
+    std::fs::write(
+        inbox.join("pending.md"),
+        "A pending conversation body must not appear in the brief.\n",
+    )
+    .unwrap();
+
+    let out = run(dir.path(), &["one"]);
+    assert_eq!(out["harvest"]["pending"], 1);
+    assert_eq!(out["harvest"]["skipped"], 0);
+    assert_eq!(out["harvest"]["ingest_command"], "innen --format json ingest");
+
+    let human = Command::cargo_bin("innen")
+        .unwrap()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["--format", "human", "project", "one"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(text.contains("Harvest pending: 1"));
+    assert!(!text.contains("pending conversation body"));
+}
+
+#[test]
 fn missing_kb_fails_without_creating_state_and_full_view_remains_available() {
     let dir = tempfile::tempdir().unwrap();
     Command::cargo_bin("innen")
