@@ -1,0 +1,90 @@
+name: Release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build assets for
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90"
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          cp target/release/innen "$stage/innen"
+          tar -czf "innen-${{ matrix.target }}.tar.gz" -C "$stage" innen
+      - name: Write build receipt
+        run: |
+          set -euo pipefail
+          sha="$(sha256sum "innen-${{ matrix.target }}.tar.gz" | cut -d' ' -f1)"
+          rustc_v="$(rustc --version)"
+          commit="$(git rev-parse HEAD)"
+          tag="${{ inputs.tag || github.ref_name }}"
+          ver="${tag#v}"
+          printf '{"version":%s,"target":%s,"source_commit":%s,"run_url":%s,"archive":%s,"sha256":%s,"rustc":%s,"provenance_type":%s}' \
+            "$(printf '%s' "$ver" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "${{ matrix.target }}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "$commit" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "innen-${{ matrix.target }}.tar.gz" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "$sha" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "$rustc_v" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            '"build metadata; not a cryptographic attestation"' \
+            > "build-${{ matrix.target }}.json"
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          (sha256sum "innen-${{ matrix.target }}.tar.gz" | sed 's|  \./|  |') > "SHA256SUMS.${{ matrix.target }}"
+          gh release upload "$tag" "innen-${{ matrix.target }}.tar.gz" "build-${{ matrix.target }}.json" "SHA256SUMS.${{ matrix.target }}" --clobber
+
+  sums:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Merge per-target sums into SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          rm -rf sums && mkdir sums && cd sums
+          gh release download "$tag" --pattern 'SHA256SUMS.*' --clobber
+          cat SHA256SUMS.* | sort -u > SHA256SUMS
+          awk '$2 == "innen-aarch64-apple-darwin.tar.gz" { print }' SHA256SUMS > selected.sha256
+          test "$(wc -l < selected.sha256)" -eq 1
+          awk '$2 == "innen-x86_64-unknown-linux-gnu.tar.gz" { print }' SHA256SUMS > selected2.sha256
+          test "$(wc -l < selected2.sha256)" -eq 1
+          gh release upload "$tag" SHA256SUMS --clobber
