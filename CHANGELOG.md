@@ -1,6 +1,13 @@
 # Changelog
 
-## [0.3.0] - 2026-09-08
+## [0.4.0] - 2026-09-11
+
+### Added
+
+- Agent stop hooks: `innen hook install|run|pending` for
+  claude-code, codex, opencode, antigravity, and grok. Session end
+  snapshots the worktree into `00-inbox/harvest/pending-*.md`
+  (digest-deduped, fail-open); default install scope is user-global.
 
 ### Added
 

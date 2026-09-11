@@ -6,6 +6,7 @@ use super::{
     conversation::ConversationArgs,
     graph::GraphOp,
     harvest::HarvestArgs,
+    hook::HookArgs,
     index::IndexOp,
     middleware::MiddlewareArgs,
     navigation::{ProjectArgs, SearchArgs, TimelineArgs},
@@ -80,6 +81,8 @@ pub(super) enum Commands {
     },
     /// Dry-run harvest check over `00-inbox/harvest` (Task 14).
     Harvest(HarvestArgs),
+    /// Agent stop hooks: install config, snapshot on stop, list pending.
+    Hook(HookArgs),
     /// Ingest new inbox files into the journal (Task 14).
     Ingest,
     /// Prepare a bounded offline context packet from caller-selected JSON.

@@ -6,6 +6,7 @@ mod config;
 mod conversation;
 mod graph;
 mod harvest;
+mod hook;
 mod index;
 mod ledger;
 mod middleware;
@@ -163,6 +164,10 @@ pub(crate) fn run() -> i32 {
         Commands::Harvest(args) => {
             let root = resolve_or_exit!(cli.root.clone());
             harvest::cmd_harvest(&root, &cli.format, args)
+        }
+        Commands::Hook(args) => {
+            let root = resolve_or_exit!(cli.root.clone());
+            hook::cmd_hook(&root, &cli.format, args)
         }
         Commands::Ingest => {
             let root = resolve_or_exit!(cli.root.clone());
