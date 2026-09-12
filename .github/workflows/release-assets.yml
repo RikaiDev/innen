@@ -48,28 +48,38 @@ jobs:
       - name: Write build receipt
         run: |
           set -euo pipefail
-          sha="$(sha256sum "innen-${{ matrix.target }}.tar.gz" | cut -d' ' -f1)"
-          rustc_v="$(rustc --version)"
-          commit="$(git rev-parse HEAD)"
           tag="${{ inputs.tag || github.ref_name }}"
-          ver="${tag#v}"
-          printf '{"version":%s,"target":%s,"source_commit":%s,"run_url":%s,"archive":%s,"sha256":%s,"rustc":%s,"provenance_type":%s}' \
-            "$(printf '%s' "$ver" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "${{ matrix.target }}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "$commit" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "innen-${{ matrix.target }}.tar.gz" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "$sha" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            "$(printf '%s' "$rustc_v" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-            '"build metadata; not a cryptographic attestation"' \
-            > "build-${{ matrix.target }}.json"
+          TARGET="${{ matrix.target }}" TAG="$tag" \
+          GITHUB_SERVER_URL="$GITHUB_SERVER_URL" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+          GITHUB_RUN_ID="$GITHUB_RUN_ID" python3 - <<'EOF'
+          import hashlib, json, os, subprocess
+          archive = "innen-%s.tar.gz" % os.environ["TARGET"]
+          with open(archive, "rb") as f:
+              sha = hashlib.sha256(f.read()).hexdigest()
+          rustc_v = subprocess.run(["rustc", "--version"], capture_output=True, text=True).stdout.strip()
+          commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+          tag = os.environ["TAG"]
+          receipt = {
+              "version": tag[1:] if tag.startswith("v") else tag,
+              "target": os.environ["TARGET"],
+              "source_commit": commit,
+              "run_url": "%s/%s/actions/runs/%s" % (os.environ["GITHUB_SERVER_URL"], os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"]),
+              "archive": archive,
+              "sha256": sha,
+              "rustc": rustc_v,
+              "provenance_type": "build metadata; not a cryptographic attestation",
+          }
+          with open("build-%s.json" % os.environ["TARGET"], "w") as f:
+              json.dump(receipt, f, indent=2)
+              f.write("\n")
+          EOF
       - name: Upload assets to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ inputs.tag || github.ref_name }}"
-          (sha256sum "innen-${{ matrix.target }}.tar.gz" | sed 's|  \./|  |') > "SHA256SUMS.${{ matrix.target }}"
+          python3 -c "import hashlib; print(hashlib.sha256(open('innen-${{ matrix.target }}.tar.gz','rb').read()).hexdigest() + '  innen-${{ matrix.target }}.tar.gz')" > "SHA256SUMS.${{ matrix.target }}"
           gh release upload "$tag" "innen-${{ matrix.target }}.tar.gz" "build-${{ matrix.target }}.json" "SHA256SUMS.${{ matrix.target }}" --clobber
 
   sums:
