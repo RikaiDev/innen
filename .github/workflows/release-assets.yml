@@ -90,6 +90,7 @@ jobs:
       - name: Merge per-target sums into SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${{ inputs.tag || github.ref_name }}"
