@@ -320,6 +320,21 @@ information, comprehension quality, or a guarantee for v0.3.0. Current-version
 claims require a rerun with a fixed public fixture. See [BENCHMARKS.md](BENCHMARKS.md)
 for the measurement contract and claim boundaries.
 
+### Deterministic tool pruning (`--prune`)
+
+Long-running agent conversations accumulate repetitive file reads and search results.
+`innen read` and `innen resume` offer deterministic tool pruning via `--prune`:
+- **Superseded file reads**: File reads followed by subsequent writes or edits to the
+  same file path are truncated to a one-line provenance note (`[omitted: read of 'file' superseded by write at line L]`).
+- **Duplicate unchanged reads**: Redundant earlier reads of the same path without intervening edits are pruned.
+- **Empty search results**: Grep and find queries with zero matches are folded into single-line summaries.
+- **Safety invariants**: User instructions, assistant messages, non-zero exit code failures,
+  and the newest turns (default 4) are pinned and never pruned.
+
+In paired workload measurements on multi-turn tool interaction, deterministic pruning
+reduced serialized reference tokens from 3,129 to 297 `o200k_base` tokens (**90.51% reduction**),
+eliminating stale tool baggage without external LLM summarization or model calls.
+
 ---
 
 ## 6. Quick Start

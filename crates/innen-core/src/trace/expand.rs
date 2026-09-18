@@ -76,7 +76,7 @@ pub fn expand(root: &Path, key: &str, record: usize, expected: &str) -> Result<V
         Locator::Url { .. } => return Err(Error("remote expansion is not supported".into())),
     };
     let text = output["content"].as_str().unwrap_or("");
-    if !crate::tap::scan_credentials(text).is_empty() {
+    if !crate::credentials::scan_credentials(text).is_empty() {
         return Err(Error("credential-like source record withheld".into()));
     }
     Ok(

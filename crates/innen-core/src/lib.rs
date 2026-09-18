@@ -5,6 +5,7 @@ pub mod context_candidates;
 pub mod context_evidence;
 pub mod context_selection;
 pub mod conversation;
+pub mod credentials;
 pub mod doctor;
 pub mod edge_write;
 pub mod evidence_closure;

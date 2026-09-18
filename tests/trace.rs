@@ -71,6 +71,76 @@ fn wiki_clue_reaches_source_then_warm_cache_and_exact_expansion() {
 }
 
 #[test]
+fn harvested_bare_provenance_reaches_the_inbox_source() {
+    let kb = tempfile::tempdir().unwrap();
+    let inbox = kb.path().join("00-inbox/harvest");
+    fs::create_dir_all(&inbox).unwrap();
+    let source = inbox.join("browser-agent-history.md");
+    let text = "Browser Agent Windows bundle was delivered for the station.\n";
+    fs::write(&source, text).unwrap();
+
+    let journal = Journal::open(kb.path()).unwrap();
+    journal
+        .append(
+            "node.upsert",
+            &json!({
+                "id":"source:history",
+                "type":"Artifact",
+                "label":"browser-agent-history.md",
+                "body":text,
+                "provenance":{"path":"browser-agent-history.md","bytes":text.len()}
+            }),
+        )
+        .unwrap();
+    drop(journal);
+
+    let out = output(kb.path(), &["trace", "--q", "browser agent Windows"]);
+    assert!(out["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|hit| hit["quote"].as_str().unwrap().contains("delivered")));
+    assert!(out["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["status"] == "searched"));
+    assert!(out["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|hit| { hit["source_path"].as_str() == Some(source.to_str().unwrap()) }));
+}
+
+#[test]
+fn trace_accepts_explicit_utf8_sources_without_an_extension_or_with_log_extension() {
+    for filename in ["release-history", "release-history.log"] {
+        let kb = tempfile::tempdir().unwrap();
+        let source = kb.path().join(filename);
+        fs::write(
+            &source,
+            "## User\nRelease policy: develop integrates; main deploys only approved tags.\n",
+        )
+        .unwrap();
+        page(kb.path(), &source);
+        output(kb.path(), &["wiki", "sync"]);
+
+        let out = output(kb.path(), &["trace", "--q", "release develop main"]);
+        assert!(out["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| { hit["quote"].as_str().unwrap().contains("approved tags") }));
+        assert!(!out["sources"].as_array().unwrap().iter().any(|source| {
+            source["status"] == "unavailable"
+                && source["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("unsupported source type"))
+        }));
+    }
+}
+
+#[test]
 fn reverse_delivery_finds_native_user_and_preserves_physical_source_identity() {
     let kb = tempfile::tempdir().unwrap();
     let native = tempfile::tempdir().unwrap();
@@ -126,6 +196,58 @@ fn reverse_delivery_finds_native_user_and_preserves_physical_source_identity() {
         .as_str()
         .unwrap()
         .contains("rollback receipt"));
+}
+
+#[test]
+fn native_command_stdout_keeps_ordinal_pointer_and_scalar_hash() {
+    let kb = tempfile::tempdir().unwrap();
+    let native = tempfile::tempdir().unwrap();
+    let id = "00000000-0000-4000-8000-000000000012";
+    let path = native.path().join(format!("{id}.jsonl"));
+    let output_text = "CORRECT_COMMAND_OUTPUT";
+    let events = [
+        json!({"type":"event_msg","ordinal":17,"payload":{"type":"item_completed","item":{"type":"command_execution","aggregated_output":output_text}}}),
+    ];
+    fs::write(
+        &path,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let journal = Journal::open(kb.path()).unwrap();
+    journal
+        .append(
+            "node.upsert",
+            &json!({"id":"artifact:cmd","type":"Artifact","label":"command evidence"}),
+        )
+        .unwrap();
+    journal.append("node.upsert", &json!({"id":format!("conversation:codex:{id}"),"type":"Conversation","label":"native command"})).unwrap();
+    journal.append("edge.assert", &json!({"from":format!("conversation:codex:{id}"),"type":"DELIVERED","to":"artifact:cmd","provenance":"fixture"})).unwrap();
+    drop(journal);
+    let out = output(
+        kb.path(),
+        &[
+            "trace",
+            "--q",
+            "CORRECT_COMMAND_OUTPUT",
+            "--seed",
+            "artifact:cmd",
+            "--source-root",
+            native.path().to_str().unwrap(),
+        ],
+    );
+    let hit = &out["hits"][0];
+    assert_eq!(hit["ordinal"], 17);
+    assert_eq!(hit["json_pointer"], "/payload/item/aggregated_output");
+    assert_eq!(
+        hit["scalar_sha256"],
+        innen_core::ids::sha256_hex(output_text.as_bytes())
+    );
+    assert!(hit["quote"].as_str().unwrap().contains(output_text));
 }
 
 #[test]

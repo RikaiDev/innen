@@ -107,6 +107,47 @@ fn hyphenated_filename_is_a_literal_candidate() {
 }
 
 #[test]
+fn topic_query_requires_conjunctive_body_match_instead_of_one_generic_anchor() {
+    let kb = tempfile::tempdir().expect("temp kb");
+    let journal = Journal::open(kb.path()).expect("open journal");
+    node(
+        &journal,
+        "artifact:relevant",
+        "Artifact",
+        "2026-08-26-browser-history.md",
+        "Browser Agent Windows portable bundle is ready for the station.",
+    );
+    node(
+        &journal,
+        "artifact:generic-agent",
+        "Artifact",
+        "agent handbook",
+        "Generic agent operating notes without the requested topic.",
+    );
+    node(
+        &journal,
+        "artifact:partial",
+        "Artifact",
+        "browser-agent notes",
+        "Browser Agent Linux notes only.",
+    );
+    drop(journal);
+
+    let out = task_entry(
+        kb.path(),
+        &TaskEntryOptions {
+            q: "browser agent Windows".to_string(),
+            ..TaskEntryOptions::default()
+        },
+    )
+    .expect("task entry succeeds");
+    let rows = out["rows"].as_array().expect("compact rows");
+    assert!(rows.iter().any(|row| row[0] == "artifact:relevant"));
+    assert!(!rows.iter().any(|row| row[0] == "artifact:generic-agent"));
+    assert!(!rows.iter().any(|row| row[0] == "artifact:partial"));
+}
+
+#[test]
 fn approval_requires_verified_location_and_never_picks_between_baselines() {
     let kb = tempfile::tempdir().expect("temp kb");
     let journal = Journal::open(kb.path()).expect("open journal");

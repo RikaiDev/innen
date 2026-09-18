@@ -1,4 +1,4 @@
-//! DirectoryTap + harvest check + ingest (Task 14).
+//! DirectoryTap + harvest check + ingest.
 //!
 //! Pinned inbox: `<root>/00-inbox/harvest` (flat `*.md`, sorted).
 //! Mapping: `id = "source:<sha8(relative_path)>"` (sha8 = first 8 hex of
@@ -6,7 +6,7 @@
 //! observed_utc}`; `idempotency_key` = full content sha256 hex; watermark =
 //! files consumed count via [`crate::tap`] (`harvest-dir`).
 //!
-//! Known limitation (accepted for P2): the watermark is count-based, not
+//! Known limitation (accepted tradeoff): the watermark is count-based, not
 //! content-addressed, so rename/delete shifts counts and misaligns the
 //! consumed prefix. A content-addressed cursor is future work.
 //!
@@ -18,37 +18,37 @@
 //! is `<dir>/00-inbox/harvest` and the watermark is
 //! [`crate::tap::watermark_path`]`(dir, "harvest-dir")`.
 //!
-//! ## Known limitations (P2)
+//! ## Output contract and edge behavior
 //!
-//! Struct shapes (`HarvestReport` / `IngestReport`) are frozen by plan —
-//! fixes that would change their shape (new error / warning fields) are
-//! deferred so P2 goldens stay byte-exact.
+//! `HarvestReport` / `IngestReport` / `TapReport` shapes are stable output
+//! read by other tools — do not add, rename, or remove fields. New cases
+//! must be reported through the existing fields.
 //!
 //! - IO failures surface as empty: unreadable inbox dir yields an empty
 //!   report; [`check`] treats a per-file read failure as empty content;
 //!   [`ingest::run`] skips an unreadable file while still advancing the
-//!   watermark past it. Not surfaced as errors in P2 because reporting
-//!   them needs new fields on the frozen structs (would break golden
-//!   byte-exactness).
+//!   watermark past it. They are not surfaced as errors because that would
+//!   need new fields on the stable structs.
 //! - Three UTF-8 policies: `Tap::collect` strict-aborts on non-UTF8
 //!   (`TapError::Parse`); [`check`] reads with `unwrap_or_default` so a
 //!   non-UTF8 file looks empty (hence clean); [`ingest::run`] scans
-//!   `String::from_utf8_lossy`. Kept distinct in P2 because unifying them
-//!   changes `TapReport` / `IngestReport` shapes or P2 golden bytes.
+//!   `String::from_utf8_lossy`. They stay distinct because unifying them
+//!   would change report shapes or the bytes/hashes recorded in reports.
 //! - No file-size cap: files are read whole (`fs::read` /
-//!   `read_to_string`); 64MB+ files will be slow. No cap in P2 by design;
-//!   adding truncation / streaming changes bytes / hashes in the report,
-//!   which is frozen for golden byte-exactness.
+//!   `read_to_string`); 64MB+ files will be slow. A cap would change the
+//!   recorded bytes/hashes, so truncation/streaming needs a report-shape
+//!   decision first.
 //! - check-vs-ingest can disagree on unreadable / non-UTF8 files: check
 //!   sees empty which scans clean, while ingest lossy-scans the real
-//!   bytes and may skip for credentials. Accepted in P2 because the
-//!   normal (clean UTF-8) path agrees (see
+//!   bytes and may skip for credentials. Accepted because the normal
+//!   (clean UTF-8) path agrees (see
 //!   `check_ingest_agree_on_clean_files`); reconciling the edge cases
-//!   needs struct changes deferred to preserve golden byte-exactness.
+//!   needs a report-shape decision first.
 
 use std::path::{Path, PathBuf};
 
 use crate::tap::{load_watermark, Event, Tap, TapError};
+use crate::credentials::credential_preview;
 
 /// Pinned tap id for the harvest directory tap.
 pub const TAP_ID: &str = "harvest-dir";
@@ -101,7 +101,7 @@ pub struct TapReport {
     pub skipped: Vec<String>,
 }
 
-/// Dry-run report over all taps (P2: exactly one, `harvest-dir`).
+/// Dry-run report over all taps (currently exactly one, `harvest-dir`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HarvestReport {
     pub taps: Vec<TapReport>,
@@ -187,7 +187,7 @@ pub fn check(root: &Path) -> HarvestReport {
     let inbox = root.join("00-inbox/harvest");
     for rel in files.into_iter().skip(wm) {
         let text = std::fs::read_to_string(inbox.join(&rel)).unwrap_or_default();
-        if crate::tap::scan_credentials(&text).is_empty() {
+        if crate::credentials::scan_credentials(&text).is_empty() {
             new_files.push(rel);
         } else {
             skipped.push(rel);
@@ -238,7 +238,7 @@ pub mod ingest {
                 }
             };
             let text = String::from_utf8_lossy(&bytes).into_owned();
-            let hits = crate::tap::scan_credentials(&text);
+            let hits = crate::credentials::scan_credentials(&text);
             if let Some(pattern) = hits.first() {
                 skipped.push(Skipped {
                     path: rel.clone(),
@@ -262,127 +262,6 @@ pub mod ingest {
         }
         IngestReport { added, skipped }
     }
-}
-
-/// Redacted preview: first 6 chars starting at the first match of `pattern`
-/// followed by `"***"`. Falls back to the first 6 chars of content when
-/// the pattern has no locatable match.
-fn credential_preview(content: &str, pattern: &str) -> String {
-    let off = match pattern {
-        "aws-access-key" => find_aws_offset(content.as_bytes()),
-        "github-token" => find_github_offset(content.as_bytes()),
-        "private-key" => find_private_key_offset(content),
-        "client-secret" => find_client_secret_offset(content.as_bytes()),
-        "slack-token" => find_slack_offset(content.as_bytes()),
-        "anthropic-key" => find_anthropic_offset(content.as_bytes()),
-        _ => None,
-    };
-    match off.and_then(|o| content.get(o..)) {
-        Some(tail) => format!("{}***", tail.chars().take(6).collect::<String>()),
-        None => format!("{}***", content.chars().take(6).collect::<String>()),
-    }
-}
-
-fn find_aws_offset(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < 20 {
-        return None;
-    }
-    (0..=(bytes.len() - 4)).find(|&i| {
-        bytes[i..].starts_with(b"AKIA")
-            && i + 20 <= bytes.len()
-            && bytes[i + 4..i + 20]
-                .iter()
-                .all(|&b| matches!(b, b'0'..=b'9' | b'A'..=b'Z'))
-    })
-}
-
-fn find_github_offset(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < 4 {
-        return None;
-    }
-    for i in 0..=(bytes.len() - 4) {
-        if bytes[i..].starts_with(b"ghp_") {
-            let mut n = 0;
-            for &b in &bytes[i + 4..] {
-                if matches!(b, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z') {
-                    n += 1;
-                } else {
-                    break;
-                }
-            }
-            if n >= 36 {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-fn find_private_key_offset(text: &str) -> Option<usize> {
-    // Byte offset of the `-----BEGIN ` marker on a line that also contains
-    // `PRIVATE KEY` later on the same line.
-    let mut base = 0usize;
-    for line in text.split_inclusive('\n') {
-        if let Some(pos) = line.find("-----BEGIN ") {
-            if line[pos + "-----BEGIN ".len()..].contains("PRIVATE KEY") {
-                return Some(base + pos);
-            }
-        }
-        base += line.len();
-    }
-    None
-}
-
-fn find_client_secret_offset(bytes: &[u8]) -> Option<usize> {
-    const NEEDLE: &[u8] = b"client_secret";
-    if bytes.len() < NEEDLE.len() {
-        return None;
-    }
-    for i in 0..=(bytes.len() - NEEDLE.len()) {
-        if &bytes[i..i + NEEDLE.len()] == NEEDLE {
-            let mut j = i + NEEDLE.len();
-            while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
-            {
-                j += 1;
-            }
-            if j < bytes.len() && (bytes[j] == b':' || bytes[j] == b'=') {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-fn find_slack_offset(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < 5 {
-        return None;
-    }
-    for i in 0..=(bytes.len() - 5) {
-        let w = &bytes[i..i + 5];
-        if w == b"xoxb-" || w == b"xoxa-" || w == b"xoxp-" {
-            return Some(i);
-        }
-    }
-    None
-}
-
-fn find_anthropic_offset(bytes: &[u8]) -> Option<usize> {
-    const PREFIX: &[u8] = b"sk-ant-";
-    if bytes.len() <= PREFIX.len() {
-        return None;
-    }
-    for i in 0..=(bytes.len() - PREFIX.len()) {
-        if &bytes[i..i + PREFIX.len()] == PREFIX
-            && i + PREFIX.len() < bytes.len()
-            && matches!(
-                bytes[i + PREFIX.len()],
-                b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'-'
-            )
-        {
-            return Some(i);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -415,8 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_file_skipped_and_reported() {
-        let dir = tempfile::tempdir().unwrap();
+    fn credential_file_skipped_and_reported() {        let dir = tempfile::tempdir().unwrap();
         write_inbox(
             &dir,
             &[
@@ -432,6 +310,29 @@ mod tests {
         assert_eq!(ing.skipped[0].preview, "AKIAIO***");
         let journal = std::fs::read_to_string(dir.path().join(".innen/journal.jsonl")).unwrap();
         assert!(!journal.contains("bad.md"));
+    }
+
+    #[test]
+    fn ingest_skips_openai_and_upstash_with_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        write_inbox(
+            &dir,
+            &[
+                ("ok.md", "hello"),
+                ("ai.md", "token sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop here"),
+                ("up.md", "UPSTASH_REDIS_REST_TOKEN=hunter2valuepayload end"),
+            ],
+        );
+        let ing = ingest::run(dir.path());
+        assert_eq!(ing.added, 1);
+        assert_eq!(ing.skipped.len(), 2);
+        assert_eq!(ing.skipped[0].pattern, "openai-key");
+        assert_eq!(ing.skipped[0].preview, "sk-ABC***");
+        assert_eq!(ing.skipped[1].pattern, "upstash-token");
+        assert!(ing.skipped[1].preview.starts_with("UPSTAS"));
+        let journal = std::fs::read_to_string(dir.path().join(".innen/journal.jsonl")).unwrap();
+        assert!(!journal.contains("ai.md"));
+        assert!(!journal.contains("up.md"));
     }
 
     #[test]

@@ -312,6 +312,44 @@ pub fn dialogue(source: Source, event: Value) -> Result<Option<Value>, ReadError
         }
         Source::Codex => {
             // event_msg user_message/agent_message mirrors response_item; don't duplicate.
+            if (event["type"] == "event_msg" && event["payload"]["type"] == "item_completed")
+                || (event["type"] == "response_item"
+                    && event["payload"]["type"] == "command_execution")
+            {
+                let item = event.pointer("/payload/item").unwrap_or(&event["payload"]);
+                if item["type"] != "command_execution" {
+                    return Ok(None);
+                }
+                let content = item
+                    .get("aggregated_output")
+                    .or_else(|| item.get("output"))
+                    .or_else(|| item.get("stdout"))
+                    .or_else(|| item.get("stderr"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if content.is_empty() {
+                    return Ok(None);
+                }
+                let prefix = if event["type"] == "response_item" {
+                    "/payload"
+                } else {
+                    "/payload/item"
+                };
+                let pointer = if item.get("aggregated_output").is_some() {
+                    format!("{prefix}/aggregated_output")
+                } else if item.get("output").is_some() {
+                    format!("{prefix}/output")
+                } else if item.get("stdout").is_some() {
+                    format!("{prefix}/stdout")
+                } else {
+                    format!("{prefix}/stderr")
+                };
+                let mut out = json!({"role":"tool","content":content,
+                    "source_pointer":pointer,
+                    "source_scalar_sha256":crate::ids::sha256_hex(content.as_bytes())});
+                copy_identity(&event, &mut out);
+                return Ok(Some(out));
+            }
             if event["type"] != "response_item" || event["payload"]["type"] != "message" {
                 return Ok(None);
             }
@@ -393,6 +431,7 @@ fn copy_identity(event: &Value, output: &mut Value) {
         "type",
         "parentUuid",
         "truncated_fields",
+        "ordinal",
     ] {
         if let Some(value) = event.get(key) {
             output[key] = value.clone();

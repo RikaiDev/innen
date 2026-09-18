@@ -171,7 +171,77 @@ fn has_entity_anchor(node: &Value, entity_terms: &[&str]) -> bool {
     if anchor.contains("workspace:") || anchor.contains('/') {
         return false;
     }
-    entity_terms.iter().any(|term| anchor.contains(term))
+    let matched = entity_terms
+        .iter()
+        .filter(|term| anchor.contains(**term))
+        .count();
+    // A single identity term is enough for a named item such as `weemed`.
+    // For a multi-term query, one generic word such as `agent` is not an
+    // identity anchor; require the complete anchor instead.
+    matched > 0 && (entity_terms.len() == 1 || matched == entity_terms.len())
+}
+
+fn has_all_search_terms(node: &Value, terms: &[&str]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let searchable = node_searchable_text(node).to_lowercase();
+    terms.iter().all(|term| searchable.contains(term))
+}
+
+/// Score literal identity matches by how much of the meaningful request they
+/// cover.  The old fixed 0.85 score made every node containing one generic
+/// phrase indistinguishable across projects.
+fn identity_coverage_score(node: &Value, terms: &[&str], entity_terms: &[&str]) -> f64 {
+    let fields = [
+        "label",
+        "name",
+        "aliases",
+        "alias",
+        "path",
+        "document_id",
+        "revision_id",
+    ];
+    let mut matched = 0usize;
+    let mut weighted = 0.0;
+    for term in terms {
+        let t = term.to_lowercase();
+        let mut best: f64 = 0.0;
+        for key in fields {
+            let hit = match node.get(key) {
+                Some(Value::String(s)) => s.to_lowercase().contains(&t),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|s| s.to_lowercase().contains(&t)),
+                _ => false,
+            };
+            if hit {
+                best = best.max(if key == "label" || key == "name" {
+                    1.0
+                } else {
+                    0.8
+                });
+            }
+        }
+        if best > 0.0 {
+            matched += 1;
+            weighted += best;
+        }
+    }
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let coverage = weighted / terms.len() as f64;
+    let anchor = if entity_terms
+        .iter()
+        .any(|t| node_anchor_text(node).to_lowercase().contains(t))
+    {
+        0.2
+    } else {
+        0.0
+    };
+    (0.5 + 0.5 * coverage + anchor).min(1.0) * (matched as f64 / terms.len() as f64).sqrt()
 }
 
 /// Check if query expresses asset-design or asset-edit intent.
@@ -494,20 +564,20 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
     }
 
     // 4. Literal substring matching on identity fields. FTS is broad by
-    // design, so only retain its rows when an identity-bearing field matches
-    // a meaningful query term; body-only generic matches are context noise.
+    // design: a single generic identity term is noise, while a conjunctive
+    // match for the complete request is a useful topic candidate.
     let q_lower = options.q.trim().to_lowercase();
+    let allow_partial_identity = has_asset_edit_intent(&options.q);
     let mut candidate_scores: BTreeMap<String, (f64, String)> = BTreeMap::new(); // id -> (score, why)
 
     for (id, fts_score) in &fts_scores {
         let Some(node) = materialized.nodes.get(id) else {
             continue;
         };
-        let searchable = node_searchable_text(node).to_lowercase();
         let admitted = if entity_terms.is_empty() {
-            identity_terms.iter().any(|term| searchable.contains(term))
+            has_all_search_terms(node, &identity_terms)
         } else {
-            has_entity_anchor(node, &entity_terms)
+            has_entity_anchor(node, &entity_terms) || has_all_search_terms(node, &identity_terms)
         };
         if admitted {
             candidate_scores.insert(id.clone(), (*fts_score, "fts_identity_match".to_string()));
@@ -539,6 +609,11 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
                 }
                 if term.len() >= 2
                     && !path_like_label
+                    && (entity_terms.len() <= 1
+                        || allow_partial_identity
+                        || entity_terms
+                            .iter()
+                            .all(|entity| label.contains(entity) || id_lower.contains(entity)))
                     && (label.contains(term) || id_lower.contains(term))
                 {
                     literal_matched = true;
@@ -558,7 +633,11 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
             }
 
             if literal_matched {
-                let score = if exact_match { 1.0 } else { 0.85 };
+                let score = if exact_match {
+                    1.0
+                } else {
+                    identity_coverage_score(node, &identity_terms, &entity_terms)
+                };
                 let current = candidate_scores
                     .entry(id.clone())
                     .or_insert((0.0, String::new()));

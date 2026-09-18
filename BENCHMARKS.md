@@ -19,6 +19,20 @@ The brief and evidence views contained the same 28 non-terminal task rows, and
 the brief's displayed fields matched those rows. This is a historical
 output-length result, not a v0.3.0 performance guarantee.
 
+## Paired deterministic tool pruning measurement
+
+A paired fixture evaluated raw multi-turn conversation serialization against
+`--prune` using `o200k_base` reference tokens on a tool-heavy workload with
+superseded file reads and empty searches:
+
+| Output | Tokens | Reduction |
+|---|---:|---:|
+| Raw tool output (uncompacted reads + writes) | 3,129 | — |
+| Pruned output (`--prune`) | 297 | 90.51% |
+
+User turns, assistant messages, failures, and recent turns (last 4) were pinned verbatim.
+The reduction eliminates superseded file content without lossy prose summarization.
+
 ## What the percentage does and does not mean
 
 It measures serialized output tokens for one fixed workload. It does not by

@@ -376,6 +376,14 @@ fn artifact_tree_cli_archives_metadata_not_source_bytes() {
     std::fs::write(source.join("data.bin"), b"private-source-bytes").expect("write source");
     let manifest = dir.path().join("receipts/tree.json");
     let root = dir.path().join("kb");
+    let journal = innen_core::journal::Journal::open(&root).expect("journal open");
+    journal
+        .append(
+            "node.upsert",
+            &serde_json::json!({"id":"project:test","type":"Project","label":"Test Project"}),
+        )
+        .expect("seed project");
+    drop(journal);
     let assert = Command::cargo_bin("innen")
         .expect("cargo bin innen")
         .args([

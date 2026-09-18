@@ -46,6 +46,10 @@ fn weight(kind: &str, reverse: bool) -> Option<f64> {
         ("DELIVERED", true) => Some(0.9),
         ("SUPERSEDES" | "FOLLOWS_UP", _) => Some(0.65),
         ("RELATED_TO", _) => Some(0.35),
+        // DESCRIBES is deliberately traversable in both directions: a
+        // source may describe a graph node and the described node must lead
+        // back to the exact source for one-shot retrieval.
+        ("DESCRIBES", _) => Some(0.8),
         ("BELONGS_TO", _) => Some(0.12),
         _ => None,
     }

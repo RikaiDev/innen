@@ -23,6 +23,9 @@ pub(super) struct ResumeArgs {
     /// Omit delta prefix/suffix sharing (deltas is enabled by default for resume).
     #[arg(long)]
     no_deltas: bool,
+    /// Prune deterministically stale tool results (superseded reads, empty searches).
+    #[arg(long)]
+    prune: bool,
     /// Reference image data URIs and known encrypted fields. Requires events view.
     #[arg(long, conflicts_with = "attachment")]
     attachment_refs: bool,
@@ -204,6 +207,12 @@ pub(super) fn cmd_resume(format: &str, args: &ResumeArgs) -> i32 {
 
     match result {
         Ok(mut page) => {
+            if args.prune {
+                innen_core::conversation::prune_page(
+                    &mut page,
+                    &innen_core::conversation::PruneOptions::default(),
+                );
+            }
             if let Some(warning) = brief_fallback_warning {
                 page.warnings.push(warning);
             }

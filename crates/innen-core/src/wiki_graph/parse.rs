@@ -74,7 +74,7 @@ pub(super) fn parse_page(
         path: path.to_path_buf(),
         message: format!("Markdown is not UTF-8: {error}"),
     })?;
-    if !crate::tap::scan_credentials(text).is_empty() {
+    if !crate::credentials::scan_credentials(text).is_empty() {
         return Err(field_error(
             path,
             "page",

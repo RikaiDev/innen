@@ -43,7 +43,7 @@ pub(super) struct HookInstallArgs {
 #[derive(clap::Args)]
 pub(super) struct HookRunArgs {
     /// Hook event (per-agent wiring passes the matching one).
-    #[arg(long, value_parser = ["session-end", "stop", "session-idle"])]
+    #[arg(long, value_parser = ["session-end", "stop", "session-idle", "compact", "pre-compact"])]
     pub(super) event: String,
     /// Session id (flag overrides hook stdin).
     #[arg(long)]
@@ -216,9 +216,10 @@ fn cmd_hook_run(root: &Path, format: &str, args: &HookRunArgs) -> i32 {
     // Fail-open: hook runtime must never break the calling agent.
     let outcome = hook_run_inner(root, args);
     let human = super::util::is_human(format);
+    let is_decision = matches!(args.event.as_str(), "stop" | "compact" | "pre-compact");
     match outcome {
         Ok(Receipt::Wrote { name, .. }) => {
-            if args.event == "stop" {
+            if is_decision {
                 println!("{{\"decision\":\"allow\"}}");
             } else if human {
                 println!("wrote\t{name}");
@@ -227,7 +228,7 @@ fn cmd_hook_run(root: &Path, format: &str, args: &HookRunArgs) -> i32 {
             }
         }
         Ok(Receipt::Skipped { digest }) => {
-            if args.event == "stop" {
+            if is_decision {
                 println!("{{\"decision\":\"allow\"}}");
             } else if human {
                 println!("skipped\tno-change");
@@ -237,7 +238,7 @@ fn cmd_hook_run(root: &Path, format: &str, args: &HookRunArgs) -> i32 {
         }
         Err(e) => {
             eprintln!("innen hook run degraded: {e}");
-            if args.event == "stop" {
+            if is_decision {
                 println!("{{\"decision\":\"allow\"}}");
             }
         }
@@ -352,15 +353,23 @@ fn shell_quote(s: &str) -> String {
 }
 
 fn run_command(kb: &Path, event: &str) -> String {
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|p| shell_quote(&p.to_string_lossy()))
+        .unwrap_or_else(|| "innen".to_string());
     format!(
-        "innen hook run --event {event} --kb-root {}",
+        "{executable} hook run --event {event} --kb-root {}",
         shell_quote(&kb.to_string_lossy())
     )
 }
 
 fn pending_command(kb: &Path) -> String {
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|p| shell_quote(&p.to_string_lossy()))
+        .unwrap_or_else(|| "innen".to_string());
     format!(
-        "innen hook pending --kb-root {}",
+        "{executable} hook pending --kb-root {}",
         shell_quote(&kb.to_string_lossy())
     )
 }
@@ -382,7 +391,7 @@ fn write_json_file(path: &Path, v: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-fn obj_mut<'a>(v: &'a mut serde_json::Value) -> &'a mut serde_json::Map<String, serde_json::Value> {
+fn obj_mut(v: &mut serde_json::Value) -> &mut serde_json::Map<String, serde_json::Value> {
     if !v.is_object() {
         *v = serde_json::Value::Object(serde_json::Map::new());
     }
@@ -437,6 +446,41 @@ fn merge_hook_entry(
     entry.insert("hooks".to_string(), serde_json::Value::Array(vec![handler]));
     list.push(serde_json::Value::Object(entry));
     true
+}
+
+/// Remove handlers installed by an earlier innen binary while preserving
+/// unrelated handlers in the same event group.
+fn remove_hook_commands(doc: &mut serde_json::Value, event: &str, marker: &str) -> bool {
+    let Some(root) = doc.as_object_mut() else {
+        return false;
+    };
+    let Some(events) = root.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let Some(entries) = events.get_mut(event).and_then(|v| v.as_array_mut()) else {
+        return false;
+    };
+    let mut changed = false;
+    for entry in entries.iter_mut() {
+        if let Some(handlers) = entry.get_mut("hooks").and_then(|v| v.as_array_mut()) {
+            let before = handlers.len();
+            handlers.retain(|handler| {
+                !handler
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|command| command.contains(marker))
+            });
+            changed |= before != handlers.len();
+        }
+    }
+    let before = entries.len();
+    entries.retain(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .is_none_or(|handlers| !handlers.is_empty())
+    });
+    changed || before != entries.len()
 }
 
 fn command_handler(command: String, timeout: Option<u64>) -> serde_json::Value {
@@ -583,14 +627,24 @@ fn install_claude(kb: &Path, scope: &str, cwd: &Path) -> Result<String, String> 
         scope_dir(scope, cwd, Path::new(".claude/settings.json"))?
     };
     let mut doc = read_json_file(&path);
-    let run = run_command(kb, "session-end");
-    let pend = pending_command(kb);
     let mut changed = false;
+    changed |= remove_hook_commands(&mut doc, "SessionEnd", "hook run --event session-end");
+    changed |= remove_hook_commands(&mut doc, "SessionStart", "hook pending");
+    changed |= remove_hook_commands(&mut doc, "PreCompact", "hook run --event compact");
+    let run = run_command(kb, "session-end");
+    let compact = run_command(kb, "compact");
+    let pend = pending_command(kb);
     changed |= merge_hook_entry(
         &mut doc,
         &["hooks", "SessionEnd"],
         None,
         command_handler(run, None),
+    );
+    changed |= merge_hook_entry(
+        &mut doc,
+        &["hooks", "PreCompact"],
+        None,
+        command_handler(compact, None),
     );
     changed |= merge_hook_entry(
         &mut doc,
@@ -616,9 +670,13 @@ fn install_codex(kb: &Path, scope: &str, cwd: &Path) -> Result<String, String> {
         scope_dir(scope, cwd, Path::new(".codex/hooks.json"))?
     };
     let mut doc = read_json_file(&path);
-    let run = run_command(kb, "session-end");
-    let pend = pending_command(kb);
     let mut changed = false;
+    changed |= remove_hook_commands(&mut doc, "SessionEnd", "hook run --event session-end");
+    changed |= remove_hook_commands(&mut doc, "SessionStart", "hook pending");
+    changed |= remove_hook_commands(&mut doc, "Stop", "hook run --event stop");
+    let run = run_command(kb, "session-end");
+    let stop = run_command(kb, "stop");
+    let pend = pending_command(kb);
     changed |= merge_hook_entry(
         &mut doc,
         &["hooks", "SessionEnd"],
@@ -630,6 +688,12 @@ fn install_codex(kb: &Path, scope: &str, cwd: &Path) -> Result<String, String> {
         &["hooks", "SessionStart"],
         Some("startup|resume"),
         command_handler(pend, Some(10)),
+    );
+    changed |= merge_hook_entry(
+        &mut doc,
+        &["hooks", "Stop"],
+        None,
+        command_handler(stop, Some(10)),
     );
     write_json_file(&path, &doc)?;
     Ok(format!(

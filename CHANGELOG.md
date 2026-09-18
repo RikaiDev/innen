@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.0] - 2026-09-18
+
+### Added
+
+- Deterministic rule-based tool pruning: `innen read|resume|conversation --prune`
+  evaluates objective staleness rules (file reads superseded by subsequent edits/writes,
+  redundant identical reads, empty search queries) without external LLMs. Preserves user
+  instructions, assistant messages, failures, line/SHA-256 provenance, and recent turns verbatim.
+  Measured 90.51% reference-token reduction (3,129 to 297 `o200k_base` tokens) on paired tool-heavy workload.
+- Pre-compaction lifecycle hook: `innen hook run --event compact` captures worktree snapshots
+  into `00-inbox/harvest/pending-*.md` before context compaction; `innen hook install --agent claude-code`
+  wires `PreCompact` handler and emits `{"decision":"allow"}`.
+- Zero-dependency credential scanning and redaction across harvest and trace pipelines.
+
+### Fixed
+
+- Codex hook commands wire absolute executable path and replace stale bare `innen` handlers.
+- Artifact tree addition fails closed on unresolved or ambiguous project references.
+
+### Verification
+
+- 139 local workspace tests across 22 suites passed with 0 failures; strict Clippy clean on all targets.
+
 ## [0.5.0] - 2026-09-11
 
 ### Added

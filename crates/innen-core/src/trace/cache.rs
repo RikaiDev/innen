@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,6 +159,30 @@ pub(super) fn graph(root: &Path, refresh: bool) -> Result<(GraphCache, bool, usi
 pub(super) fn kind(node: &Value) -> String {
     node["type"].as_str().unwrap_or("").to_lowercase()
 }
+
+fn inferred_bare_file_locator(root: &Path, raw: &str) -> Option<Locator> {
+    let relative = Path::new(raw);
+    // Harvest historically stored only the basename in provenance. Resolve
+    // that legacy shape only as one ordinary path component; never let a
+    // journal value escape the knowledge-base root.
+    if relative.components().count() != 1
+        || !relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    [
+        root.join(relative),
+        root.join("00-inbox/harvest").join(relative),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .map(|path| Locator::File {
+        path: path.display().to_string(),
+    })
+}
+
 pub(super) fn locator(node: &Value, root: &Path) -> Option<Locator> {
     if let Some(value) = node.get("locator") {
         if let Ok(loc) = serde_json::from_value(value.clone()) {
@@ -207,5 +231,5 @@ pub(super) fn locator(node: &Value, root: &Path) -> Option<Locator> {
             path: root.join(path).display().to_string(),
         });
     }
-    None
+    inferred_bare_file_locator(root, path)
 }

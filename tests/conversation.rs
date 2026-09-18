@@ -181,3 +181,38 @@ fn conversation_source_resolution_rejects_ambiguity() {
     assert_eq!(page.session_id, UUID);
     assert_eq!(page.records.len(), 1);
 }
+
+#[test]
+fn conversation_prune_flag_removes_stale_reads_and_empty_searches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rows = [
+        json!({"step_index":0,"type":"USER_INPUT","content":"please fix the code"}),
+        json!({"step_index":1,"type":"PLANNER_RESPONSE","content":"checking files",
+            "tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":\"src/lib.rs\"}"}}]}),
+        json!({"step_index":2,"type":"USER_INPUT","content":"old file contents 500 lines long"}),
+        json!({"step_index":3,"type":"PLANNER_RESPONSE","content":"writing new file",
+            "tool_calls":[{"id":"call_2","function":{"name":"write_to_file","arguments":"{\"path\":\"src/lib.rs\"}"}}]}),
+        json!({"step_index":4,"type":"USER_INPUT","content":"file written ok"}),
+        json!({"step_index":5,"type":"USER_INPUT","content":"recent turn 1"}),
+        json!({"step_index":6,"type":"PLANNER_RESPONSE","content":"recent turn 2"}),
+        json!({"step_index":7,"type":"USER_INPUT","content":"recent turn 3"}),
+        json!({"step_index":8,"type":"PLANNER_RESPONSE","content":"recent turn 4"}),
+    ];
+    let text = rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+    fixture(tmp.path(), &text);
+
+    let output = command(tmp.path())
+        .args(["--view", "context", "--prune"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let val: Value = serde_json::from_slice(&output).unwrap();
+    let records = val["records"].as_array().expect("records array");
+    assert!(records.len() >= 5);
+    // Warnings record that stale output was pruned
+    let warnings = val["warnings"].as_array().expect("warnings array");
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("pruned")));
+}
+

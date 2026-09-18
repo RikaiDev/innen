@@ -107,14 +107,14 @@ pub fn list(root: &Path, options: &TaskOptions<'_>) -> Result<Value, String> {
         .collect();
     let next = options.offset.saturating_add(selected.len());
     let mut out = json!({"scope": "recorded tasks; unknown status is not proof of unfinished work",
-        "total":total,"excluded_terminal":excluded,"next_offset":if next < total {Some(next)} else {None},
-        "detail":"innen project <project-id> --view evidence",
-        "harvest": {
-            "pending": harvest_pending,
-            "skipped": harvest_skipped,
-            "check_command": "innen --format json harvest --check",
-            "ingest_command": "innen --format json ingest"
-        }});
+    "total":total,"excluded_terminal":excluded,"next_offset":if next < total {Some(next)} else {None},
+    "detail":"innen project <project-id> --view evidence",
+    "harvest": {
+        "pending": harvest_pending,
+        "skipped": harvest_skipped,
+        "check_command": "innen --format json harvest --check",
+        "ingest_command": "innen --format json ingest"
+    }});
     let projects: std::collections::BTreeMap<_, _> = graph
         .nodes
         .iter()
@@ -126,6 +126,64 @@ pub fn list(root: &Path, options: &TaskOptions<'_>) -> Result<Value, String> {
         .collect();
     out["projects"] = json!(projects);
     if options.detail {
+        // Evidence view is an intentionally bounded closure: project direct
+        // links plus task links, and DESCRIBES links from those tasks.  The
+        // compact brief above remains unchanged.
+        if let Some(project_id) = project.as_deref() {
+            let task_ids: BTreeSet<String> = graph
+                .nodes
+                .iter()
+                .filter(|(id, node)| {
+                    text(node, "type").eq_ignore_ascii_case("task")
+                        && graph.edges.iter().any(|e| {
+                            !e.retracted
+                                && e.from == **id
+                                && e.to == project_id
+                                && e.edge == EdgeType::BelongsTo
+                        })
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            let mut ids = BTreeSet::from([project_id.to_string()]);
+            let mut chosen_edges = Vec::new();
+            for edge in graph.edges.iter().filter(|e| !e.retracted) {
+                let direct = (edge.from == project_id || edge.to == project_id)
+                    || task_ids.contains(&edge.from)
+                    || task_ids.contains(&edge.to);
+                let describes_task_source = edge.edge.to_string() == "DESCRIBES"
+                    && (task_ids.contains(&edge.from) || task_ids.contains(&edge.to));
+                if !(direct || describes_task_source) || chosen_edges.len() >= 256 {
+                    continue;
+                }
+                let Some(from) = graph.nodes.get(&edge.from) else {
+                    continue;
+                };
+                let Some(to) = graph.nodes.get(&edge.to) else {
+                    continue;
+                };
+                let allowed = |n: &Value| {
+                    matches!(
+                        text(n, "type").to_ascii_lowercase().as_str(),
+                        "artifact" | "conversation" | "source"
+                    )
+                };
+                let endpoint_ok =
+                    |id: &str, n: &Value| id == project_id || task_ids.contains(id) || allowed(n);
+                if endpoint_ok(&edge.from, from) && endpoint_ok(&edge.to, to) {
+                    ids.insert(edge.from.clone());
+                    ids.insert(edge.to.clone());
+                    chosen_edges.push(json!({"from":edge.from,"to":edge.to,"type":edge.edge.to_string(),"provenance":edge.provenance,"observed_utc":edge.observed_utc}));
+                }
+            }
+            let nodes: Vec<_> = ids
+                .into_iter()
+                .take(128)
+                .filter_map(|id| graph.nodes.get(&id).map(|n| json!({"id":id,"node":n})))
+                .collect();
+            out["evidence_nodes"] = json!(nodes);
+            out["evidence_edges"] = json!(chosen_edges);
+            out["evidence_boundary"] = json!("bounded project/task provenance closure; edges are evidence routes, not ownership proof");
+        }
         out["tasks"] = Value::Array(selected.into_iter().map(|mut task| {
             let id = text(&task,"id").to_string();
             task["node"] = graph.nodes[&id].clone();

@@ -43,6 +43,12 @@ pub(super) struct Passage {
     pub(super) hash: String,
     pub(super) start_byte: Option<u64>,
     pub(super) end_byte: Option<u64>,
+    #[serde(default)]
+    pub(super) source_pointer: Option<String>,
+    #[serde(default)]
+    pub(super) scalar_sha256: Option<String>,
+    #[serde(default)]
+    pub(super) ordinal: Option<usize>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct SourceCache {
@@ -187,6 +193,9 @@ pub(super) fn file_passages(text: &str, limit: usize) -> PassageScan {
                     hash: sha256_hex(part.as_bytes()),
                     start_byte: Some((offset + start) as u64),
                     end_byte: Some((offset + end) as u64),
+                    source_pointer: None,
+                    scalar_sha256: None,
+                    ordinal: None,
                 });
             }
             start = end;
@@ -261,10 +270,15 @@ fn file_preflight(path: &Path) -> Result<Version, Error> {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-    if !matches!(
-        ext.as_str(),
-        "md" | "txt" | "json" | "jsonl" | "yaml" | "yml"
-    ) {
+    // The locator is already an explicit provenance edge. Keep the format
+    // gate conservative, but accept UTF-8 logs and extensionless text files;
+    // `read_file` remains the final binary/UTF-8 validation boundary.
+    if !(ext.is_empty()
+        || matches!(
+            ext.as_str(),
+            "md" | "txt" | "json" | "jsonl" | "yaml" | "yml" | "log"
+        ))
+    {
         return Err(Error(format!(
             "unsupported source type .{ext}: {}",
             path.display()
@@ -335,6 +349,13 @@ fn native_passage(record: conversation::Record) -> Option<Passage> {
         hash: sha256_hex(&serde_json::to_vec(&record.event).expect("record serializes")),
         start_byte: None,
         end_byte: None,
+        source_pointer: record.event["source_pointer"].as_str().map(str::to_owned),
+        scalar_sha256: record.event["source_scalar_sha256"]
+            .as_str()
+            .map(str::to_owned),
+        ordinal: record.event["ordinal"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok()),
     })
 }
 

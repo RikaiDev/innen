@@ -14,6 +14,7 @@ pub mod grammar;
 pub mod pickup;
 mod prefixes;
 mod projection;
+pub mod prune;
 pub mod resume;
 pub mod scan;
 mod sources;
@@ -22,6 +23,7 @@ pub use checkpoint::{Checkpoint, CheckpointStatus};
 pub use pickup::{
     resolve_all_projects_pickup, resolve_pickup, EvidencePointers, PickedUpSession, PickupTarget,
 };
+pub use prune::{prune_page, PruneOptions, PruneReceipt};
 pub use resume::{find_all_candidates, find_project_candidates, Candidate, ResumeTarget};
 pub use scan::{ScanLimits, ScanResult};
 pub use sources::{Located, Source};

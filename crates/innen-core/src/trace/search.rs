@@ -92,7 +92,7 @@ impl Results {
                 continue;
             }
             self.matched += 1;
-            if !crate::tap::scan_credentials(&passage.text).is_empty() {
+            if !crate::credentials::scan_credentials(&passage.text).is_empty() {
                 withheld += 1;
                 continue;
             }
@@ -103,6 +103,8 @@ impl Results {
             let value = json!({
                 "source_node":e.candidate.node,"seed_node":e.candidate.seed,"path":e.candidate.path,
                 "source":e.loc,"source_path":e.data.source_path,"line":passage.line,"end_line":passage.end_line,
+                "ordinal":passage.ordinal.or(Some(passage.line)),
+                "json_pointer":passage.source_pointer,"scalar_sha256":passage.scalar_sha256,
                 "role":passage.role,"role_basis":if matches!(e.loc,Locator::Conversation{..}){"native_metadata"}else{"source_format_heading_or_plain_text"},
                 "timestamp":passage.timestamp,"quote":excerpt(&passage.text,query),
                 "record_sha256":passage.hash,"source_sha256":e.data.source_sha256,"source_complete":e.data.complete,
@@ -253,8 +255,13 @@ fn retrieve(
         }
         out.attempted += 1;
         let remaining = opts.max_bytes.saturating_sub(out.charged_bytes);
-        match source(root, &loc, opts, remaining) {
-            Err(error) => out.failure(&candidate, &loc, error, remaining),
+        // Reserve an equal share for every still pending source.  A large or
+        // malformed first candidate must not consume the whole query budget
+        // and starve the later, more relevant provenance chain.
+        let share = remaining / (pending.len() as u64 + 1);
+        let allowance = share.max(1).min(remaining);
+        match source(root, &loc, opts, allowance) {
+            Err(error) => out.failure(&candidate, &loc, error, allowance),
             Ok((data, key, cached, read)) => {
                 let e = Evidence {
                     candidate: &candidate,

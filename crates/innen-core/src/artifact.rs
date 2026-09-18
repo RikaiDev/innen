@@ -150,6 +150,9 @@ pub fn add_tree(
     manifest_path: &Path,
     project: Option<&str>,
 ) -> Result<(TreeManifest, ArtifactReceipt), ArtifactError> {
+    if let Some(input) = project {
+        resolve_project(root, input)?;
+    }
     let manifest = inventory_tree(src)?;
     if manifest_path.starts_with(src) {
         return Err(ArtifactError::Io(
@@ -249,6 +252,21 @@ fn find_reusable_artifact(dir: &Path, bytes: &[u8]) -> Result<Option<PathBuf>, A
     Ok(hits.into_iter().next())
 }
 
+fn resolve_project(root: &Path, input: &str) -> Result<String, ArtifactError> {
+    let journal = crate::journal::Journal::open(root)
+        .map_err(|e| ArtifactError::Journal(format!("open journal: {e}")))?;
+    let events = journal
+        .read_all()
+        .map_err(|e| ArtifactError::Journal(format!("read journal: {e}")))?;
+    let raw: Vec<_> = events
+        .iter()
+        .map(|e| serde_json::json!({"op":e.op,"payload":e.payload,"observed_utc":e.observed_utc}))
+        .collect();
+    let graph = crate::graph::materialize(&raw, None, false);
+    crate::graph::resolve_project_id(&graph, input)
+        .map_err(|e| ArtifactError::Journal(format!("missing graph endpoint: {e}")))
+}
+
 /// Store `src` bytes content-addressed under
 /// `<root>/03-output/artifacts/by-sha256/<first-2-hex>/<full-sha>/`
 /// plus a `provenance.json` sidecar, and record the artifact node
@@ -265,6 +283,12 @@ pub fn add(
     src: &Path,
     project: Option<&str>,
 ) -> Result<ArtifactReceipt, ArtifactError> {
+    // Resolve the human project reference against the same replayed graph as
+    // `innen project`.  Do this before creating the content-addressed
+    // directory so unknown/ambiguous references cannot leave artifact bytes.
+    let resolved_project = project
+        .map(|input| resolve_project(root, input))
+        .transpose()?;
     let bytes_vec = std::fs::read(src)
         .map_err(|e| ArtifactError::Io(format!("read {}: {e}", src.display())))?;
     let sha = crate::ids::sha256_hex(&bytes_vec);
@@ -336,7 +360,7 @@ pub fn add(
             stored_path.display()
         ))
     })?;
-    if let Some(p) = project {
+    if let Some(p) = resolved_project.as_deref() {
         // Shared choke point: an unknown project fails closed instead of
         // landing as a dangling edge (same semantics as `graph relate`).
         let req = crate::edge_write::EdgeAssert {
@@ -432,6 +456,40 @@ mod tests {
             err.to_string().contains("missing graph endpoint"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn add_resolves_unique_project_slug_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("note.txt");
+        std::fs::write(&src, b"slug bytes").unwrap();
+        let journal = crate::journal::Journal::open(dir.path()).unwrap();
+        journal.append("node.upsert", &serde_json::json!({"id":"project:health","type":"Project","label":"Health Pilot","path":"/work/health"})).unwrap();
+        drop(journal);
+        let receipt = add(dir.path(), &src, Some("health")).unwrap();
+        let log = std::fs::read_to_string(dir.path().join(".innen/journal.jsonl")).unwrap();
+        assert!(log.contains("project:health"));
+        assert!(receipt.stored_path.is_file());
+    }
+
+    #[test]
+    fn add_rejects_ambiguous_project_without_artifact_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("note.txt");
+        std::fs::write(&src, b"ambiguous bytes").unwrap();
+        let journal = crate::journal::Journal::open(dir.path()).unwrap();
+        for id in ["project:a", "project:b"] {
+            journal
+                .append(
+                    "node.upsert",
+                    &serde_json::json!({"id":id,"type":"Project","label":"Shared"}),
+                )
+                .unwrap();
+        }
+        drop(journal);
+        let err = add(dir.path(), &src, Some("Shared")).unwrap_err();
+        assert!(err.to_string().contains("ambiguous"));
+        assert!(!dir.path().join("03-output/artifacts").exists());
     }
 
     #[test]

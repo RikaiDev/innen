@@ -231,7 +231,10 @@ fn brief_surfaces_harvest_backlog_without_transcript_body() {
     let out = run(dir.path(), &["one"]);
     assert_eq!(out["harvest"]["pending"], 1);
     assert_eq!(out["harvest"]["skipped"], 0);
-    assert_eq!(out["harvest"]["ingest_command"], "innen --format json ingest");
+    assert_eq!(
+        out["harvest"]["ingest_command"],
+        "innen --format json ingest"
+    );
 
     let human = Command::cargo_bin("innen")
         .unwrap()

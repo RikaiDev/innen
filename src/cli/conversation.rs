@@ -33,6 +33,9 @@ pub(super) struct ConversationArgs {
     /// Experimentally share exact string prefixes/suffixes; no semantic edits.
     #[arg(long, requires = "compact")]
     deltas: bool,
+    /// Prune deterministically stale tool results (superseded reads, empty searches).
+    #[arg(long)]
+    prune: bool,
     /// Reference image data URIs and known encrypted fields. Requires events view.
     #[arg(long, conflicts_with = "attachment")]
     attachment_refs: bool,
@@ -135,7 +138,13 @@ pub(super) fn cmd_conversation(format: &str, args: &ConversationArgs) -> i32 {
         )
     };
     match result {
-        Ok(page) => {
+        Ok(mut page) => {
+            if args.prune {
+                innen_core::conversation::prune_page(
+                    &mut page,
+                    &innen_core::conversation::PruneOptions::default(),
+                );
+            }
             let original = serde_json::to_value(&page).expect("page serializes");
             match innen_core::conversation::format_page(
                 page,
