@@ -17,7 +17,7 @@ mod projection;
 pub mod prune;
 pub mod resume;
 pub mod scan;
-mod sources;
+pub(crate) mod sources;
 pub mod unfinished;
 pub use checkpoint::{Checkpoint, CheckpointStatus};
 pub use pickup::{

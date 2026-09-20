@@ -8,6 +8,11 @@
 
 **innen is an open-source knowledge engine built to reduce the context and tokens an LLM agent must reload to continue work, while preserving explicit evidence boundaries.** As a single, zero-daemon Rust binary, it implements an append-only event-sourced journal, dual embedded derived indexes (Redb + Tantivy CJK BM25), and read-only coding-tool conversation adapters. Source retrieval and durable knowledge ingestion are separate operations.
 
+Bounded output is a product contract: commands emit compact summaries by default,
+keep raw transcripts and per-item inventories behind explicit detail flags, and
+return stable identifiers that callers expand only when needed. Local token estimates
+are output budgets, not claims about provider billing.
+
 *The name reads from Buddhist philosophy: **因縁** (innen) — dependent origination, causal connection. In genuine knowledge management, no claim exists in a vacuum. Every decision, task, experiment, and code artifact arises out of prior conditions and leaves traceable consequences. innen does not merely store text; it captures the causal graph of why things are the way they are.*
 
 ---
@@ -223,7 +228,7 @@ These CLI/MCP comparisons describe packaging tradeoffs, not a paired benchmark o
 
 ## 3. Conversation Operations and Knowledge Boundaries
 
-`innen` strictly separates four conversation-related operations:
+`innen` strictly separates five conversation-related operations:
 
 1. **Harvest (`innen harvest` / `innen ingest`)**: Imports conversation transcripts into durable knowledge graph entities and journal events. `harvest --check` inspects staged Markdown in `00-inbox/harvest`; `ingest` appends them to `.innen/journal.jsonl`.
 2. **Checkpoint (`innen checkpoint`)**: Records progress snapshots (`active`, `blocked`, `completed`, `superseded`) in append-only local storage outside Git (`.innen/checkpoints.jsonl` with `.innen/.gitignore`). Checkpoints record goals, completed work, observations, blockers, next actions, and verification without modifying Git or rewriting prior history.
@@ -231,10 +236,61 @@ These CLI/MCP comparisons describe packaging tradeoffs, not a paired benchmark o
 4. **Context Continuation (`innen resume` / `innen pickup`)**: Reconstructs working context without full transcript dumps:
    - `resume`: Emits structured context (`--view context --compact --deltas`) with line provenance.
    - `pickup`: Designed for a fresh agent session. Selects only when unambiguous (or returns concise candidate choices), emits compact checkpoint + evidence pointers + exact resume command, and never executes transcript text.
+5. **Evidence-gated retention (`innen retention`)**: Inventories native stores with a
+   45-day hot window by default. Age or a harvest watermark never authorizes
+   deletion. `retention attest` binds the current native bundle hash to durable
+   knowledge nodes linked to the canonical conversation;
+   `retention purge` revalidates every byte and graph gate before deletion.
 
 `read <session-id>` retrieves local source conversations directly. It does not
 create graph nodes or infer decisions. `harvest --check` currently inspects
 Markdown already present in `00-inbox/harvest`; `ingest` processes that inbox.
+`harvest --coding-sessions` adds a read-only native-store inventory with exact
+retention blockers; it does not treat discovery as extraction.
+
+### Retain knowledge, then purge native sessions
+
+```bash
+# Read-only inventory across Claude, Codex, OpenCode and agy/Antigravity.
+innen harvest --check --coding-sessions --retention-days 45
+innen retention plan --retention-days 45
+innen retention plan --retention-days 45 --details # explicit per-session expansion
+innen retention sweep --retention-days 45         # bounded dry-run summary
+innen retention sweep --retention-days 45 --execute
+
+# After creating the canonical conversation node, durable knowledge nodes,
+# and DERIVED_FROM or DISCUSSED_IN edges, attest the extraction.
+innen retention attest <session-id> --source codex \
+  --knowledge-node wiki:durable-result --session-closed
+
+# Dry-run proof check; add --execute only after inspecting the receipt.
+innen retention purge <session-id> --source codex --retention-days 45
+```
+
+The proof schema is fail-closed: it requires the current source bundle's exact
+SHA-256 and byte count, an explicit closed-session assertion, existing knowledge
+nodes, and active provenance edges to `conversation:<source>:<id>`. Raw
+transcripts and compressed copies are not retention outputs: after extraction is
+attested and all gates pass, the native conversation is deleted without creating
+an archive.
+Plans expose stable `blocker_codes` alongside human-readable explanations. Attestation
+and deletion also refuse sessions with open native file handles. Immediately before
+deletion, innen rechecks the source bytes, SHA-256, target filesystem identity, and
+open-handle state; uncertainty blocks the operation. Executed purge requests write a
+`SessionPurgeAttempt` before deletion and a `SessionPurgeFailure` or
+`SessionPurgeReceipt` outcome for audit continuity.
+`retention sweep` evaluates and executes each eligible session independently:
+an active, busy, malformed, or changed session is skipped or failed without stopping
+other eligible sessions. Per-session outcomes require explicit `--details`; the
+default remains a bounded aggregate summary.
+Changing the source invalidates eligibility. Codex and OpenCode use
+their supported delete commands; Claude removes only the exact resolved JSONL.
+Antigravity inventory and deletion treat `conversations/<uuid>.db`,
+`brain/<uuid>/`, and the matching `conversation_summaries` row as one lifecycle.
+Deletion is refused only when that session is active or marked `not_fully_idle`; an open
+shared summary database does not block unrelated sessions. After final hash and
+filesystem-identity checks, innen removes the summary row transactionally and
+then the exact native bundle. SQLite busy/lock failures skip only that item.
 A successful source read or pickup must not be reported as completed knowledge ingestion.
 
 Directory artifacts containing private or large source bytes can be inventoried without

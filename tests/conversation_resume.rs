@@ -29,6 +29,27 @@ fn write_codex_session(root: &Path, id: &str, cwd: &str) {
 }
 
 #[test]
+fn antigravity_inventory_includes_db_only_sessions_from_gemini_store() {
+    let root = tempfile::tempdir().unwrap();
+    let brain = root.path().join("brain");
+    let conversations = root.path().join("conversations");
+    std::fs::create_dir_all(&brain).unwrap();
+    std::fs::create_dir_all(&conversations).unwrap();
+    let id = "e3a92b35-4931-427b-9adf-1baa29318ca6";
+    let db = conversations.join(format!("{id}.db"));
+    std::fs::write(&db, b"native trajectory").unwrap();
+
+    let candidates = innen_core::conversation::resume::find_all_candidates(
+        Some(innen_core::conversation::Source::Antigravity),
+        Some(&brain),
+    )
+    .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, id);
+    assert_eq!(candidates[0].path, db);
+}
+
+#[test]
 fn project_candidates_unambiguous_and_ambiguous() {
     let tmp = tempfile::tempdir().unwrap();
     let store_root = tmp.path().join("sessions");

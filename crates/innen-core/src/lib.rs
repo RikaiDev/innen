@@ -20,6 +20,7 @@ pub mod parity;
 pub mod project_brief;
 pub mod query;
 pub mod semantic_proposals;
+pub mod session_retention;
 pub mod tap;
 pub mod task_entry;
 pub mod task_proposal;

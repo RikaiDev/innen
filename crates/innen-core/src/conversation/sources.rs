@@ -292,6 +292,34 @@ pub fn load_database(located: &Located, id: &str, offset: usize) -> Result<Vec<V
         ))
 }
 
+pub(crate) fn load_database_session(path: &Path, id: &str) -> Result<Vec<Value>, ReadError> {
+    let path = if path.is_dir() {
+        path.join("opencode.db")
+    } else {
+        path.to_owned()
+    };
+    sqlite(&path, &format!(
+        "SELECT json_object('id',m.id,'message',json(m.data),'parts',json((SELECT json_group_array(json(p.data)) FROM (SELECT data FROM part WHERE message_id=m.id ORDER BY time_created,id) p))) FROM message m WHERE m.session_id='{id}' ORDER BY m.time_created,m.id"
+    ))
+}
+
+pub(crate) fn database_child_sessions(path: &Path, id: &str) -> Result<Vec<String>, ReadError> {
+    let path = if path.is_dir() {
+        path.join("opencode.db")
+    } else {
+        path.to_owned()
+    };
+    sqlite(
+        &path,
+        &format!("SELECT json_object('id',id) FROM session WHERE parent_id='{id}' ORDER BY id"),
+    )
+    .map(|rows| {
+        rows.into_iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect()
+    })
+}
+
 pub fn load_document(located: &Located) -> Result<Vec<Value>, ReadError> {
     let text = fs::read_to_string(&located.path).map_err(|e| err(&located.path, e))?;
     let data: Value = serde_json::from_str(&text).map_err(|e| err(&located.path, e))?;

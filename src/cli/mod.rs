@@ -14,6 +14,7 @@ mod navigation;
 mod pickup;
 mod query;
 mod resume;
+mod retention;
 mod trace;
 mod types;
 mod unfinished;
@@ -172,6 +173,10 @@ pub(crate) fn run() -> i32 {
         Commands::Ingest => {
             let root = resolve_or_exit!(cli.root.clone());
             harvest::cmd_ingest(&root, &cli.format)
+        }
+        Commands::Retention(args) => {
+            let root = resolve_or_exit!(cli.root.clone());
+            retention::cmd_retention(&root, &cli.format, args)
         }
         Commands::Middleware(args) => middleware::cmd_middleware(&cli.format, args),
         Commands::Trace(args) => {

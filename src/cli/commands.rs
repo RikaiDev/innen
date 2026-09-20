@@ -13,6 +13,7 @@ use super::{
     pickup::PickupArgs,
     query::QueryArgs,
     resume::ResumeArgs,
+    retention::RetentionArgs,
     trace::TraceArgs,
     unfinished::UnfinishedArgs,
 };
@@ -85,6 +86,8 @@ pub(super) enum Commands {
     Hook(HookArgs),
     /// Ingest new inbox files into the journal (Task 14).
     Ingest,
+    /// Inventory, attest, and evidence-gate native coding-session retention.
+    Retention(RetentionArgs),
     /// Prepare a bounded offline context packet from caller-selected JSON.
     Middleware(MiddlewareArgs),
     /// Trace knowledge clues through graph provenance to source records.

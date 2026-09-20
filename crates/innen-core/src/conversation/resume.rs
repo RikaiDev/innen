@@ -599,6 +599,50 @@ fn scan_antigravity_sessions(
             }
         }
     }
+
+    // 3. The current Antigravity CLI keeps the authoritative trajectory in
+    // sibling `conversations/<uuid>.db` files.  Some sessions have no readable
+    // transcript under brain/, so inventory them as native candidates instead
+    // of silently under-counting the store.  The dialogue reader remains
+    // fail-closed for proprietary DB-only sessions; retention can still hash
+    // the complete DB + brain bundle and report the missing extraction proof.
+    if root.file_name().is_some_and(|name| name == "brain") {
+        if let Some(store_root) = root.parent() {
+            let conversations = store_root.join("conversations");
+            if let Ok(entries) = fs::read_dir(&conversations) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() || path.extension().is_none_or(|ext| ext != "db") {
+                        continue;
+                    }
+                    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                        continue;
+                    };
+                    let Ok(id) = sources::validate_id(stem) else {
+                        continue;
+                    };
+                    if candidates.iter().any(|candidate| {
+                        candidate.id == id && candidate.source == Source::Antigravity
+                    }) {
+                        continue;
+                    }
+                    let modified = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|metadata| metadata.modified().ok())
+                        .map(system_time_to_rfc3339);
+                    candidates.push(Candidate {
+                        id,
+                        source: Source::Antigravity,
+                        modified,
+                        path,
+                        project: Some("unknown".into()),
+                        parent_id: None,
+                    });
+                }
+            }
+        }
+    }
     Ok(())
 }
 
