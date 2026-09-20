@@ -47,8 +47,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::tap::{load_watermark, Event, Tap, TapError};
 use crate::credentials::credential_preview;
+use crate::tap::{load_watermark, Event, Tap, TapError};
 
 /// Pinned tap id for the harvest directory tap.
 pub const TAP_ID: &str = "harvest-dir";
@@ -294,7 +294,8 @@ mod tests {
     }
 
     #[test]
-    fn credential_file_skipped_and_reported() {        let dir = tempfile::tempdir().unwrap();
+    fn credential_file_skipped_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
         write_inbox(
             &dir,
             &[
@@ -319,7 +320,10 @@ mod tests {
             &dir,
             &[
                 ("ok.md", "hello"),
-                ("ai.md", "token sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop here"),
+                (
+                    "ai.md",
+                    "token sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop here",
+                ),
                 ("up.md", "UPSTASH_REDIS_REST_TOKEN=hunter2valuepayload end"),
             ],
         );

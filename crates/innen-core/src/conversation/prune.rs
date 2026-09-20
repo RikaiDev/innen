@@ -109,8 +109,15 @@ fn extract_tool_action(name: &str, args_val: &Value) -> Option<ToolAction> {
         }
     }
 
-    if ["grep_search", "find_by_name", "file_search", "grep", "glob", "find"]
-        .contains(&lower_name.as_str())
+    if [
+        "grep_search",
+        "find_by_name",
+        "file_search",
+        "grep",
+        "glob",
+        "find",
+    ]
+    .contains(&lower_name.as_str())
     {
         let q = get_str(&["query", "pattern", "Query", "Pattern", "path"]).unwrap_or_default();
         return Some(ToolAction::Search { query: q });
@@ -196,7 +203,10 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
         let kind = ev.get("kind").and_then(Value::as_str);
         if matches!(kind, Some("function_call" | "custom_tool_call")) {
             let name = ev.get("name").and_then(Value::as_str).unwrap_or("");
-            let args = ev.get("arguments").or_else(|| ev.get("input")).unwrap_or(&Value::Null);
+            let args = ev
+                .get("arguments")
+                .or_else(|| ev.get("input"))
+                .unwrap_or(&Value::Null);
             if let Some(action) = extract_tool_action(name, args) {
                 if let ToolAction::WriteFile { ref path } = action {
                     file_writes
@@ -214,16 +224,25 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
             continue;
         }
 
-        if matches!(kind, Some("function_call_output" | "custom_tool_call_output")) {
+        if matches!(
+            kind,
+            Some("function_call_output" | "custom_tool_call_output")
+        ) {
             let exit_code = ev.get("reported_exit_code").and_then(Value::as_i64);
             let is_error = exit_code.is_some_and(|c| c != 0);
             let preview = ev.get("preview").and_then(Value::as_str).unwrap_or("");
-            let chars = ev.get("chars").and_then(Value::as_u64).unwrap_or(preview.len() as u64) as usize;
+            let chars = ev
+                .get("chars")
+                .and_then(Value::as_u64)
+                .unwrap_or(preview.len() as u64) as usize;
             outputs.push(OutputMeta {
                 record_idx: idx,
                 source_line: record.line,
                 call_id: ev.get("call_id").and_then(Value::as_str).map(str::to_owned),
-                call_line: ev.get("call_line").and_then(Value::as_u64).map(|n| n as usize),
+                call_line: ev
+                    .get("call_line")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize),
                 is_error,
                 content_preview: preview.to_string(),
                 original_chars: chars,
@@ -280,7 +299,11 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
         }
 
         // Claude format: message.content array with tool_use or tool_result
-        if let Some(parts) = ev.pointer("/message/content").or_else(|| ev.get("content")).and_then(Value::as_array) {
+        if let Some(parts) = ev
+            .pointer("/message/content")
+            .or_else(|| ev.get("content"))
+            .and_then(Value::as_array)
+        {
             for part in parts {
                 if part.get("type").and_then(Value::as_str) == Some("tool_use") {
                     let cid = part.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -301,8 +324,14 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
                         });
                     }
                 } else if part.get("type").and_then(Value::as_str) == Some("tool_result") {
-                    let cid = part.get("tool_use_id").and_then(Value::as_str).map(str::to_owned);
-                    let is_error = part.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    let cid = part
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let is_error = part
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     let text = part.get("content").and_then(Value::as_str).unwrap_or("");
                     outputs.push(OutputMeta {
                         record_idx: idx,
@@ -320,7 +349,10 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
         // Raw events view (Codex payload)
         let p_type = ev.pointer("/payload/type").and_then(Value::as_str);
         if p_type == Some("function_call") {
-            let name = ev.pointer("/payload/name").and_then(Value::as_str).unwrap_or("");
+            let name = ev
+                .pointer("/payload/name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let args = ev.pointer("/payload/arguments").unwrap_or(&Value::Null);
             if let Some(action) = extract_tool_action(name, args) {
                 if let ToolAction::WriteFile { ref path } = action {
@@ -332,23 +364,33 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
                 calls.push(CallMeta {
                     record_idx: idx,
                     source_line: record.line,
-                    call_id: ev.pointer("/payload/call_id").and_then(Value::as_str).map(str::to_owned),
+                    call_id: ev
+                        .pointer("/payload/call_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                     action,
                 });
             }
         } else if p_type == Some("function_call_output") {
-            let out_str = ev.pointer("/payload/output").and_then(Value::as_str).unwrap_or("");
+            let out_str = ev
+                .pointer("/payload/output")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let chars = out_str.chars().count();
             outputs.push(OutputMeta {
                 record_idx: idx,
                 source_line: record.line,
-                call_id: ev.pointer("/payload/call_id").and_then(Value::as_str).map(str::to_owned),
+                call_id: ev
+                    .pointer("/payload/call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 call_line: None,
                 is_error: false,
                 content_preview: out_str.chars().take(120).collect(),
                 original_chars: chars,
             });
-        } else if ev.get("type").and_then(Value::as_str) == Some("USER_INPUT") && !calls.is_empty() {
+        } else if ev.get("type").and_then(Value::as_str) == Some("USER_INPUT") && !calls.is_empty()
+        {
             // In Antigravity / Gemini transcripts, tool output appears in USER_INPUT
             let content_str = ev.get("content").and_then(Value::as_str).unwrap_or("");
             if !content_str.is_empty() {
@@ -433,8 +475,12 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
 
             // Check if superseded by later write
             if let Some(w_list) = writes {
-                if let Some((_, write_line)) = w_list.iter().find(|(w_idx, _)| *w_idx > read_tool.output_idx) {
-                    let reason = format!("read of '{path}' superseded by write at line {write_line}");
+                if let Some((_, write_line)) = w_list
+                    .iter()
+                    .find(|(w_idx, _)| *w_idx > read_tool.output_idx)
+                {
+                    let reason =
+                        format!("read of '{path}' superseded by write at line {write_line}");
                     to_prune.insert(read_tool.output_idx, (reason, read_tool.original_chars));
                     receipt.superseded_reads += 1;
                     continue;
@@ -444,9 +490,18 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
             // Check if redundant with a later read of same file (with no writes in between)
             if i + 1 < reads.len() {
                 let next_read = reads[i + 1];
-                let no_intervening_writes = writes.map(|wl| !wl.iter().any(|(w_idx, _)| *w_idx > read_tool.output_idx && *w_idx < next_read.call_idx)).unwrap_or(true);
+                let no_intervening_writes = writes
+                    .map(|wl| {
+                        !wl.iter().any(|(w_idx, _)| {
+                            *w_idx > read_tool.output_idx && *w_idx < next_read.call_idx
+                        })
+                    })
+                    .unwrap_or(true);
                 if no_intervening_writes {
-                    let reason = format!("read of '{path}' redundant; re-read at line {}", next_read.output_line);
+                    let reason = format!(
+                        "read of '{path}' redundant; re-read at line {}",
+                        next_read.output_line
+                    );
                     to_prune.insert(read_tool.output_idx, (reason, read_tool.original_chars));
                     receipt.duplicate_reads += 1;
                     continue;
@@ -497,7 +552,10 @@ pub fn prune_page(page: &mut Page, options: &PruneOptions) -> PruneReceipt {
             }
             if let Some(payload) = obj.get_mut("payload").and_then(Value::as_object_mut) {
                 if payload.contains_key("output") {
-                    payload.insert("output".to_string(), json!(format!("[tool output omitted: {reason}]")));
+                    payload.insert(
+                        "output".to_string(),
+                        json!(format!("[tool output omitted: {reason}]")),
+                    );
                 }
             }
         }
@@ -575,19 +633,40 @@ mod tests {
                 }),
             },
             // 4 recent turns kept untouched
-            Record { line: 5, event: json!({"role": "user", "content": "next task"}) },
-            Record { line: 6, event: json!({"role": "assistant", "content": "working"}) },
-            Record { line: 7, event: json!({"role": "user", "content": "status?"}) },
-            Record { line: 8, event: json!({"role": "assistant", "content": "done"}) },
+            Record {
+                line: 5,
+                event: json!({"role": "user", "content": "next task"}),
+            },
+            Record {
+                line: 6,
+                event: json!({"role": "assistant", "content": "working"}),
+            },
+            Record {
+                line: 7,
+                event: json!({"role": "user", "content": "status?"}),
+            },
+            Record {
+                line: 8,
+                event: json!({"role": "assistant", "content": "done"}),
+            },
         ];
 
         let mut page = make_page(records);
-        let receipt = prune_page(&mut page, &PruneOptions { preserve_recent: 4, truncate_head_chars: 120 });
+        let receipt = prune_page(
+            &mut page,
+            &PruneOptions {
+                preserve_recent: 4,
+                truncate_head_chars: 120,
+            },
+        );
 
         assert_eq!(receipt.pruned_count, 1);
         assert_eq!(receipt.superseded_reads, 1);
         assert_eq!(page.records[1].event["pruned"], true);
-        assert!(page.records[1].event["preview"].as_str().unwrap().contains("superseded by write at line 3"));
+        assert!(page.records[1].event["preview"]
+            .as_str()
+            .unwrap()
+            .contains("superseded by write at line 3"));
     }
 
     #[test]
@@ -618,11 +697,20 @@ mod tests {
                     "arguments": "{\"path\": \"src/main.rs\"}",
                 }),
             },
-            Record { line: 4, event: json!({"role": "user", "content": "recent"}) },
+            Record {
+                line: 4,
+                event: json!({"role": "user", "content": "recent"}),
+            },
         ];
 
         let mut page = make_page(records);
-        let receipt = prune_page(&mut page, &PruneOptions { preserve_recent: 1, truncate_head_chars: 120 });
+        let receipt = prune_page(
+            &mut page,
+            &PruneOptions {
+                preserve_recent: 1,
+                truncate_head_chars: 120,
+            },
+        );
 
         assert_eq!(receipt.pruned_count, 0);
         assert_eq!(page.records[1].event.get("pruned"), None);
@@ -649,12 +737,24 @@ mod tests {
                     "preview": "Found 0 results",
                 }),
             },
-            Record { line: 3, event: json!({"role": "user", "content": "1"}) },
-            Record { line: 4, event: json!({"role": "assistant", "content": "2"}) },
+            Record {
+                line: 3,
+                event: json!({"role": "user", "content": "1"}),
+            },
+            Record {
+                line: 4,
+                event: json!({"role": "assistant", "content": "2"}),
+            },
         ];
 
         let mut page = make_page(records);
-        let receipt = prune_page(&mut page, &PruneOptions { preserve_recent: 2, truncate_head_chars: 120 });
+        let receipt = prune_page(
+            &mut page,
+            &PruneOptions {
+                preserve_recent: 2,
+                truncate_head_chars: 120,
+            },
+        );
 
         assert_eq!(receipt.pruned_count, 1);
         assert_eq!(receipt.empty_searches, 1);
@@ -663,7 +763,8 @@ mod tests {
 
     #[test]
     fn prune_measures_token_reduction_on_typical_workload() {
-        let file_a_body = "pub fn calculate_metric(x: f64) -> f64 {\n    x * 2.0 + 1.0\n}\n".repeat(100);
+        let file_a_body =
+            "pub fn calculate_metric(x: f64) -> f64 {\n    x * 2.0 + 1.0\n}\n".repeat(100);
         let records = vec![
             Record {
                 line: 1,
@@ -701,17 +802,35 @@ mod tests {
                 }),
             },
             // Recent turns
-            Record { line: 5, event: json!({"role": "user", "content": "run tests"}) },
-            Record { line: 6, event: json!({"role": "assistant", "content": "all tests passed"}) },
-            Record { line: 7, event: json!({"role": "user", "content": "next task"}) },
-            Record { line: 8, event: json!({"role": "assistant", "content": "ready"}) },
+            Record {
+                line: 5,
+                event: json!({"role": "user", "content": "run tests"}),
+            },
+            Record {
+                line: 6,
+                event: json!({"role": "assistant", "content": "all tests passed"}),
+            },
+            Record {
+                line: 7,
+                event: json!({"role": "user", "content": "next task"}),
+            },
+            Record {
+                line: 8,
+                event: json!({"role": "assistant", "content": "ready"}),
+            },
         ];
 
         let mut page = make_page(records);
         let before_json = serde_json::to_string(&page).unwrap();
         let before_tokens = crate::conversation::grammar::tokens_text(&before_json).unwrap();
 
-        let receipt = prune_page(&mut page, &PruneOptions { preserve_recent: 4, truncate_head_chars: 120 });
+        let receipt = prune_page(
+            &mut page,
+            &PruneOptions {
+                preserve_recent: 4,
+                truncate_head_chars: 120,
+            },
+        );
         let after_json = serde_json::to_string(&page).unwrap();
         let after_tokens = crate::conversation::grammar::tokens_text(&after_json).unwrap();
 

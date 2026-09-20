@@ -422,7 +422,9 @@ mod tests {
     #[test]
     fn scan_ignores_upstash_url() {
         // The REST URL carries no secret.
-        assert!(scan_credentials("UPSTASH_REDIS_REST_URL=https://example.upstash.io end").is_empty());
+        assert!(
+            scan_credentials("UPSTASH_REDIS_REST_URL=https://example.upstash.io end").is_empty()
+        );
     }
 
     #[test]
@@ -432,7 +434,10 @@ mod tests {
             "AKIAIO***"
         );
         assert_eq!(
-            credential_preview("token sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop here", "openai-key"),
+            credential_preview(
+                "token sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop here",
+                "openai-key"
+            ),
             "sk-ABC***"
         );
     }

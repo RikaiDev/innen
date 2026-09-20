@@ -198,7 +198,11 @@ fn conversation_prune_flag_removes_stale_reads_and_empty_searches() {
         json!({"step_index":7,"type":"USER_INPUT","content":"recent turn 3"}),
         json!({"step_index":8,"type":"PLANNER_RESPONSE","content":"recent turn 4"}),
     ];
-    let text = rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+    let text = rows
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     fixture(tmp.path(), &text);
 
     let output = command(tmp.path())
@@ -213,6 +217,7 @@ fn conversation_prune_flag_removes_stale_reads_and_empty_searches() {
     assert!(records.len() >= 5);
     // Warnings record that stale output was pruned
     let warnings = val["warnings"].as_array().expect("warnings array");
-    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("pruned")));
+    assert!(warnings
+        .iter()
+        .any(|w| w.as_str().unwrap().contains("pruned")));
 }
-

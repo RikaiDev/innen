@@ -102,5 +102,4 @@ mod tests {
         std::fs::write(&p, b"junk").unwrap();
         assert_eq!(load_watermark(dir.path(), "t"), 0);
     }
-
 }
