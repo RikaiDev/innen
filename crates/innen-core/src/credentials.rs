@@ -376,12 +376,7 @@ fn find_upstash_offset(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < NEEDLE.len() {
         return None;
     }
-    for i in 0..=(bytes.len() - NEEDLE.len()) {
-        if &bytes[i..i + NEEDLE.len()] == NEEDLE {
-            return Some(i);
-        }
-    }
-    None
+    (0..=(bytes.len() - NEEDLE.len())).find(|&i| &bytes[i..i + NEEDLE.len()] == NEEDLE)
 }
 
 #[cfg(test)]
