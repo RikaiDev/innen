@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.8.0] - 2026-09-24
+
+### Added
+
+- Read-only, bounded local document candidates when a knowledge-graph query has no match.
+- Exact Codex session delivery audit with source lines and moved-file candidates.
+
+### Fixed
+
+- Multi-term queries no longer admit unrelated artifacts through one generic word.
+- Session-end hook receipts distinguish sessions even when the Git worktree is unchanged.
+- Codex dialogue projection preserves final-answer phase for delivery audits.
+
+### Verification
+
+- Full workspace tests, strict Clippy, release build, and cross-platform CI are release gates.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added

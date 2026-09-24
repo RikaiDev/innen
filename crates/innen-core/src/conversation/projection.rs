@@ -416,6 +416,11 @@ pub fn dialogue(source: Source, event: Value) -> Result<Option<Value>, ReadError
     }
     let mut output = json!({"role":role,"content":content});
     copy_identity(&event, &mut output);
+    if source == Source::Codex {
+        if let Some(phase) = event.pointer("/payload/phase") {
+            output["phase"] = phase.clone();
+        }
+    }
     Ok(Some(output))
 }
 
@@ -436,5 +441,27 @@ fn copy_identity(event: &Value, output: &mut Value) {
         if let Some(value) = event.get(key) {
             output[key] = value.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod delivery_phase_tests {
+    use super::{dialogue, Source};
+    use serde_json::json;
+
+    #[test]
+    fn codex_final_answer_phase_survives_dialogue_projection() {
+        let event = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "[quote](</tmp/quote.docx>)"}]
+            }
+        });
+        let projected = dialogue(Source::Codex, event).unwrap().unwrap();
+        assert_eq!(projected["phase"], "final_answer");
+        assert_eq!(projected["role"], "assistant");
     }
 }

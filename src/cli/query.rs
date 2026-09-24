@@ -156,9 +156,37 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
             view: args.view.clone(),
         };
         match innen_core::task_entry::task_entry(root, &options) {
-            Ok(out) => {
+            Ok(mut out) => {
+                if out["resolution"] == "missing" {
+                    let discovery = super::local_discovery::discover(
+                        &args.q,
+                        &super::local_discovery::default_roots(),
+                    );
+                    out["local_search"] = serde_json::json!({
+                        "complete": discovery.complete,
+                        "scanned_entries": discovery.scanned_entries,
+                        "matching_files": discovery.matching_files,
+                        "results_truncated": discovery.results_truncated,
+                        "scope": "~/Documents and ~/Downloads filenames"
+                    });
+                    if !discovery.candidates.is_empty() {
+                        out["resolution"] = serde_json::json!("unindexed_local_candidates");
+                        out["local_candidates"] = serde_json::Value::Array(discovery.candidates);
+                    } else if !discovery.complete {
+                        out["resolution"] = serde_json::json!("local_search_incomplete");
+                    }
+                }
                 if is_human(format) {
                     print!("{}", innen_core::task_entry::render(&out));
+                    if let Some(candidates) = out["local_candidates"].as_array() {
+                        println!("Unindexed local files (filename matches only):");
+                        for candidate in candidates {
+                            println!("  {}", candidate["path"].as_str().unwrap_or(""));
+                        }
+                    }
+                    if out["local_search"]["complete"] == false {
+                        println!("Local filename search incomplete; inspect scope and limits before concluding absence.");
+                    }
                 } else {
                     println!(
                         "{}",

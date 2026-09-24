@@ -18,6 +18,9 @@ pub(super) struct HarvestArgs {
     /// Override the native store root; requires a concrete --source.
     #[arg(long, requires = "source")]
     pub(super) source_root: Option<std::path::PathBuf>,
+    /// Inspect one native session for final-answer document links, including moved-file candidates.
+    #[arg(long)]
+    pub(super) session: Option<String>,
 }
 
 use super::util::{escape_tsv_field, is_human};
@@ -50,6 +53,36 @@ pub(super) fn cmd_ingest(root: &std::path::Path, format: &str) -> i32 {
 }
 
 pub(super) fn cmd_harvest(root: &std::path::Path, format: &str, args: &HarvestArgs) -> i32 {
+    if let Some(session) = &args.session {
+        if args.source == "auto" {
+            eprintln!("error: --session requires a concrete --source");
+            return 1;
+        }
+        return match super::delivery::inspect(args.source_root.as_deref(), &args.source, session) {
+            Ok(result) => {
+                if is_human(format) {
+                    println!("session\t{}", session);
+                    for candidate in result["delivery_candidates"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        println!(
+                            "candidate\t{}",
+                            candidate["mentioned_path"].as_str().unwrap_or("")
+                        );
+                    }
+                } else {
+                    println!("{result}");
+                }
+                0
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                1
+            }
+        };
+    }
     // Thin call: dry-run report lives in innen-core::harvest (never appends,
     // never advances the watermark). Core structs serialize in field order,
     // which is the JSON wire order.

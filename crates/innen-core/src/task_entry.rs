@@ -189,6 +189,10 @@ fn has_all_search_terms(node: &Value, terms: &[&str]) -> bool {
     terms.iter().all(|term| searchable.contains(term))
 }
 
+fn admit_literal_candidate(node: &Value, terms: &[&str], allow_partial: bool) -> bool {
+    allow_partial || terms.len() <= 1 || has_all_search_terms(node, terms)
+}
+
 /// Score literal identity matches by how much of the meaningful request they
 /// cover.  The old fixed 0.85 score made every node containing one generic
 /// phrase indistinguishable across projects.
@@ -408,6 +412,21 @@ fn sanitize_for_tantivy(q: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod literal_admission_tests {
+    use super::admit_literal_candidate;
+    use serde_json::json;
+
+    #[test]
+    fn multi_term_request_rejects_unrelated_quote() {
+        let unrelated = json!({"label": "丙企業_花蓮報價單.pdf"});
+        let matching = json!({"label": "甲研究院_甲大學_報價單.pdf"});
+        let terms = ["甲研究院", "甲大學", "報價"];
+        assert!(!admit_literal_candidate(&unrelated, &terms, false));
+        assert!(admit_literal_candidate(&matching, &terms, false));
+    }
 }
 
 /// Extract heuristic operation cues from the user's natural query.
@@ -630,6 +649,16 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
             };
             if identity_match {
                 literal_matched = true;
+            }
+
+            // A single common word (for example 報價) must not admit an
+            // unrelated asset for a multi-part request. Keep partial matches
+            // only for explicit asset-edit queries, where browsing variants
+            // is intentional.
+            if literal_matched
+                && !admit_literal_candidate(node, &identity_terms, allow_partial_identity)
+            {
+                literal_matched = false;
             }
 
             if literal_matched {

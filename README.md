@@ -65,6 +65,12 @@ semantic certainty. A filename or `final` status alone is not an approved
 editable baseline; missing or conflicting authority remains `missing` or
 `ambiguous`.
 
+When the graph has no candidate, the CLI also performs a bounded, read-only
+filename search in the current user's `~/Documents` and `~/Downloads`. Matching
+office files appear as `unindexed_local_candidates` with absolute paths. This
+does not read file contents, add graph nodes, or archive private files; use
+`artifact add` and an explicit project link after verifying a candidate.
+
 ### Contract-scoped evidence closure (opt-in)
 
 ```bash
@@ -247,6 +253,11 @@ create graph nodes or infer decisions. `harvest --check` currently inspects
 Markdown already present in `00-inbox/harvest`; `ingest` processes that inbox.
 `harvest --coding-sessions` adds a read-only native-store inventory with exact
 retention blockers; it does not treat discovery as extraction.
+To recover document links from an older Codex delivery, inspect one exact
+session with `innen harvest --check --source codex --session <id>`. The result
+includes source lines, whether each linked file still exists, and bounded
+same-name candidates after a move. It never archives a file or treats a linked
+template as the delivered artifact without review.
 
 ### Retain knowledge, then purge native sessions
 

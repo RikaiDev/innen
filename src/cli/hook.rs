@@ -155,6 +155,24 @@ fn pending_name(epoch: u64, digest: &str) -> String {
     format!("pending-{epoch}-{digest}.md")
 }
 
+fn receipt_digest(
+    worktree_digest: &str,
+    session: &str,
+    transcript: &str,
+    event: &str,
+    epoch: u64,
+) -> String {
+    let identity = if session != "-" {
+        session.to_string()
+    } else if transcript != "-" {
+        transcript.to_string()
+    } else {
+        epoch.to_string()
+    };
+    let key = format!("{worktree_digest}|{identity}|{event}");
+    innen_core::ids::sha256_hex(key.as_bytes())[..12].to_string()
+}
+
 fn inbox_has_digest(inbox: &Path, digest: &str) -> bool {
     let suffix = format!("-{digest}.md");
     std::fs::read_dir(inbox)
@@ -202,6 +220,16 @@ fn render_snapshot_md(
         "\n> Agent: verify claims against the repo, record `innen graph` nodes and\n\
          > wiki/log updates, then delete this file after ingesting.\n",
     );
+    if session != "-"
+        && session.len() <= 128
+        && session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        out.push_str(&format!(
+            "\n> For a Codex session, check final-answer document links with `innen harvest --check --source codex --session {session}`; verify and register deliverables explicitly.\n"
+        ));
+    }
     out
 }
 
@@ -287,7 +315,12 @@ fn hook_run_inner(root: &Path, args: &HookRunArgs) -> Result<Receipt, String> {
             )
         })
         .unwrap_or_else(|| "-".to_string());
-    let snap = snapshot_repo(&cwd);
+    let mut snap = snapshot_repo(&cwd);
+    // A clean Git tree can still have a delivered file outside the repository.
+    // Keep one pending receipt per session/event instead of deduplicating all
+    // such deliveries under the same worktree digest.
+    let epoch = epoch_now();
+    snap.digest = receipt_digest(&snap.digest, &session, &transcript, &args.event, epoch);
     let inbox = kb.join("00-inbox/harvest");
     std::fs::create_dir_all(&inbox).map_err(|e| format!("inbox mkdir: {e}"))?;
     if inbox_has_digest(&inbox, &snap.digest) {
@@ -295,7 +328,6 @@ fn hook_run_inner(root: &Path, args: &HookRunArgs) -> Result<Receipt, String> {
             digest: snap.digest,
         });
     }
-    let epoch = epoch_now();
     let name = pending_name(epoch, &snap.digest);
     let body = render_snapshot_md(&args.event, &session, &transcript, epoch, &snap);
     std::fs::write(inbox.join(&name), body).map_err(|e| format!("inbox write: {e}"))?;
@@ -795,7 +827,7 @@ fn install_opencode(kb: &Path, scope: &str, cwd: &Path) -> Result<String, String
 mod tests {
     use super::{
         command_handler, inbox_has_digest, merge_hook_entry, pending_files, pending_name,
-        render_snapshot_md, shell_quote, Snapshot,
+        receipt_digest, render_snapshot_md, shell_quote, Snapshot,
     };
     use std::collections::HashSet;
 
@@ -812,6 +844,21 @@ mod tests {
     #[test]
     fn pending_name_pins_epoch_and_digest() {
         assert_eq!(pending_name(7, "abc123def456"), "pending-7-abc123def456.md");
+    }
+
+    #[test]
+    fn clean_tree_deliveries_have_distinct_session_receipts() {
+        let first = receipt_digest("clean-tree", "session-a", "-", "session-end", 1);
+        let second = receipt_digest("clean-tree", "session-b", "-", "session-end", 1);
+        assert_ne!(first, second);
+        assert_ne!(
+            first,
+            receipt_digest("clean-tree", "session-a", "-", "stop", 1)
+        );
+        assert_ne!(
+            receipt_digest("clean-tree", "-", "-", "session-end", 1),
+            receipt_digest("clean-tree", "-", "-", "session-end", 2)
+        );
     }
 
     #[test]
