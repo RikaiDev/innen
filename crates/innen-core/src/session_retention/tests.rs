@@ -383,3 +383,67 @@ fn codex_parent_with_a_live_subagent_session_is_not_purged() {
     assert!(error.to_string().contains(CHILD), "{error}");
     assert!(child.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn sweep_reports_native_files_kept_alive_by_other_hard_links() {
+    // Another tool hard-linking the native store (Orca did, 2026-09-30) keeps the
+    // bytes on disk after purge; the receipt must say so instead of implying space.
+    let (kb, store, source) = setup();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mirror = elsewhere.path().join("mirror.jsonl");
+    fs::hard_link(&source, &mirror).unwrap();
+    let bytes = fs::metadata(&source).unwrap().len();
+
+    let dry = sweep(
+        kb.path(),
+        Some(Source::Claude),
+        Some(store.path()),
+        45,
+        false,
+    )
+    .unwrap();
+    assert_eq!((dry.hard_linked, dry.hard_linked_bytes), (1, bytes));
+    assert!(dry.items[0]
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("hard link"));
+
+    let run = sweep(
+        kb.path(),
+        Some(Source::Claude),
+        Some(store.path()),
+        45,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        (run.removed, run.hard_linked, run.hard_linked_bytes),
+        (1, 1, bytes)
+    );
+    assert!(run.items[0]
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("frees no space"));
+    assert!(!source.exists() && mirror.exists());
+}
+
+#[test]
+fn sweep_reports_no_hard_links_for_an_unshared_session() {
+    let (kb, store, _source) = setup();
+    let run = sweep(
+        kb.path(),
+        Some(Source::Claude),
+        Some(store.path()),
+        45,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        (run.removed, run.hard_linked, run.hard_linked_bytes),
+        (1, 0, 0)
+    );
+    assert!(run.items[0].detail.is_none());
+}

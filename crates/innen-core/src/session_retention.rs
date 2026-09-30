@@ -90,6 +90,10 @@ pub struct PurgeReceipt {
     pub executed: bool,
     pub deleted_targets: Vec<PathBuf>,
     pub source_sha256: String,
+    /// Other hard links to the native files, measured before deletion. When
+    /// non-zero, deleting this path frees no space until those links go too.
+    pub other_hard_links: u64,
+    pub hard_linked_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,14 +371,18 @@ fn purge_candidate(
         return Err(error);
     }
     if !execute {
+        let (other_hard_links, hard_linked_bytes) = hard_links(&assessment.targets);
         return Ok(PurgeReceipt {
             session_id: session_id.into(),
             source: source.as_str().into(),
             executed: false,
             deleted_targets: vec![],
             source_sha256: assessment.source_sha256,
+            other_hard_links,
+            hard_linked_bytes,
         });
     }
+    let (other_hard_links, hard_linked_bytes) = hard_links(&assessment.targets);
 
     let deleted_targets = match delete_candidate(candidate, &assessment, source_root) {
         Ok(targets) => targets,
@@ -409,7 +417,39 @@ fn purge_candidate(
         deleted_targets: serde_json::from_value(receipt["deleted_targets"].clone())
             .unwrap_or_default(),
         source_sha256: assessment.source_sha256,
+        other_hard_links,
+        hard_linked_bytes,
     })
+}
+
+/// Largest count of *other* hard links among the native files under `targets`,
+/// and the bytes of the files that have any. Another tool that hard-links a
+/// native store keeps those bytes on disk after this path is deleted.
+pub(super) fn hard_links(targets: &[PathBuf]) -> (u64, u64) {
+    fn visit(path: &Path, links: &mut u64, bytes: &mut u64) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+                visit(&entry.path(), links, bytes);
+            }
+        } else if metadata.is_file() {
+            #[cfg(unix)]
+            {
+                let others = metadata.nlink().saturating_sub(1);
+                if others > 0 {
+                    *links = (*links).max(others);
+                    *bytes = bytes.saturating_add(metadata.len());
+                }
+            }
+        }
+    }
+    let (mut links, mut bytes) = (0, 0);
+    for target in targets {
+        visit(target, &mut links, &mut bytes);
+    }
+    (links, bytes)
 }
 
 /// Children of `candidate` that still exist on disk; `store` may predate deletions.

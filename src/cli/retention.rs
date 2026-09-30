@@ -199,6 +199,8 @@ pub(super) fn cmd_retention(root: &std::path::Path, format: &str, args: &Retenti
                             "failed": receipt.failed,
                             "native_bytes_removed": receipt.native_bytes_removed,
                             "compact_bytes_written": receipt.compact_bytes_written,
+                            "hard_linked": receipt.hard_linked,
+                            "hard_linked_bytes": receipt.hard_linked_bytes,
                             "executed": receipt.executed,
                         }))
                     };

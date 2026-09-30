@@ -24,6 +24,10 @@ pub struct SweepReceipt {
     pub failed: usize,
     pub native_bytes_removed: u64,
     pub compact_bytes_written: u64,
+    /// Swept sessions whose native files have other hard links: their bytes
+    /// stay on disk until the other links are removed too.
+    pub hard_linked: usize,
+    pub hard_linked_bytes: u64,
     pub executed: bool,
     pub items: Vec<SweepItem>,
 }
@@ -59,6 +63,8 @@ pub fn sweep(
         failed: 0,
         native_bytes_removed: 0,
         compact_bytes_written: 0,
+        hard_linked: 0,
+        hard_linked_bytes: 0,
         executed: execute,
         items: Vec::new(),
     };
@@ -87,6 +93,17 @@ pub fn sweep(
     work.sort_by_key(|item| std::cmp::Reverse(depth(&item.session_id)));
     for assessment in work {
         let needs_compact = !assessment.eligible;
+        // Measured before anything is deleted; reported in dry runs too.
+        let (other_links, linked_bytes) = hard_links(&assessment.targets);
+        let link_note = (other_links > 0).then(|| {
+            format!(
+                "{other_links} other hard link(s) keep {linked_bytes} bytes on disk; removing this path frees no space"
+            )
+        });
+        if other_links > 0 {
+            receipt.hard_linked += 1;
+            receipt.hard_linked_bytes = receipt.hard_linked_bytes.saturating_add(linked_bytes);
+        }
         if !execute {
             receipt.items.push(SweepItem {
                 session_id: assessment.session_id,
@@ -99,7 +116,7 @@ pub fn sweep(
                 .into(),
                 source_bytes: assessment.source_bytes,
                 compact_bytes: None,
-                detail: None,
+                detail: link_note,
             });
             continue;
         }
@@ -134,7 +151,7 @@ pub fn sweep(
                 receipt.removed += 1;
                 receipt.native_bytes_removed =
                     receipt.native_bytes_removed.saturating_add(native_bytes);
-                ("removed", None)
+                ("removed", link_note)
             }
             Err(error) => {
                 receipt.failed += 1;
