@@ -1,5 +1,6 @@
 //! Content-addressed artifact add (Task 11a).
 
+pub mod finalize;
 pub mod ledger;
 
 use std::path::{Path, PathBuf};

@@ -322,6 +322,41 @@ them, sorts relative paths, archives the resulting manifest content-addressably,
 returns `metadata_only: true`. The receipt proves the observed tree; it is not a second
 copy or backup of source bytes. Put the manifest outside the inventoried directory.
 
+### Final-only artifact collections
+
+`artifact add` is an immutable evidence snapshot: it keeps every submitted
+version under `03-output/artifacts/by-sha256/`. Use `artifact finalize` when a
+deliverable must have **one current release** in the wiki. It publishes the
+explicit final files to `03-output/artifacts/collections/<collection>/` and
+removes only the exact source and superseded files listed in a hash-bound plan.
+It does not infer drafts from filenames or delete unrelated files.
+
+```json
+{
+  "format": "innen.final-collection.v1",
+  "collection": "client-quote-2026",
+  "final_files": [
+    {"path": "/absolute/wiki/03-output/quotations/final.pdf", "sha256": "<64 hex characters>"}
+  ],
+  "remove_files": [
+    {"path": "/absolute/wiki/03-output/quotations/draft.pdf", "sha256": "<64 hex characters>"}
+  ]
+}
+```
+
+```bash
+innen artifact finalize --plan /absolute/plan.json
+innen artifact finalize --plan /absolute/plan.json --apply
+```
+
+The first command is a read-only preflight. Apply rechecks every file hash,
+copies and verifies the final bytes in a staged collection, atomically publishes
+the collection, then removes listed files and the original final-file paths.
+The collection's `manifest.json` records only its final files. A later release
+uses a new collection name and may list the old collection files in
+`remove_files`; this preserves final-only visibility without guessing which
+version supersedes another.
+
 The dialogue view includes user and assistant text. Tool results, control events,
 and original source fields can be inspected with `--view events` when checking
 claims. Filtering text is not evidence that the remaining text preserves every

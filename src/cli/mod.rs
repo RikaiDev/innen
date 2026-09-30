@@ -155,6 +155,9 @@ pub(crate) fn run() -> i32 {
                 artifact::ArtifactOp::AddTree(a) => {
                     artifact::cmd_artifact_add_tree(&root, &cli.format, a)
                 }
+                artifact::ArtifactOp::Finalize(a) => {
+                    artifact::cmd_artifact_finalize(&root, &cli.format, a)
+                }
                 artifact::ArtifactOp::Ledger { op } => {
                     ledger::cmd_artifact_ledger(&root, &cli.format, op)
                 }

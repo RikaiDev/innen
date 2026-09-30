@@ -5,11 +5,23 @@ pub(super) enum ArtifactOp {
     Add(ArtifactAddArgs),
     /// Inventory a directory and archive its hash-bound metadata manifest.
     AddTree(ArtifactAddTreeArgs),
+    /// Publish exact final files to one wiki collection and remove hash-verified drafts.
+    Finalize(ArtifactFinalizeArgs),
     /// Maintain a project archive ledger without copying source bytes.
     Ledger {
         #[command(subcommand)]
         op: Box<LedgerOp>,
     },
+}
+
+#[derive(clap::Args)]
+pub(super) struct ArtifactFinalizeArgs {
+    /// JSON plan with collection, final_files and remove_files (each path + sha256).
+    #[arg(long)]
+    pub(super) plan: PathBuf,
+    /// Perform the validated publication and removals; omitted is a dry run.
+    #[arg(long)]
+    pub(super) apply: bool,
 }
 #[derive(clap::Args)]
 pub(super) struct ArtifactAddArgs {
@@ -51,6 +63,37 @@ pub(super) struct ArtifactTreeJson {
     pub(super) manifest_path: String,
     pub(super) stored_path: String,
     pub(super) metadata_only: bool,
+}
+
+pub(super) fn cmd_artifact_finalize(
+    root: &std::path::Path,
+    format: &str,
+    args: &ArtifactFinalizeArgs,
+) -> i32 {
+    match innen_core::artifact::finalize::finalize(root, &args.plan, args.apply) {
+        Ok(result) => {
+            if is_human(format) {
+                println!("collection\tfinal_files\tremoved_files\tapplied");
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    escape_tsv_field(&result.collection_path.to_string_lossy()),
+                    result.final_files,
+                    result.removed_files,
+                    result.applied
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&result).expect("finalize output serializes")
+                );
+            }
+            0
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
 }
 
 use super::util::{escape_tsv_field, is_human};
