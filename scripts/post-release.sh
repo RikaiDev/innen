@@ -29,9 +29,14 @@ if [ ! -f "$marker" ]; then
 fi
 read -r m_commit m_dirty m_sha < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["commit"],str(d["dirty"]).lower(),d["sha256"])' "$marker")
 [ "$(shasum -a 256 "$dev" | awk '{print $1}')" = "$m_sha" ] || { echo "refusing: $dev differs from the recorded dev install" >&2; exit 1; }
-[ "$m_dirty" = "false" ] || { echo "refusing: dev build came from a dirty tree; its changes may not be in $tag" >&2; exit 1; }
 git -C "$repo" fetch --quiet --tags origin
 git -C "$repo" merge-base --is-ancestor "$m_commit" "$tag" || { echo "refusing: dev commit $m_commit is not contained in $tag" >&2; exit 1; }
+if [ "$m_dirty" != "false" ]; then
+  # A dirty-tree build is retired only once that work is no longer pending:
+  # the tree is clean now and everything committed since is part of the release.
+  [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] || { echo "refusing: dev build came from a dirty tree and the tree still has uncommitted changes" >&2; exit 1; }
+  git -C "$repo" merge-base --is-ancestor HEAD "$tag" || { echo "refusing: dev build came from a dirty tree and HEAD is not contained in $tag" >&2; exit 1; }
+fi
 rm -f "$dev" "$marker"
 hash -r
 resolved="$(command -v innen || true)"

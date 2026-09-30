@@ -1,8 +1,18 @@
 name: Update Homebrew Formula
 
+# Runs after the release assets exist: release-assets.yml calls this once
+# SHA256SUMS is merged. A `release: published` trigger raced the asset build
+# and failed with 404 on the archive download.
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: Published release tag to verify and apply
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: false
   workflow_dispatch:
     inputs:
       tag:
@@ -37,7 +47,7 @@ jobs:
       - name: Verify release assets
         id: assets
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
