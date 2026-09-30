@@ -39,7 +39,10 @@ pub fn sweep(
     retention_days: u64,
     execute: bool,
 ) -> Result<SweepReceipt, Error> {
-    let assessments = inventory(root, source, source_root, retention_days)?;
+    // One enumeration for the whole sweep: it reads the tail of every session.
+    let store = find_all_candidates(source, source_root)
+        .map_err(|error| Error::Conversation(error.to_string()))?;
+    let assessments = inventory_of(root, &store, retention_days)?;
     let eligible = assessments.iter().filter(|item| item.eligible).count();
     let compactable = assessments
         .iter()
@@ -61,10 +64,9 @@ pub fn sweep(
     };
     // Children first: deleting a Codex parent also deletes its subagent sessions,
     // so each child must be compacted and purged before its parent is reached.
-    let parents: BTreeMap<String, String> = find_all_candidates(source, source_root)
-        .map_err(|error| Error::Conversation(error.to_string()))?
-        .into_iter()
-        .filter_map(|candidate| candidate.parent_id.map(|parent| (candidate.id, parent)))
+    let parents: BTreeMap<&str, &str> = store
+        .iter()
+        .filter_map(|candidate| Some((candidate.id.as_str(), candidate.parent_id.as_deref()?)))
         .collect();
     let depth = |id: &str| {
         let mut depth = 0usize;
@@ -104,23 +106,24 @@ pub fn sweep(
         let mut compact_bytes = None;
         let mut native_bytes = assessment.source_bytes;
         let outcome = (|| -> Result<(), Error> {
+            let candidate = store
+                .iter()
+                .find(|candidate| {
+                    candidate.id == assessment.session_id
+                        && candidate.source.as_str() == assessment.source
+                })
+                .ok_or_else(|| {
+                    Error::Proof(format!(
+                        "session not found: {}:{}",
+                        assessment.source, assessment.session_id
+                    ))
+                })?;
             if needs_compact {
-                let source = Source::parse(&assessment.source)
-                    .map_err(|error| Error::Proof(error.to_string()))?;
-                let candidate = find_candidate(source, &assessment.session_id, source_root)?;
-                let record = compact_and_attest(root, &candidate)?;
+                let record = compact_and_attest(root, candidate)?;
                 compact_bytes = Some(record.bytes);
                 native_bytes = record.source_bytes;
             }
-            purge(
-                root,
-                &assessment.source,
-                &assessment.session_id,
-                source_root,
-                retention_days,
-                true,
-            )
-            .map(|_| ())
+            purge_candidate(root, candidate, &store, source_root, retention_days, true).map(|_| ())
         })();
         if let Some(bytes) = compact_bytes {
             receipt.compacted += 1;

@@ -127,6 +127,17 @@ pub fn inventory(
 ) -> Result<Vec<Assessment>, Error> {
     let candidates = find_all_candidates(source, source_root)
         .map_err(|error| Error::Conversation(error.to_string()))?;
+    inventory_of(root, &candidates, retention_days)
+}
+
+/// Assess an already enumerated store. Enumerating reads the tail of every
+/// native session, so callers that touch many sessions enumerate once and
+/// reuse the list.
+fn inventory_of(
+    root: &Path,
+    candidates: &[Candidate],
+    retention_days: u64,
+) -> Result<Vec<Assessment>, Error> {
     let graph = load_graph(root)?;
     candidates
         .iter()
@@ -296,10 +307,37 @@ pub fn purge(
     execute: bool,
 ) -> Result<PurgeReceipt, Error> {
     let source = Source::parse(source_name).map_err(|error| Error::Proof(error.to_string()))?;
-    let candidate = find_candidate(source, session_id, source_root)?;
+    let id = sources::validate_id(session_id).map_err(|error| Error::Proof(error.to_string()))?;
+    let candidates = find_all_candidates(Some(source), source_root)
+        .map_err(|error| Error::Conversation(error.to_string()))?;
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.id == id)
+        .ok_or_else(|| Error::Proof(format!("session not found: {}:{id}", source.as_str())))?;
+    purge_candidate(
+        root,
+        candidate,
+        &candidates,
+        source_root,
+        retention_days,
+        execute,
+    )
+}
+
+/// Purge one session of an already enumerated store (see [`inventory_of`]).
+fn purge_candidate(
+    root: &Path,
+    candidate: &Candidate,
+    store: &[Candidate],
+    source_root: Option<&Path>,
+    retention_days: u64,
+    execute: bool,
+) -> Result<PurgeReceipt, Error> {
+    let source = candidate.source;
+    let session_id = candidate.id.as_str();
     // `codex delete` also removes a thread's subagent sessions: purge children first.
     if candidate.source == Source::Codex {
-        let children = live_children(&candidate, source_root)?;
+        let children = live_children(candidate, store);
         if !children.is_empty() {
             return Err(Error::Proof(format!(
                 "codex delete would also remove child sessions; purge them first: {}",
@@ -308,15 +346,15 @@ pub fn purge(
         }
     }
     let attempt_id = if execute {
-        Some(record_purge_attempt(root, &candidate, retention_days)?)
+        Some(record_purge_attempt(root, candidate, retention_days)?)
     } else {
         None
     };
-    let assessment = match assess_candidate(root, &candidate, retention_days) {
+    let assessment = match assess_candidate(root, candidate, retention_days) {
         Ok(assessment) => assessment,
         Err(error) => {
             if let Some(id) = attempt_id.as_deref() {
-                record_purge_failure(root, id, &candidate, &error.to_string())?;
+                record_purge_failure(root, id, candidate, &error.to_string())?;
             }
             return Err(error);
         }
@@ -324,7 +362,7 @@ pub fn purge(
     if !assessment.eligible {
         let error = Error::Proof(assessment.blockers.join("; "));
         if let Some(id) = attempt_id.as_deref() {
-            record_purge_failure(root, id, &candidate, &error.to_string())?;
+            record_purge_failure(root, id, candidate, &error.to_string())?;
         }
         return Err(error);
     }
@@ -338,11 +376,11 @@ pub fn purge(
         });
     }
 
-    let deleted_targets = match delete_candidate(&candidate, &assessment, source_root) {
+    let deleted_targets = match delete_candidate(candidate, &assessment, source_root) {
         Ok(targets) => targets,
         Err(error) => {
             if let Some(id) = attempt_id.as_deref() {
-                record_purge_failure(root, id, &candidate, &error.to_string())?;
+                record_purge_failure(root, id, candidate, &error.to_string())?;
             }
             return Err(error);
         }
@@ -374,15 +412,15 @@ pub fn purge(
     })
 }
 
-fn live_children(candidate: &Candidate, source_root: Option<&Path>) -> Result<Vec<String>, Error> {
-    Ok(find_all_candidates(Some(candidate.source), source_root)
-        .map_err(|error| Error::Conversation(error.to_string()))?
-        .into_iter()
+/// Children of `candidate` that still exist on disk; `store` may predate deletions.
+fn live_children(candidate: &Candidate, store: &[Candidate]) -> Vec<String> {
+    store
+        .iter()
         .filter(|child| {
             child.parent_id.as_deref() == Some(candidate.id.as_str()) && child.path.exists()
         })
-        .map(|child| child.id)
-        .collect())
+        .map(|child| child.id.clone())
+        .collect()
 }
 
 fn load_graph(root: &Path) -> Result<crate::graph::Materialized, Error> {
