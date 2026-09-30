@@ -1,9 +1,13 @@
 //! Evidence-gated retention for native coding-tool conversations.
 //!
-//! Age and a harvest watermark never authorize deletion.  A session becomes
-//! eligible only after an explicit attestation binds the current native bytes
-//! to live knowledge nodes linked to the canonical conversation node. Raw
-//! transcripts and duplicate archives are not durable retention outputs.
+//! innen exists to save tokens: continuing work from innen must cost less than
+//! rereading a native transcript. Age alone never authorizes deletion. A session
+//! becomes eligible once a proof binds its current native bytes to knowledge
+//! nodes linked to the canonical conversation node: either an explicit
+//! attestation, or the compact transcript `sweep` writes for a closed session
+//! (user/assistant dialogue with source line numbers; tool output and
+//! attachments dropped). Raw native bundles and duplicate archives are never
+//! retention outputs.
 
 use crate::conversation::resume::{find_all_candidates, Candidate};
 use crate::conversation::sources::{self, Source};
@@ -103,6 +107,9 @@ const BLOCKER_KNOWLEDGE_MISSING: &str = "knowledge_provenance_missing";
 const BLOCKER_SESSION_ACTIVE: &str = "session_active";
 const BLOCKER_ACTIVITY_UNKNOWN: &str = "session_activity_unknown";
 const BLOCKER_ASSESSMENT_ERROR: &str = "assessment_error";
+
+/// Hot-session window, in days, kept before an attested session may be purged.
+pub const DEFAULT_RETENTION_DAYS: u64 = 7;
 
 pub fn cutoff_utc(retention_days: u64) -> String {
     let now = SystemTime::now()
@@ -290,6 +297,16 @@ pub fn purge(
 ) -> Result<PurgeReceipt, Error> {
     let source = Source::parse(source_name).map_err(|error| Error::Proof(error.to_string()))?;
     let candidate = find_candidate(source, session_id, source_root)?;
+    // `codex delete` also removes a thread's subagent sessions: purge children first.
+    if candidate.source == Source::Codex {
+        let children = live_children(&candidate, source_root)?;
+        if !children.is_empty() {
+            return Err(Error::Proof(format!(
+                "codex delete would also remove child sessions; purge them first: {}",
+                children.join(",")
+            )));
+        }
+    }
     let attempt_id = if execute {
         Some(record_purge_attempt(root, &candidate, retention_days)?)
     } else {
@@ -321,7 +338,7 @@ pub fn purge(
         });
     }
 
-    let deleted_targets = match delete_candidate(&candidate, &assessment) {
+    let deleted_targets = match delete_candidate(&candidate, &assessment, source_root) {
         Ok(targets) => targets,
         Err(error) => {
             if let Some(id) = attempt_id.as_deref() {
@@ -357,6 +374,17 @@ pub fn purge(
     })
 }
 
+fn live_children(candidate: &Candidate, source_root: Option<&Path>) -> Result<Vec<String>, Error> {
+    Ok(find_all_candidates(Some(candidate.source), source_root)
+        .map_err(|error| Error::Conversation(error.to_string()))?
+        .into_iter()
+        .filter(|child| {
+            child.parent_id.as_deref() == Some(candidate.id.as_str()) && child.path.exists()
+        })
+        .map(|child| child.id)
+        .collect())
+}
+
 fn load_graph(root: &Path) -> Result<crate::graph::Materialized, Error> {
     let journal = Journal::open(root).map_err(|error| Error::Journal(error.to_string()))?;
     let events = journal
@@ -374,15 +402,18 @@ fn io(path: &Path, error: impl std::fmt::Display) -> Error {
 
 mod activity;
 mod archive;
+mod compact;
 mod delete_adapter;
 mod policy;
 mod receipt;
 mod sweep;
 
+pub use compact::{CompactRecord, COMPACT_DIR};
 pub use sweep::{sweep, SweepItem, SweepReceipt};
 
 use activity::{session_activity, Activity};
 use archive::{bundle, candidate_targets, find_candidate};
+use compact::compact_and_attest;
 use delete_adapter::delete_candidate;
 use policy::{assess_candidate, assess_candidate_with_graph};
 use receipt::{record_purge_attempt, record_purge_failure};

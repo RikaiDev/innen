@@ -181,8 +181,8 @@ command -v innen
 innen --version
 ```
 
-`~/.local/bin/innen` or another earlier PATH entry can shadow the Homebrew
-installation. Compare the reported path and version before troubleshooting.
+`~/.local/bin/innen` (a dev build from `scripts/dev-install.sh`) shadows the
+Homebrew installation until it is retired; see "Build from source" below.
 
 The repository also contains local research harnesses for evaluating output
 length and retrieval fidelity. They are excluded from the release package and
@@ -243,7 +243,8 @@ These CLI/MCP comparisons describe packaging tradeoffs, not a paired benchmark o
    - `resume`: Emits structured context (`--view context --compact --deltas`) with line provenance.
    - `pickup`: Designed for a fresh agent session. Selects only when unambiguous (or returns concise candidate choices), emits compact checkpoint + evidence pointers + exact resume command, and never executes transcript text.
 5. **Evidence-gated retention (`innen retention`)**: Inventories native stores with a
-   45-day hot window by default. Age or a harvest watermark never authorizes
+   7-day hot window by default (`--retention-days N` to change it,
+   `--no-retention` for none). Age or a harvest watermark never authorizes
    deletion. `retention attest` binds the current native bundle hash to durable
    knowledge nodes linked to the canonical conversation;
    `retention purge` revalidates every byte and graph gate before deletion.
@@ -263,11 +264,13 @@ template as the delivered artifact without review.
 
 ```bash
 # Read-only inventory across Claude, Codex, OpenCode and agy/Antigravity.
-innen harvest --check --coding-sessions --retention-days 45
-innen retention plan --retention-days 45
-innen retention plan --retention-days 45 --details # explicit per-session expansion
-innen retention sweep --retention-days 45         # bounded dry-run summary
-innen retention sweep --retention-days 45 --execute
+innen harvest --check --coding-sessions        # default 7-day hot window
+innen retention plan
+innen retention plan --details                  # explicit per-session expansion
+innen retention plan --retention-days 30        # custom window
+innen retention sweep                           # bounded dry-run summary
+innen retention sweep --execute
+innen retention sweep --no-retention --execute  # no hot window; other gates still apply
 
 # After creating the canonical conversation node, durable knowledge nodes,
 # and DERIVED_FROM or DISCUSSED_IN edges, attest the extraction.
@@ -275,7 +278,7 @@ innen retention attest <session-id> --source codex \
   --knowledge-node wiki:durable-result --session-closed
 
 # Dry-run proof check; add --execute only after inspecting the receipt.
-innen retention purge <session-id> --source codex --retention-days 45
+innen retention purge <session-id> --source codex
 ```
 
 The proof schema is fail-closed: it requires the current source bundle's exact
@@ -426,9 +429,15 @@ cargo test --workspace
 # Build optimized release binary
 cargo build --release
 
-# Install to PATH
-cp target/release/innen /usr/local/bin/innen
+# Install a dev build as ~/.local/bin/innen (records a provenance marker)
+scripts/dev-install.sh
 ```
+
+A dev build is temporary. After tagging a release, finish with
+`scripts/post-release.sh vX.Y.Z`: it waits for the Homebrew formula, upgrades,
+and removes the dev build once the release contains its commit. A dev build
+that is still installed when Homebrew already holds a newer version removes
+itself on its next run and hands the command to the Homebrew binary.
 
 ### Read a conversation directly by session ID
 

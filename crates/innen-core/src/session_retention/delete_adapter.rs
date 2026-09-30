@@ -5,7 +5,17 @@ use super::*;
 pub(super) fn delete_candidate(
     candidate: &Candidate,
     assessment: &Assessment,
+    source_root: Option<&Path>,
 ) -> Result<Vec<PathBuf>, Error> {
+    // Codex and OpenCode delete through their own CLI, which only knows its
+    // canonical store: with a --source-root override it would delete the
+    // same id from the real store while the assessed copy stays in place.
+    if source_root.is_some() && matches!(candidate.source, Source::Codex | Source::Opencode) {
+        return Err(Error::Purge(format!(
+            "{} deletes through its own CLI and its canonical store; refusing with --source-root",
+            candidate.source.as_str()
+        )));
+    }
     let identities = snapshot_target_identities(&assessment.targets)?;
     let current = bundle(candidate)?;
     if current.sha256 != assessment.source_sha256 || current.bytes != assessment.source_bytes {
@@ -41,6 +51,26 @@ pub(super) fn delete_candidate(
                 "source has no supported delete adapter".into(),
             ))
         }
+    }
+    // A receipt may only claim what actually happened on disk.
+    let remaining: Vec<_> = if candidate.source == Source::Opencode {
+        Vec::new() // the database file is shared; the CLI removes the rows
+    } else {
+        assessment
+            .targets
+            .iter()
+            .filter(|target| target.exists())
+            .collect()
+    };
+    if !remaining.is_empty() {
+        return Err(Error::Purge(format!(
+            "native targets still exist after deletion: {}",
+            remaining
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
     Ok(assessment.targets.clone())
 }

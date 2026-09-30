@@ -8,14 +8,36 @@ pub(super) struct RetentionArgs {
 
 #[derive(clap::Subcommand)]
 enum RetentionOp {
-    /// Dry-run inventory with exact blocked reasons (default retention: 45 days).
+    /// Dry-run inventory with exact blocked reasons (default retention: 7 days).
     Plan(PlanArgs),
     /// Record a knowledge-extraction proof for the current native bytes.
     Attest(AttestArgs),
     /// Revalidate every gate and optionally delete one exact native session.
     Purge(PurgeArgs),
-    /// Process every eligible session independently; one failure never stops the sweep.
+    /// Compact closed sessions that lack an extraction, then purge every eligible one;
+    /// one failure never stops the sweep.
     Sweep(SweepArgs),
+}
+
+/// Retention window shared by plan, purge, sweep and harvest.
+#[derive(clap::Args)]
+pub(super) struct RetentionWindow {
+    /// Keep sessions modified within this many days (default: 7).
+    #[arg(long, default_value_t = innen_core::session_retention::DEFAULT_RETENTION_DAYS, conflicts_with = "no_retention")]
+    retention_days: u64,
+    /// Keep no hot window (same as --retention-days 0); attestation and live-session gates still apply.
+    #[arg(long)]
+    no_retention: bool,
+}
+
+impl RetentionWindow {
+    pub(super) fn days(&self) -> u64 {
+        if self.no_retention {
+            0
+        } else {
+            self.retention_days
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -36,8 +58,8 @@ struct PlanArgs {
     source: String,
     #[arg(long)]
     source_root: Option<PathBuf>,
-    #[arg(long, default_value_t = 45)]
-    retention_days: u64,
+    #[command(flatten)]
+    window: RetentionWindow,
     /// Emit every session assessment. Default output is a bounded summary.
     #[arg(long)]
     details: bool,
@@ -59,8 +81,8 @@ struct AttestArgs {
 struct PurgeArgs {
     #[command(flatten)]
     session: CommonSessionArgs,
-    #[arg(long, default_value_t = 45)]
-    retention_days: u64,
+    #[command(flatten)]
+    window: RetentionWindow,
     /// Perform deletion. Without this flag the command is a dry-run proof check.
     #[arg(long)]
     execute: bool,
@@ -72,8 +94,8 @@ struct SweepArgs {
     source: String,
     #[arg(long)]
     source_root: Option<PathBuf>,
-    #[arg(long, default_value_t = 45)]
-    retention_days: u64,
+    #[command(flatten)]
+    window: RetentionWindow,
     /// Perform deletion. Without this flag the command reports eligible totals.
     #[arg(long)]
     execute: bool,
@@ -100,7 +122,7 @@ pub(super) fn cmd_retention(root: &std::path::Path, format: &str, args: &Retenti
                     root,
                     source,
                     args.source_root.as_deref(),
-                    args.retention_days,
+                    args.window.days(),
                 )
                 .and_then(|value| {
                     let output = if args.details {
@@ -135,7 +157,7 @@ pub(super) fn cmd_retention(root: &std::path::Path, format: &str, args: &Retenti
             &args.session.source,
             &args.session.id,
             args.session.source_root.as_deref(),
-            args.retention_days,
+            args.window.days(),
             args.execute,
         )
         .and_then(|value| {
@@ -159,7 +181,7 @@ pub(super) fn cmd_retention(root: &std::path::Path, format: &str, args: &Retenti
                     root,
                     source,
                     args.source_root.as_deref(),
-                    args.retention_days,
+                    args.window.days(),
                     args.execute,
                 )
                 .and_then(|receipt| {
@@ -170,10 +192,13 @@ pub(super) fn cmd_retention(root: &std::path::Path, format: &str, args: &Retenti
                             "schema": receipt.schema,
                             "total": receipt.total,
                             "eligible": receipt.eligible,
+                            "compactable": receipt.compactable,
                             "blocked": receipt.blocked,
+                            "compacted": receipt.compacted,
                             "removed": receipt.removed,
                             "failed": receipt.failed,
                             "native_bytes_removed": receipt.native_bytes_removed,
+                            "compact_bytes_written": receipt.compact_bytes_written,
                             "executed": receipt.executed,
                         }))
                     };

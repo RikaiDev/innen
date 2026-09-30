@@ -213,7 +213,7 @@ fn antigravity_delete_removes_bundle_and_summary_row() {
         blocker_codes: vec![],
         targets: bundle.targets,
     };
-    delete_candidate(&candidate, &assessment).unwrap();
+    delete_candidate(&candidate, &assessment, None).unwrap();
     assert!(!brain.exists());
     assert!(!db.exists());
     let rows = sources::sqlite(
@@ -250,4 +250,136 @@ fn sweep_dry_run_is_bounded_and_does_not_delete() {
     assert_eq!(receipt.failed, 0);
     assert_eq!(receipt.items.len(), 1);
     assert!(source.exists());
+}
+
+#[test]
+fn sweep_compacts_an_unattested_closed_session_then_purges_it() {
+    let (kb, store, source) = setup();
+    let dry = sweep(
+        kb.path(),
+        Some(Source::Claude),
+        Some(store.path()),
+        45,
+        false,
+    )
+    .unwrap();
+    assert_eq!((dry.eligible, dry.compactable, dry.removed), (0, 1, 0));
+    assert!(source.exists(), "a dry run never deletes");
+
+    let run = sweep(
+        kb.path(),
+        Some(Source::Claude),
+        Some(store.path()),
+        45,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        (run.compacted, run.removed, run.failed),
+        (1, 1, 0),
+        "{:?}",
+        run.items
+    );
+    assert!(!source.exists());
+    let compact = kb
+        .path()
+        .join(COMPACT_DIR)
+        .join("claude")
+        .join(format!("{ID}.jsonl"));
+    let rows: Vec<Value> = fs::read_to_string(&compact)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[0]["role"].as_str(), rows[0]["line"].as_u64()),
+        (Some("user"), Some(1))
+    );
+    assert_eq!(rows[1]["content"], "answer");
+    assert_eq!(
+        run.compact_bytes_written,
+        fs::metadata(&compact).unwrap().len()
+    );
+}
+
+#[test]
+fn tool_managed_deletion_refuses_a_source_root_override() {
+    // Regression: `codex delete <id>` acts on ~/.codex, so an override copy must
+    // never reach it (a trial on 2026-09-30 deleted the real session instead).
+    let store = tempfile::tempdir().unwrap();
+    let path = store
+        .path()
+        .join(format!("rollout-2020-01-01T00-00-00-{ID}.jsonl"));
+    fs::write(&path, "{}\n").unwrap();
+    let candidate = Candidate {
+        id: ID.into(),
+        source: Source::Codex,
+        modified: Some("2020-01-01T00:00:00Z".into()),
+        path: path.clone(),
+        project: None,
+        parent_id: None,
+    };
+    let bundle = bundle(&candidate).unwrap();
+    let assessment = Assessment {
+        session_id: ID.into(),
+        source: "codex".into(),
+        modified: candidate.modified.clone(),
+        cutoff_utc: String::new(),
+        source_bytes: bundle.bytes,
+        source_sha256: bundle.sha256,
+        eligible: true,
+        blockers: vec![],
+        blocker_codes: vec![],
+        targets: bundle.targets,
+    };
+    let error = delete_candidate(&candidate, &assessment, Some(store.path())).unwrap_err();
+    assert!(error.to_string().contains("--source-root"), "{error}");
+    assert!(path.exists());
+}
+
+#[test]
+fn codex_parent_with_a_live_subagent_session_is_not_purged() {
+    // Regression: `codex delete` removes a thread's subagent sessions, so a parent
+    // purged first silently deleted 100 uncompacted children on 2026-09-30.
+    const PARENT: &str = "019fe02a-8348-7c23-8ad1-f403c6ee9af4";
+    const CHILD: &str = "01a0063c-ca23-7ad0-87e2-f3b2fca1137c";
+    let kb = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let day = store.path().join("2020/01/01");
+    fs::create_dir_all(&day).unwrap();
+    let meta = |id: &str, source: Value| {
+        format!(
+            "{}\n{}\n",
+            json!({"type":"session_meta","timestamp":"2020-01-01T00:00:00Z",
+                   "payload":{"id":id,"cwd":"/tmp","source":source}}),
+            json!({"type":"response_item","timestamp":"2020-01-01T00:00:01Z",
+                   "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}})
+        )
+    };
+    fs::write(
+        day.join(format!("rollout-2020-01-01T00-00-00-{PARENT}.jsonl")),
+        meta(PARENT, json!("cli")),
+    )
+    .unwrap();
+    let child = day.join(format!("rollout-2020-01-01T00-00-01-{CHILD}.jsonl"));
+    fs::write(
+        &child,
+        meta(
+            CHILD,
+            json!({"subagent":{"thread_spawn":{"parent_thread_id":PARENT,"depth":1}}}),
+        ),
+    )
+    .unwrap();
+    let candidates = find_all_candidates(Some(Source::Codex), Some(store.path())).unwrap();
+    let found = candidates
+        .iter()
+        .find(|c| c.id == CHILD)
+        .expect("child discovered");
+    assert_eq!(found.parent_id.as_deref(), Some(PARENT));
+
+    // Dry run only: the guard fires before any delete adapter could run.
+    let error = purge(kb.path(), "codex", PARENT, Some(store.path()), 0, false).unwrap_err();
+    assert!(error.to_string().contains(CHILD), "{error}");
+    assert!(child.exists());
 }

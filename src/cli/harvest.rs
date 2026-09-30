@@ -10,8 +10,8 @@ pub(super) struct HarvestArgs {
     #[arg(long, requires = "coding_sessions")]
     pub(super) coding_session_details: bool,
     /// Hot-session retention window used by --coding-sessions.
-    #[arg(long, default_value_t = 45)]
-    pub(super) retention_days: u64,
+    #[command(flatten)]
+    pub(super) window: super::retention::RetentionWindow,
     /// Restrict native session inventory to one source.
     #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "opencode"])]
     pub(super) source: String,
@@ -107,7 +107,7 @@ pub(super) fn cmd_harvest(root: &std::path::Path, format: &str, args: &HarvestAr
             root,
             source,
             args.source_root.as_deref(),
-            args.retention_days,
+            args.window.days(),
         ) {
             Ok(sessions) => {
                 if args.coding_session_details && is_human(format) {

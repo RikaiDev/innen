@@ -457,6 +457,65 @@ pub fn format_page(
     Ok(page)
 }
 
+/// Stream every dialogue projection of one located session in a single pass,
+/// without holding the session in memory. Used by retention compaction.
+pub(crate) fn stream_dialogue(
+    located: &Located,
+    id: &str,
+    mut sink: impl FnMut(usize, Value) -> Result<(), ReadError>,
+) -> Result<(), ReadError> {
+    let mut emit = |index: usize, event: Value| -> Result<(), ReadError> {
+        if !event.is_object() {
+            return Err(ReadError(format!(
+                "unsupported transcript event at {}:{}: expected object",
+                located.path.display(),
+                index + 1
+            )));
+        }
+        match projection::dialogue(located.source, event)? {
+            Some(projected) => sink(index + 1, projected),
+            None => Ok(()),
+        }
+    };
+    if located.source == Source::Opencode {
+        let mut cursor = 0;
+        loop {
+            let events = sources::load_database(located, id, cursor)?;
+            if events.is_empty() {
+                return Ok(());
+            }
+            let count = events.len();
+            for (index, event) in events.into_iter().enumerate() {
+                emit(cursor + index, event)?;
+            }
+            cursor += count;
+        }
+    }
+    let path = &located.path;
+    if path.extension().is_some_and(|s| s == "json") {
+        for (index, event) in sources::load_document(located)?.into_iter().enumerate() {
+            emit(index, event)?;
+        }
+        return Ok(());
+    }
+    let file = File::open(path).map_err(|e| io_error(path, e))?;
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.map_err(|e| io_error(path, e))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: Value = serde_json::from_str(&line).map_err(|e| {
+            ReadError(format!(
+                "invalid transcript JSON at {}:{}: {e}",
+                path.display(),
+                index + 1
+            ))
+        })?;
+        emit(index, event)?;
+    }
+    Ok(())
+}
+
 fn read_located(
     located: Located,
     id: String,

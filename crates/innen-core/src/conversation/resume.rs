@@ -424,8 +424,11 @@ fn scan_codex_sessions(
                             let project = cwd_str
                                 .map(|s| s.to_string())
                                 .or_else(|| Some("unknown".into()));
+                            // Codex records a subagent's parent under
+                            // source.subagent.thread_spawn; keep the older flat keys.
                             let parent_id = payload
-                                .get("parent_thread_id")
+                                .pointer("/source/subagent/thread_spawn/parent_thread_id")
+                                .or_else(|| payload.get("parent_thread_id"))
                                 .or_else(|| payload.get("parent_session_id"))
                                 .and_then(Value::as_str)
                                 .map(str::to_owned);
