@@ -189,3 +189,100 @@ fn approval_requires_verified_location_and_never_picks_between_baselines() {
     assert_eq!(out["resolution"], "ambiguous");
     assert!(out["baseline"].is_null());
 }
+
+#[test]
+fn exact_node_id_is_retrievable_by_its_own_id() {
+    // An id is the handle every other command accepts, so a query that *is*
+    // an id must return that node. It used to score 0: the all-terms gate
+    // splits `harvest-gap:innen-stop-hook-stale-pending-count` into parts and
+    // then looks for those parts in label/body, where an id never appears.
+    let kb = tempfile::tempdir().expect("temp kb");
+    let journal = Journal::open(kb.path()).expect("open journal");
+    node(
+        &journal,
+        "harvest-gap:innen-stop-hook-stale-pending-count",
+        "harvest-gap",
+        "innen stop-hook pending 數字與實際收件匣脫節",
+        "pending 快照噪音根因：Antigravity hooks.json 未帶 --cwd",
+    );
+    node(
+        &journal,
+        "task:other",
+        "Task",
+        "unrelated label",
+        "unrelated body text",
+    );
+    drop(journal);
+
+    let out = task_entry(
+        kb.path(),
+        &TaskEntryOptions {
+            q: "harvest-gap:innen-stop-hook-stale-pending-count".to_string(),
+            ..TaskEntryOptions::default()
+        },
+    )
+    .expect("task entry succeeds");
+
+    // `rows` are positional arrays ordered by `fields`: id, kind, label,
+    // score, status, why.
+    let fields: Vec<&str> = out["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let col = |name: &str| {
+        fields
+            .iter()
+            .position(|f| *f == name)
+            .expect("field column")
+    };
+    let (id_c, score_c, why_c) = (col("id"), col("score"), col("why"));
+    let rows = out["rows"].as_array().expect("rows array");
+    let first = rows[0].as_array().expect("row array");
+    assert_eq!(
+        first[id_c].as_str(),
+        Some("harvest-gap:innen-stop-hook-stale-pending-count"),
+        "the queried id must rank first: {out}"
+    );
+    assert_eq!(first[why_c].as_str(), Some("literal_match"), "why: {out}");
+    assert_eq!(first[score_c].as_f64(), Some(1.0), "score: {out}");
+}
+
+#[test]
+fn partial_id_still_obeys_the_all_terms_gate() {
+    // The exemption is only for a full id. A partial id must not become a
+    // back door around the precision rule.
+    let kb = tempfile::tempdir().expect("temp kb");
+    let journal = Journal::open(kb.path()).expect("open journal");
+    node(&journal, "a:1", "Task", "shared label", "unrelated prose");
+    node(
+        &journal,
+        "b:2",
+        "Task",
+        "shared label",
+        "prose containing needle here",
+    );
+    drop(journal);
+
+    let out = task_entry(
+        kb.path(),
+        &TaskEntryOptions {
+            q: "shared needle".to_string(),
+            ..TaskEntryOptions::default()
+        },
+    )
+    .expect("task entry succeeds");
+
+    let ids: Vec<&str> = out["rows"]
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .filter_map(|r| r.as_array())
+        .filter_map(|r| r.first().and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        !ids.contains(&"a:1"),
+        "a node matching only one term must stay out: {ids:?}"
+    );
+}

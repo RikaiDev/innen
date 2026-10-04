@@ -1,5 +1,4 @@
 pub mod artifact;
-pub mod cloud;
 pub mod config;
 pub mod context_candidates;
 pub mod context_evidence;
@@ -24,5 +23,6 @@ pub mod session_retention;
 pub mod tap;
 pub mod task_entry;
 pub mod task_proposal;
+pub(crate) mod toml;
 pub mod trace;
 pub mod wiki_graph;

@@ -1,0 +1,30 @@
+{
+  "comment": "Files over the 400-line budget when scripts/check-structure.sh landed. Each entry must shrink; delete an entry when the file is split. Not a permanent exemption.",
+  "max_lines": 400,
+  "over_budget": [
+    "crates/innen-core/src/artifact.rs"
+    "crates/innen-core/src/artifact/ledger.rs"
+    "crates/innen-core/src/config.rs"
+    "crates/innen-core/src/context_selection.rs"
+    "crates/innen-core/src/conversation.rs"
+    "crates/innen-core/src/conversation/grammar.rs"
+    "crates/innen-core/src/conversation/projection.rs"
+    "crates/innen-core/src/conversation/prune.rs"
+    "crates/innen-core/src/conversation/resume.rs"
+    "crates/innen-core/src/conversation/unfinished.rs"
+    "crates/innen-core/src/credentials.rs"
+    "crates/innen-core/src/doctor.rs"
+    "crates/innen-core/src/evidence_closure.rs"
+    "crates/innen-core/src/graph.rs"
+    "crates/innen-core/src/index.rs"
+    "crates/innen-core/src/middleware/history.rs"
+    "crates/innen-core/src/parity.rs"
+    "crates/innen-core/src/query.rs"
+    "crates/innen-core/src/session_retention.rs"
+    "crates/innen-core/src/session_retention/tests.rs"
+    "crates/innen-core/src/task_entry.rs"
+    "crates/innen-core/src/task_proposal.rs"
+    "crates/innen-core/src/trace/source.rs"
+    "src/cli/hook.rs"
+  ]
+}

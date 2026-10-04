@@ -612,6 +612,11 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
 
             let mut literal_matched = false;
             let mut exact_match = false;
+            // An id is the one string guaranteed to identify a node. When the
+            // query *is* that id, the all-terms gate below must not apply: it
+            // splits the query into parts and then looks for those parts in
+            // label/body, which an id never appears in.
+            let exact_id_match = !q_lower.is_empty() && id_lower == q_lower;
 
             // Check exact query match (min 2 chars)
             if q_lower.chars().count() >= 2
@@ -656,13 +661,14 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
             // only for explicit asset-edit queries, where browsing variants
             // is intentional.
             if literal_matched
+                && !exact_id_match
                 && !admit_literal_candidate(node, &identity_terms, allow_partial_identity)
             {
                 literal_matched = false;
             }
 
             if literal_matched {
-                let score = if exact_match {
+                let score = if exact_match || exact_id_match {
                     1.0
                 } else {
                     identity_coverage_score(node, &identity_terms, &entity_terms)

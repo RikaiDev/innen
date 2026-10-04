@@ -6,16 +6,6 @@ pub(super) enum IndexOp {
 
 use super::util::{escape_tsv_field, is_human};
 
-pub(super) fn cmd_lint(root: &std::path::Path, format: &str) -> i32 {
-    let report = innen_core::doctor::lint(root);
-    if is_human(format) {
-        print_report_human(&report);
-    } else {
-        print_report_json(&report);
-    }
-    report.exit_code as i32
-}
-
 pub(super) fn cmd_doctor(root: &std::path::Path, format: &str) -> i32 {
     let report = innen_core::doctor::run(root);
     if is_human(format) {

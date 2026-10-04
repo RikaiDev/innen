@@ -1,4 +1,4 @@
-//! Shared tantivy schema + CJK tokenizer (Task 7; full index lands in Task 8a).
+//! Shared tantivy schema + CJK tokenizer.
 //!
 //! [`schema`] defines the `body` TEXT field indexed with the `"innen-cjk"`
 //! tokenizer and the `id` STORED field. [`ensure_tokenizer`] registers the
@@ -134,8 +134,7 @@ pub fn ensure_tokenizer(index: &tantivy::Index) {
         .register(INNEN_CJK, TextAnalyzer::from(JiebaTokenizer::new()));
 }
 
-/// Derived index layout under `<root>/.innen/` (Task 8a; the journal stays
-/// the source of truth):
+/// Derived index layout under `<root>/.innen/`:
 ///
 /// - `index.redb` — redb with `events(id → raw entry JSON)`,
 ///   `nodes(id → node JSON)`, `edges((type, from) → JSON list of edge rows)`.

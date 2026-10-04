@@ -1,4 +1,4 @@
-//! Config precedence + minimal TOML reader (Task 8c, P1).
+//! Config precedence + minimal TOML reader.
 //!
 //! Precedence (pinned): CLI flags > `INNEN_` env > `.innen/machine.json` >
 //! `innen.toml` > builtin.
@@ -48,6 +48,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use crate::toml::{strip_comment, unquote};
+
 /// CLI-explicit overrides (highest precedence layer).
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
@@ -78,55 +80,10 @@ struct Layer {
     rebuild_on_open: Option<bool>,
 }
 
-/// Strip a `#` comment that appears outside double quotes. Handles `\"` and
-/// `\\` escapes minimally so a `#` inside a quoted value survives.
-fn strip_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut in_quotes = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_quotes => {
-                // Skip the escaped char (e.g. `\"` must not toggle quoting).
-                i += 2;
-                continue;
-            }
-            b'"' => {
-                in_quotes = !in_quotes;
-            }
-            b'#' if !in_quotes => return line[..i].trim_end(),
-            _ => {}
-        }
-        i += 1;
-    }
-    line
-}
-
-/// Unquote a double-quoted value; supports `\\` and `\"` only. Returns `None`
-/// when the value is not exactly one double-quoted string. Interior bare
-/// quotes (`"""`, `"a"b"`) are rejected.
-fn unquote(value: &str) -> Option<String> {
-    let inner = value.strip_prefix('"')?.strip_suffix('"')?;
-    let mut out = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next()? {
-                '\\' => out.push('\\'),
-                '"' => out.push('"'),
-                _ => return None,
-            }
-        } else if c == '"' {
-            // Bare interior quote: not an escape, not the outer pair.
-            return None;
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
-}
-
 /// Parse minimal P1 TOML text into a [`Layer`]. See module docs for limits.
+///
+/// Comment stripping and value unquoting live in [`crate::toml`], shared with
+/// `profile.toml` so the two readers cannot drift.
 fn parse_toml_text(text: &str) -> Layer {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Section {

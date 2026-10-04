@@ -1,4 +1,4 @@
-//! Canonical JSON + convergent event IDs (Task 2).
+//! Canonical JSON + convergent event IDs.
 
 use serde::Serialize;
 use serde_json::{Map, Value};

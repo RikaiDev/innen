@@ -1,4 +1,4 @@
-//! Typed graph nodes/edges + adjacency validation (Task 5, spec §3).
+//! Typed graph nodes/edges + adjacency validation.
 //!
 //! [`NodeType::from_str`] never fails: unknown names become
 //! [`NodeType::Custom`], so migrated data with extra node kinds keeps
@@ -655,7 +655,7 @@ pub fn materialize(
     Materialized { nodes, edges }
 }
 
-// CLI write-path helpers, extracted from `src/main.rs` (Task 8d follow-up).
+// CLI write-path helpers, extracted from `src/main.rs`.
 //
 // Placement choice: graph write-path rules live here in `graph.rs` (not a new
 // module) to reuse `NodeType`/`EdgeType`/`validate`/`materialize` without

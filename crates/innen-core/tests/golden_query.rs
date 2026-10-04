@@ -1,4 +1,4 @@
-//! Golden query contract test (Task 7): byte-exact `expected` replay.
+//! Golden query contract test: byte-exact `expected` replay.
 
 use serde_json::Value;
 

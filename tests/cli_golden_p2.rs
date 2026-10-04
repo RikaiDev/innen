@@ -1,23 +1,17 @@
-//! CLI golden P2 (Task 12).
+//! Byte-exact CLI golden cases.
 //!
-//! Eleven cases, thin dispatch over core fns from Tasks 9-11 and 14:
 //! 1. guide byte-exact JSON (pinned text),
-//! 2. search lexical fixture,
-//! 3. status counts,
-//! 4. timeline month filter,
-//! 5. project unknown (exit 1, plan-pinned raw stderr),
-//! 6. profile fixture byte-exact vs expected file,
-//! 7. artifact add roundtrip (bytes identical + pinned sha256),
-//! 8. cloud status stub byte-exact canned output,
-//! 9. search-human TSV representative (fixed fixture, byte-exact),
-//! 10. harvest --check JSON shape (dry-run, no `.innen` side effects),
-//! 11. ingest golden journal diff (credential skip + watermark advance).
+//! 2. status counts,
+//! 3. timeline month filter,
+//! 4. project unknown (exit 1, pinned raw stderr),
+//! 5. profile fixture byte-exact vs expected file,
+//! 6. artifact add roundtrip (bytes identical + pinned sha256),
+//! 7. harvest --check JSON shape (dry-run, no `.innen` side effects),
+//! 8. ingest golden journal diff (credential skip + watermark advance).
 //!
-//! Full human-matrix coverage is deferred; case 9 is the representative pin.
-//!
-//! JSON cases compare compact `serde_json::to_string` outputs directly
-//! (byte-exact, like Task 7's strengthened assertion). Each case builds its
-//! own temp KB. KB root via explicit `--root <dir>`. No network.
+//! JSON cases compare compact `serde_json::to_string` outputs directly.
+//! Each case builds its own temp KB. KB root via explicit `--root <dir>`.
+//! No network.
 //!
 //! NOTE (P1/P2 error prefix): P1 arms print `error: {e}` to stderr, but P2
 //! arms intentionally print the core message raw (`{e}`, no prefix) so the
@@ -34,17 +28,6 @@ use serde_json::json;
 #[derive(serde::Serialize)]
 struct WantGuide {
     text: String,
-}
-
-#[derive(serde::Serialize)]
-struct WantSearchHit {
-    node_id: String,
-    excerpt: String,
-}
-
-#[derive(serde::Serialize)]
-struct WantSearch {
-    hits: Vec<WantSearchHit>,
 }
 
 #[derive(serde::Serialize)]
@@ -142,59 +125,7 @@ fn guide_contains_query() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 2: search lexical fixture → exactly [a:1]
-// ---------------------------------------------------------------------------
-
-#[test]
-fn search_lexical_fixture() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    append(
-        dir.path(),
-        "node.upsert",
-        json!({"id": "a:1", "type": "Task", "label": "SFT tokenizer"}),
-    );
-    append(
-        dir.path(),
-        "node.upsert",
-        json!({"id": "b:2", "type": "Task", "label": "unrelated chores"}),
-    );
-    append(
-        dir.path(),
-        "edge.assert",
-        json!({"from": "b:2", "type": "FOLLOWS_UP", "to": "a:1"}),
-    );
-
-    let root = dir.path().to_string_lossy().into_owned();
-    let assert = Command::cargo_bin("innen")
-        .expect("cargo bin innen")
-        .args([
-            "--root",
-            &root,
-            "--format",
-            "json",
-            "search",
-            "--keyword",
-            "SFT",
-        ])
-        .assert()
-        .code(0);
-    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let got = out.trim_end().to_string();
-
-    // Byte-exact: compact to_string on both sides, field order
-    // hits -> node_id, excerpt (struct-to-struct, not json! map order).
-    let want = serde_json::to_string(&WantSearch {
-        hits: vec![WantSearchHit {
-            node_id: "a:1".to_string(),
-            excerpt: "SFT tokenizer".to_string(),
-        }],
-    })
-    .expect("want serializes");
-    assert_eq!(got, want, "search SFT must hit exactly [a:1]");
-}
-
-// ---------------------------------------------------------------------------
-// Case 3: status counts 3-node/1-edge
+// Case 2: status counts 3-node/1-edge
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -233,7 +164,7 @@ fn status_counts() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 4: timeline month filter
+// Case 3: timeline month filter
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -275,7 +206,7 @@ fn timeline_month() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 5: project unknown → exit 1, stderr byte-exact (plan-pinned raw)
+// Case 4: project unknown → exit 1, stderr byte-exact
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -298,7 +229,7 @@ fn project_unknown() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 6: profile fixture byte-exact vs expected file
+// Case 5: profile fixture byte-exact vs expected file
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -327,7 +258,7 @@ fn profile_fixture() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 7: artifact add roundtrip (stored bytes identical)
+// Case 6: artifact add roundtrip (stored bytes identical)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -413,93 +344,7 @@ fn artifact_tree_cli_archives_metadata_not_source_bytes() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 8: cloud status stub via PATH (byte-exact canned output)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn cloud_status_stub() {
-    // CLI resolves `rclone` via PATH lookup. Link the canned stub
-    // (crates/innen-core/tests/fixtures/fake-rclone.sh) as `rclone` in a
-    // temp bin dir and prepend it to PATH.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let bindir = tempfile::tempdir().expect("bindir");
-    let stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("crates/innen-core/tests/fixtures/fake-rclone.sh");
-    assert!(stub.is_file(), "stub must exist: {}", stub.display());
-    let link = bindir.path().join("rclone");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&stub, &link).expect("symlink rclone");
-    #[cfg(not(unix))]
-    std::fs::copy(&stub, &link).expect("copy rclone");
-
-    let old_path = std::env::var_os("PATH").unwrap_or_default();
-    let new_path = std::env::join_paths(
-        std::iter::once(bindir.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
-    )
-    .expect("join PATH");
-
-    let root = dir.path().to_string_lossy().into_owned();
-    let assert = Command::cargo_bin("innen")
-        .expect("cargo bin innen")
-        .env("PATH", &new_path)
-        .args(["--root", &root, "--format", "json", "cloud", "status"])
-        .assert()
-        .code(0);
-    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    // Stub `lsd` prints `canned-dir\n`; CLI wraps as
-    // `{"remote":"myremote","output":"canned-dir\n"}` + trailing newline.
-    assert_eq!(
-        out, "{\"remote\":\"myremote\",\"output\":\"canned-dir\\n\"}\n",
-        "cloud status must equal canned output byte-exact, got: {out:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Case 9: search-human TSV representative (fixed fixture, byte-exact)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn search_human_tsv() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    append(
-        dir.path(),
-        "node.upsert",
-        json!({"id": "a:1", "type": "Task", "label": "SFT tokenizer"}),
-    );
-    append(
-        dir.path(),
-        "node.upsert",
-        json!({"id": "b:2", "type": "Task", "label": "unrelated chores"}),
-    );
-    append(
-        dir.path(),
-        "edge.assert",
-        json!({"from": "b:2", "type": "FOLLOWS_UP", "to": "a:1"}),
-    );
-
-    let root = dir.path().to_string_lossy().into_owned();
-    let assert = Command::cargo_bin("innen")
-        .expect("cargo bin innen")
-        .args([
-            "--root",
-            &root,
-            "--format",
-            "human",
-            "search",
-            "--keyword",
-            "SFT",
-        ])
-        .assert()
-        .code(0);
-    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    assert_eq!(
-        out, "node_id\texcerpt\na:1\tSFT tokenizer\n",
-        "search-human TSV must be byte-exact, got: {out:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Cases 10-11 (Task 14): harvest --check + ingest over Tap.
+// Cases 7-8: harvest --check + ingest over Tap.
 // Wire structs mirror the core `harvest` JSON shapes (field order is the
 // wire order); expected values use `to_string` so comparison is byte-exact.
 // ---------------------------------------------------------------------------
@@ -530,7 +375,7 @@ struct WantIngest {
 }
 
 // ---------------------------------------------------------------------------
-// Case 10: harvest --check JSON shape (dry-run, no side effects)
+// Case 7: harvest --check JSON shape (dry-run, no side effects)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -568,7 +413,7 @@ fn harvest_check_json_shape() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 11: ingest golden journal diff (credential skip + watermark)
+// Case 8: ingest golden journal diff (credential skip + watermark)
 // ---------------------------------------------------------------------------
 
 #[test]

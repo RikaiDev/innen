@@ -1,4 +1,4 @@
-//! P1 query contract (Task 7, spec §3–§4).
+//! P1 query contract.
 //!
 //! Pinned algorithm (implement exactly; fixtures are hand-run against this):
 //!

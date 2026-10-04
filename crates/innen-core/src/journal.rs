@@ -1,4 +1,4 @@
-//! Append-only journal with validation and quarantine (Task 3).
+//! Append-only journal with validation and quarantine.
 //!
 //! Layout under `<root>/.innen/`:
 //! - `journal.jsonl` — one JSON object per line:
@@ -9,7 +9,7 @@
 //! - `quarantine/<YYYY-MM-DD>.jsonl` — corrupt lines moved here on open,
 //!   one stored line per bad line, UTC date in filename.
 //!
-//! Validation is minimal per-op shape only (full type checks land in Task 5):
+//! Validation is minimal per-op shape only (full type checks are not enforced):
 //! `payload` must be an object; `node.upsert` needs string `id`;
 //! `edge.assert`/`edge.retract` need strings `from`/`to`/`type`;
 //! `config.set` needs string `key`.
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-/// Ops accepted by [`Journal::append`]. Full type validation lands in Task 5.
+/// Ops accepted by [`Journal::append`]. Only per-op shape is validated.
 pub const ALLOWED_OPS: &[&str] = &["node.upsert", "edge.assert", "edge.retract", "config.set"];
 
 #[derive(Debug, Error)]
@@ -94,7 +94,7 @@ pub fn format_utc(secs: u64) -> String {
 }
 
 /// Minimal per-op shape check. Unknown ops are rejected before any disk
-/// write; full type validation lands in Task 5.
+/// write; full type validation is not enforced.
 fn validate(op: &str, payload: &Value) -> Result<(), JournalError> {
     if !ALLOWED_OPS.contains(&op) {
         return Err(JournalError::UnknownOp(op.to_string()));

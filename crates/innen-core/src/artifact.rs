@@ -1,4 +1,4 @@
-//! Content-addressed artifact add (Task 11a).
+//! Content-addressed artifact add.
 
 pub mod finalize;
 pub mod ledger;

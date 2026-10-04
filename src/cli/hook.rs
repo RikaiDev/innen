@@ -52,6 +52,11 @@ pub(super) struct HookRunArgs {
     #[arg(long)]
     pub(super) transcript: Option<String>,
     /// Work dir to snapshot (flag > hook stdin > current dir).
+    ///
+    /// Antigravity sends `workspacePaths` (an array) and no `cwd`, and runs the
+    /// hook with its cwd set to the directory holding `hooks.json`. Resolving
+    /// `workspacePaths[0]` is what lets an Antigravity turn name the real
+    /// workspace instead of that non-repository directory.
     #[arg(long)]
     pub(super) cwd: Option<PathBuf>,
     /// KB root owning the harvest inbox (default: resolved global root).
@@ -90,6 +95,17 @@ fn first_str(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
         if let Some(s) = obj.get(*k).and_then(|x| x.as_str()) {
             if !s.trim().is_empty() {
                 return Some(s.to_string());
+            }
+        }
+        // A list-valued key stands in for a scalar one: Antigravity sends
+        // `workspacePaths: ["/path"]` where other agents send `cwd: "/path"`.
+        if let Some(first) = obj
+            .get(*k)
+            .and_then(|x| x.as_array())
+            .and_then(|a| a.iter().find_map(|v| v.as_str()))
+        {
+            if !first.trim().is_empty() {
+                return Some(first.to_string());
             }
         }
     }
@@ -331,6 +347,10 @@ fn hook_run_inner(root: &Path, args: &HookRunArgs) -> Result<Receipt, String> {
         None => first_str(
             &stdin_json,
             &[
+                // Antigravity: no `cwd` at all, and its process cwd is the
+                // hooks.json directory. `workspacePaths` is the real workspace.
+                "workspacePaths",
+                "workspace_paths",
                 "cwd",
                 "working_directory",
                 "workspaceRoot",
@@ -344,7 +364,17 @@ fn hook_run_inner(root: &Path, args: &HookRunArgs) -> Result<Receipt, String> {
     let session = args
         .session_id
         .clone()
-        .or_else(|| first_str(&stdin_json, &["session_id", "sessionId"]))
+        .or_else(|| {
+            first_str(
+                &stdin_json,
+                &[
+                    "session_id",
+                    "sessionId",
+                    // Antigravity's identity field.
+                    "conversationId",
+                ],
+            )
+        })
         .unwrap_or_else(|| "-".to_string());
     let transcript = args
         .transcript
@@ -621,11 +651,17 @@ function pendingCount() {
   }
 }
 
-function capture(cwd) {
+function capture(cwd, sessionID) {
   try {
-    spawnSync("innen", ["hook", "run", "--event", "session-idle", "--kb-root", KB_ROOT, "--cwd", cwd], {
+    const argv = ["hook", "run", "--event", "session-idle", "--kb-root", KB_ROOT, "--cwd", cwd];
+    if (sessionID) argv.push("--session-id", sessionID);
+    spawnSync("innen", argv, {
       timeout: 8000,
-      stdio: "ignore",
+      // Forward this event as hook stdin. `hook run` reads cwd, session id,
+      // and transcript path from stdin, and an adapter that discards stdin
+      // leaves every snapshot without an identity.
+      stdio: ["pipe", "ignore", "ignore"],
+      input: JSON.stringify({ cwd, session_id: sessionID || undefined }),
     });
   } catch {
     /* fail-open */
@@ -635,12 +671,25 @@ function capture(cwd) {
 export default {
   id: "innen-stop-hook",
   async setup(ctx) {
-    await ctx.session.hook("context", (event) => {
+    const controller = new AbortController();
+    void (async () => {
       try {
-        capture(process.cwd());
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          // One snapshot per real idle. Subscribing to "context" instead would
+          // fire on every model request and mint a receipt per dispatch.
+          if (event.type !== "session.idle") continue;
+          try {
+            capture(process.cwd(), event.sessionID);
+          } catch {
+            /* fail-open */
+          }
+        }
       } catch {
         /* fail-open */
       }
+    })();
+
+    await ctx.session.hook("context", (event) => {
       const seen = loadSeen();
       if (seen[event.sessionID]) return;
       seen[event.sessionID] = Date.now();
@@ -656,6 +705,8 @@ export default {
         text: "[innen-stop-hook] Harvest inbox pending files: " + n + ". If >0, drain before new work (verify, graph/wiki, ingest, delete).",
       });
     });
+
+    return () => controller.abort();
   },
 };
 "#;

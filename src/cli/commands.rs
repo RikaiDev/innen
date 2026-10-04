@@ -1,7 +1,6 @@
 use super::{
     artifact::ArtifactOp,
     checkpoint::CheckpointArgs,
-    cloud::CloudOp,
     config::ConfigOp,
     conversation::ConversationArgs,
     graph::GraphOp,
@@ -9,7 +8,7 @@ use super::{
     hook::HookArgs,
     index::IndexOp,
     middleware::MiddlewareArgs,
-    navigation::{ProjectArgs, SearchArgs, TimelineArgs},
+    navigation::{ProjectArgs, TimelineArgs},
     pickup::PickupArgs,
     query::QueryArgs,
     resume::ResumeArgs,
@@ -45,8 +44,6 @@ pub(super) enum Commands {
     },
     /// Report-only health checks (exit 0/1/2).
     Doctor,
-    /// Report-only lint subset (exit 0/1/2).
-    Lint,
     /// Persisted config get/set (machine.json layer).
     Config {
         #[command(subcommand)]
@@ -58,33 +55,26 @@ pub(super) enum Commands {
         #[arg(value_parser = ["bash", "zsh", "fish", "powershell"])]
         shell: String,
     },
-    /// Short navigation text (Task 9 core `guide_text`).
+    /// Short navigation text.
     Guide,
-    /// Lexical-only search over label/body (Task 9 core `search`).
-    Search(SearchArgs),
-    /// Journal counts (Task 9 core `status`).
+    /// Journal counts.
     Status,
-    /// Journal history in order (Task 9 core `timeline`).
+    /// Journal history in order.
     Timeline(TimelineArgs),
     /// What remains across projects, or in one project; expand evidence on demand.
     Project(ProjectArgs),
-    /// Profile page render from profile/profile.toml (Task 10).
+    /// Profile page render from profile/profile.toml.
     Profile,
-    /// Content-addressed artifact writes (Task 11a).
+    /// Content-addressed artifact writes.
     Artifact {
         #[command(subcommand)]
         op: ArtifactOp,
     },
-    /// Stubbed rclone cloud harness (Task 11b; `rclone` via PATH lookup).
-    Cloud {
-        #[command(subcommand)]
-        op: CloudOp,
-    },
-    /// Dry-run harvest check over `00-inbox/harvest` (Task 14).
+    /// Dry-run harvest check over `00-inbox/harvest`.
     Harvest(HarvestArgs),
     /// Agent stop hooks: install config, snapshot on stop, list pending.
     Hook(HookArgs),
-    /// Ingest new inbox files into the journal (Task 14).
+    /// Ingest new inbox files into the journal.
     Ingest,
     /// Inventory, attest, and evidence-gate native coding-session retention.
     Retention(RetentionArgs),

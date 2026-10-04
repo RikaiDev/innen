@@ -1,14 +1,5 @@
 use super::types::Cli;
 #[derive(clap::Args)]
-pub(super) struct SearchArgs {
-    /// Keyword (tantivy query over label/body; empty matches nothing).
-    #[arg(long)]
-    pub(super) keyword: String,
-    /// Max hits (default 20).
-    #[arg(long, default_value_t = 20)]
-    pub(super) limit: u16,
-}
-#[derive(clap::Args)]
 pub(super) struct TimelineArgs {
     /// Optional prefix filter, e.g. `2026-09`.
     pub(super) filter: Option<String>,
@@ -31,17 +22,6 @@ pub(super) struct ProjectArgs {
 #[derive(serde::Serialize)]
 pub(super) struct GuideJson {
     pub(super) text: String,
-}
-
-#[derive(serde::Serialize)]
-pub(super) struct SearchHitJson {
-    pub(super) node_id: String,
-    pub(super) excerpt: String,
-}
-
-#[derive(serde::Serialize)]
-pub(super) struct SearchJson {
-    pub(super) hits: Vec<SearchHitJson>,
 }
 
 #[derive(serde::Serialize)]
@@ -91,35 +71,6 @@ pub(super) fn cmd_completions(shell: &str) -> i32 {
     };
     let mut cmd = Cli::command();
     clap_complete::generate(clap_shell, &mut cmd, "innen", &mut std::io::stdout());
-    0
-}
-
-pub(super) fn cmd_search(root: &std::path::Path, format: &str, args: &SearchArgs) -> i32 {
-    let hits = innen_core::parity::search(root, &args.keyword, args.limit);
-    if is_human(format) {
-        println!("node_id\texcerpt");
-        for h in &hits {
-            println!(
-                "{}\t{}",
-                escape_tsv_field(&h.node_id),
-                escape_tsv_field(&h.excerpt)
-            );
-        }
-    } else {
-        let out = SearchJson {
-            hits: hits
-                .into_iter()
-                .map(|h| SearchHitJson {
-                    node_id: h.node_id,
-                    excerpt: h.excerpt,
-                })
-                .collect(),
-        };
-        println!(
-            "{}",
-            serde_json::to_string(&out).expect("search output serializes")
-        );
-    }
     0
 }
 

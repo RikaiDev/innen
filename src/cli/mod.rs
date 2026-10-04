@@ -1,6 +1,5 @@
 mod artifact;
 mod checkpoint;
-mod cloud;
 mod commands;
 mod config;
 mod conversation;
@@ -74,10 +73,6 @@ pub(crate) fn run() -> i32 {
             let root = resolve_or_exit!(cli.root.clone());
             index::cmd_doctor(&root, &cli.format)
         }
-        Commands::Lint => {
-            let root = resolve_or_exit!(cli.root.clone());
-            index::cmd_lint(&root, &cli.format)
-        }
         Commands::Config { op } => match op {
             config::ConfigOp::Get { key, global } => {
                 if *global {
@@ -98,10 +93,6 @@ pub(crate) fn run() -> i32 {
         },
         Commands::Completions { shell } => navigation::cmd_completions(shell),
         Commands::Guide => navigation::cmd_guide(&cli.format),
-        Commands::Search(args) => {
-            let root = resolve_or_exit!(cli.root.clone());
-            navigation::cmd_search(&root, &cli.format, args)
-        }
         Commands::Status => {
             let root = resolve_or_exit!(cli.root.clone());
             navigation::cmd_status(&root, &cli.format)
@@ -163,10 +154,6 @@ pub(crate) fn run() -> i32 {
                 }
             }
         }
-        Commands::Cloud { op } => match op {
-            cloud::CloudOp::Status(a) => cloud::cmd_cloud_status(&cli.format, &a.remote),
-            cloud::CloudOp::Doctor => cloud::cmd_cloud_doctor(&cli.format),
-        },
         Commands::Harvest(args) => {
             let root = resolve_or_exit!(cli.root.clone());
             harvest::cmd_harvest(&root, &cli.format, args)

@@ -351,3 +351,103 @@ fn hook_install_codex_replaces_bare_innen_handlers_with_absolute_executable() {
         );
     }
 }
+
+/// Antigravity's documented hook payload. Verified against the contract
+/// embedded in `agy` 1.2.16: camelCase protojson, `workspacePaths` as an array,
+/// and no `cwd` key at all — it runs the hook with its cwd set to the
+/// directory holding `hooks.json`, which is not a repository.
+#[test]
+fn hook_run_reads_antigravity_workspace_and_conversation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo(dir.path());
+    let outside = tempfile::tempdir().expect("outside dir");
+    let kb = dir.path().join("kb");
+    let payload = serde_json::json!({
+        "conversationId": "ec33ebf9-0cba-4100-8142-c61503f6c587",
+        "workspacePaths": [dir.path().to_str().expect("ws")],
+        "transcriptPath": "/tmp/transcript.jsonl",
+        "modelName": "auto",
+    })
+    .to_string();
+
+    // A cwd that is NOT a repository, to prove the payload wins over it.
+    // `session-end` rather than `stop` so the receipt reaches stdout: decision
+    // events always print `{"decision":"allow"}` and hide the receipt by design.
+    let child = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .current_dir(outside.path())
+        .args([
+            "--root",
+            kb.to_str().expect("kb"),
+            "--format",
+            "json",
+            "hook",
+            "run",
+            "--event",
+            "session-end",
+            "--kb-root",
+            kb.to_str().expect("kb"),
+        ])
+        .write_stdin(payload)
+        .assert();
+    let out = String::from_utf8(child.get_output().stdout.clone()).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(out.trim_end()).expect("receipt json");
+    let name = v["wrote"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Antigravity payload must resolve a workspace: {out}"));
+    let body = std::fs::read_to_string(kb.join("00-inbox/harvest").join(name)).expect("snapshot");
+
+    let top = dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize")
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        body.contains(&format!("- repo: {top}\n")),
+        "workspacePaths[0] must win over the non-repo cwd:\n{body}"
+    );
+    assert!(
+        body.contains("- session: ec33ebf9-0cba-4100-8142-c61503f6c587\n"),
+        "conversationId must become the session identity:\n{body}"
+    );
+    assert!(
+        body.contains("- transcript: /tmp/transcript.jsonl\n"),
+        "transcriptPath must be recorded:\n{body}"
+    );
+}
+
+#[test]
+fn hook_run_cwd_flag_overrides_hook_stdin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo(dir.path());
+    let kb = tempfile::tempdir().expect("kb");
+    let payload = serde_json::json!({
+        "conversationId": "c-from-stdin",
+        "workspacePaths": ["/nonexistent/workspace"],
+    })
+    .to_string();
+    let child = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .args([
+            "--root",
+            kb.path().to_str().expect("kb"),
+            "--format",
+            "json",
+            "hook",
+            "run",
+            "--event",
+            "session-end",
+            "--kb-root",
+            kb.path().to_str().expect("kb"),
+            "--cwd",
+            dir.path().to_str().expect("cwd"),
+        ])
+        .write_stdin(payload)
+        .assert();
+    let out = String::from_utf8(child.get_output().stdout.clone()).expect("utf8");
+    assert!(
+        out.contains("\"wrote\""),
+        "--cwd must override a bad workspacePaths: {out}"
+    );
+}
