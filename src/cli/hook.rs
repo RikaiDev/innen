@@ -120,14 +120,35 @@ fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
-fn snapshot_repo(cwd: &Path) -> Snapshot {
-    let top = git_output(cwd, &["rev-parse", "--show-toplevel"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| cwd.to_string_lossy().into_owned());
-    let branch = git_output(Path::new(&top), &["rev-parse", "--abbrev-ref", "HEAD"])
+/// Root of the Git worktree containing `cwd`, or `None` when `cwd` is not
+/// inside a repository.
+fn worktree_root(cwd: &Path) -> Option<PathBuf> {
+    let top = git_output(cwd, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
+    if top.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(top))
+}
+
+/// Snapshot the worktree containing `cwd`.
+///
+/// Returns `None` for a directory that is not inside a Git worktree. Such a
+/// directory has no repository, no branch and no diff, so a snapshot of it
+/// could never carry anything to harvest; recording `repo: <cwd>` with
+/// `branch: nongit` asserted a repository and a branch that do not exist and
+/// let an agent fire from any unrelated directory. Skipping here instead of in
+/// the generated wiring also means `hook install` cannot regress it.
+///
+/// `branch` still reads `nongit` for a worktree with an unborn HEAD; after
+/// this gate that value can no longer mean "not a repository".
+fn snapshot_repo(cwd: &Path) -> Option<Snapshot> {
+    let top = worktree_root(cwd)?;
+    let status = git_output(&top, &["status", "--porcelain=v1"]).unwrap_or_default();
+    let branch = git_output(&top, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "nongit".to_string());
-    let status = git_output(Path::new(&top), &["status", "--porcelain=v1"]).unwrap_or_default();
     let lines: Vec<&str> = status.lines().filter(|l| !l.trim().is_empty()).collect();
     let sample = lines
         .iter()
@@ -140,34 +161,36 @@ fn snapshot_repo(cwd: &Path) -> Snapshot {
             s
         })
         .collect::<Vec<_>>();
-    let canonical = format!("{top}\n{branch}\n{status}");
+    let canonical = format!("{}\n{branch}\n{status}", top.display());
     let digest = innen_core::ids::sha256_hex(canonical.as_bytes())[..12].to_string();
-    Snapshot {
-        repo: top,
+    Some(Snapshot {
+        repo: top.to_string_lossy().into_owned(),
         branch,
         dirty_count: lines.len(),
         digest,
         sample,
-    }
+    })
 }
 
 fn pending_name(epoch: u64, digest: &str) -> String {
     format!("pending-{epoch}-{digest}.md")
 }
 
-fn receipt_digest(
-    worktree_digest: &str,
-    session: &str,
-    transcript: &str,
-    event: &str,
-    epoch: u64,
-) -> String {
+/// Receipt identity for one worktree state, identity, and event.
+///
+/// The identity-less case deliberately does not fall back to the clock. An
+/// agent that supplies neither a session id nor a transcript path (Antigravity
+/// Stop, or `session.idle` without a session id) would otherwise mint a fresh
+/// digest on every firing and grow the harvest inbox without limit. Distinct
+/// worktree states still produce distinct receipts, which is what a harvester
+/// needs; repeated firings over an unchanged state deduplicate to one.
+fn receipt_digest(worktree_digest: &str, session: &str, transcript: &str, event: &str) -> String {
     let identity = if session != "-" {
         session.to_string()
     } else if transcript != "-" {
         transcript.to_string()
     } else {
-        epoch.to_string()
+        "no-identity".to_string()
     };
     let key = format!("{worktree_digest}|{identity}|{event}");
     innen_core::ids::sha256_hex(key.as_bytes())[..12].to_string()
@@ -255,13 +278,22 @@ fn cmd_hook_run(root: &Path, format: &str, args: &HookRunArgs) -> i32 {
                 println!("{{\"wrote\":{name:?}}}");
             }
         }
-        Ok(Receipt::Skipped { digest }) => {
+        Ok(Receipt::Deduped { digest }) => {
             if is_decision {
                 println!("{{\"decision\":\"allow\"}}");
             } else if human {
-                println!("skipped\tno-change");
+                println!("deduped\tno-change");
             } else {
-                println!("{{\"skipped\":\"no-change\",\"digest\":{digest:?}}}");
+                println!("{{\"deduped\":\"no-change\",\"digest\":{digest:?}}}");
+            }
+        }
+        Ok(Receipt::OutsideRepository { dir }) => {
+            if is_decision {
+                println!("{{\"decision\":\"allow\"}}");
+            } else if human {
+                println!("skipped\tnot-a-repository\t{dir}");
+            } else {
+                println!("{{\"skipped\":\"not-a-repository\",\"dir\":{dir:?}}}");
             }
         }
         Err(e) => {
@@ -275,8 +307,17 @@ fn cmd_hook_run(root: &Path, format: &str, args: &HookRunArgs) -> i32 {
 }
 
 enum Receipt {
-    Wrote { name: String },
-    Skipped { digest: String },
+    Wrote {
+        name: String,
+    },
+    /// This worktree state, identity, and event already has a receipt.
+    Deduped {
+        digest: String,
+    },
+    /// Not inside a Git worktree, so there is no repository state to record.
+    OutsideRepository {
+        dir: String,
+    },
 }
 
 fn hook_run_inner(root: &Path, args: &HookRunArgs) -> Result<Receipt, String> {
@@ -315,16 +356,20 @@ fn hook_run_inner(root: &Path, args: &HookRunArgs) -> Result<Receipt, String> {
             )
         })
         .unwrap_or_else(|| "-".to_string());
-    let mut snap = snapshot_repo(&cwd);
+    let Some(mut snap) = snapshot_repo(&cwd) else {
+        return Ok(Receipt::OutsideRepository {
+            dir: cwd.to_string_lossy().into_owned(),
+        });
+    };
     // A clean Git tree can still have a delivered file outside the repository.
     // Keep one pending receipt per session/event instead of deduplicating all
     // such deliveries under the same worktree digest.
     let epoch = epoch_now();
-    snap.digest = receipt_digest(&snap.digest, &session, &transcript, &args.event, epoch);
+    snap.digest = receipt_digest(&snap.digest, &session, &transcript, &args.event);
     let inbox = kb.join("00-inbox/harvest");
     std::fs::create_dir_all(&inbox).map_err(|e| format!("inbox mkdir: {e}"))?;
     if inbox_has_digest(&inbox, &snap.digest) {
-        return Ok(Receipt::Skipped {
+        return Ok(Receipt::Deduped {
             digest: snap.digest,
         });
     }
@@ -847,17 +892,40 @@ mod tests {
     }
 
     #[test]
-    fn clean_tree_deliveries_have_distinct_session_receipts() {
-        let first = receipt_digest("clean-tree", "session-a", "-", "session-end", 1);
-        let second = receipt_digest("clean-tree", "session-b", "-", "session-end", 1);
+    fn session_scoped_receipts_stay_distinct() {
+        // 0.8.0 contract: one receipt per session/event even when the Git
+        // worktree is unchanged.
+        let first = receipt_digest("clean-tree", "session-a", "-", "session-end");
+        let second = receipt_digest("clean-tree", "session-b", "-", "session-end");
         assert_ne!(first, second);
         assert_ne!(
             first,
-            receipt_digest("clean-tree", "session-a", "-", "stop", 1)
+            receipt_digest("clean-tree", "session-a", "-", "stop")
+        );
+        // A transcript is an identity too.
+        assert_ne!(
+            receipt_digest("clean-tree", "-", "t-a.jsonl", "stop"),
+            receipt_digest("clean-tree", "-", "t-b.jsonl", "stop")
+        );
+    }
+
+    #[test]
+    fn identity_less_receipts_key_on_worktree_state() {
+        // No session and no transcript: repeated firings over an unchanged
+        // worktree must collapse to one receipt instead of minting a fresh
+        // digest from the clock on every event.
+        assert_eq!(
+            receipt_digest("clean-tree", "-", "-", "session-end"),
+            receipt_digest("clean-tree", "-", "-", "session-end")
+        );
+        // Distinct worktree states stay distinguishable.
+        assert_ne!(
+            receipt_digest("clean-tree", "-", "-", "stop"),
+            receipt_digest("dirty-tree", "-", "-", "stop")
         );
         assert_ne!(
-            receipt_digest("clean-tree", "-", "-", "session-end", 1),
-            receipt_digest("clean-tree", "-", "-", "session-end", 2)
+            receipt_digest("clean-tree", "-", "-", "stop"),
+            receipt_digest("clean-tree", "-", "-", "session-end")
         );
     }
 

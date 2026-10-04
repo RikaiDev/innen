@@ -11,6 +11,32 @@ fn cli(args: &[&str]) -> (i32, String) {
     (code, out.trim_end().to_string())
 }
 
+/// A worktree with one commit. `hook run` only snapshots Git worktrees, so a
+/// snapshot fixture has to be a real repository.
+fn init_repo(dir: &std::path::Path) {
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q"]);
+    run(&[
+        "-c",
+        "user.email=innen@example.invalid",
+        "-c",
+        "user.name=innen test",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]);
+}
+
 #[test]
 fn hook_pending_empty_kb_is_empty() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -23,7 +49,11 @@ fn hook_pending_empty_kb_is_empty() {
 #[test]
 fn hook_run_writes_snapshot_then_dedups() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().to_string_lossy().into_owned();
+    init_repo(dir.path());
+    // The KB root must be outside the worktree: an inbox inside the repository
+    // would dirty it and change the worktree state that the receipt keys on.
+    let kb = tempfile::tempdir().expect("kb tempdir");
+    let root = kb.path().to_string_lossy().into_owned();
     let (code, got) = cli(&[
         "--root",
         &root,
@@ -57,11 +87,100 @@ fn hook_run_writes_snapshot_then_dedups() {
     ]);
     assert_eq!(code2, 0);
     assert!(got2.contains("no-change"), "second run dedups: {got2:?}");
+
+    // A changed worktree is a new receipt, not a suppressed one.
+    std::fs::write(dir.path().join("notes.md"), "state changed\n").expect("write");
+    let (code3, got3) = cli(&[
+        "--root",
+        &root,
+        "--format",
+        "json",
+        "hook",
+        "run",
+        "--event",
+        "session-end",
+        "--cwd",
+        dir.path().to_str().expect("cwd"),
+    ]);
+    assert_eq!(code3, 0);
+    let v3: serde_json::Value = serde_json::from_str(&got3).expect("receipt json");
+    let name3 = v3["wrote"]
+        .as_str()
+        .expect("changed state writes a receipt");
+    assert_ne!(name3, name, "a changed worktree must not dedup");
+}
+
+#[test]
+fn hook_run_outside_repository_writes_nothing() {
+    // A directory that is not a worktree has no repository, no branch and no
+    // diff, so there is nothing to record. It must not be written as
+    // `repo: <dir>` with `branch: nongit`.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_string_lossy().into_owned();
+    let (code, got) = cli(&[
+        "--root",
+        &root,
+        "--format",
+        "json",
+        "hook",
+        "run",
+        "--event",
+        "session-end",
+        "--cwd",
+        dir.path().to_str().expect("cwd"),
+    ]);
+    assert_eq!(code, 0, "hook run must be fail-open, got: {got:?}");
+    let v: serde_json::Value = serde_json::from_str(&got).expect("receipt json");
+    assert_eq!(v["skipped"], "not-a-repository", "receipt: {got}");
+    assert!(v.get("wrote").is_none(), "must not write: {got:?}");
+    let (_, pending) = cli(&["--root", &root, "--format", "json", "hook", "pending"]);
+    assert_eq!(pending, "{\"pending\":[]}", "inbox must stay empty");
+}
+
+#[test]
+fn hook_run_records_repository_root_from_subdirectory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo(dir.path());
+    let sub = dir.path().join("nested/deep");
+    std::fs::create_dir_all(&sub).expect("mkdir");
+    let kb = dir.path().join("kb");
+    let (code, got) = cli(&[
+        "--root",
+        kb.to_str().expect("kb"),
+        "--format",
+        "json",
+        "hook",
+        "run",
+        "--event",
+        "session-end",
+        "--cwd",
+        sub.to_str().expect("sub"),
+    ]);
+    assert_eq!(code, 0, "got: {got:?}");
+    let v: serde_json::Value = serde_json::from_str(&got).expect("receipt json");
+    let name = v["wrote"].as_str().expect("wrote file");
+    let body = std::fs::read_to_string(kb.join("00-inbox/harvest").join(name)).expect("snapshot");
+    // git reports the physical path, so compare canonical forms.
+    let top = dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize")
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        body.contains(&format!("- repo: {top}\n")),
+        "expected repo root {top}, snapshot was:\n{body}"
+    );
+    assert!(
+        !body.contains("branch: nongit"),
+        "a worktree must not report an unborn branch:\n{body}"
+    );
 }
 
 #[test]
 fn hook_run_compact_emits_decision_allow() {
     let dir = tempfile::tempdir().expect("tempdir");
+    init_repo(dir.path());
     let root = dir.path().to_string_lossy().into_owned();
     let (code, got) = cli(&[
         "--root",
