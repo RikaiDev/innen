@@ -59,7 +59,7 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Structure (single responsibility, task markers)
-        run: ./scripts/check-structure.sh
+        run: python3 scripts/check-structure.py
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build and test the workspace

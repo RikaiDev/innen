@@ -4,3 +4,4 @@
 /benchmarks/
 /.research-project.json
 /.codex/hooks.json
+__pycache__/
