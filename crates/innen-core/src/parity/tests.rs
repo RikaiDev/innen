@@ -337,11 +337,25 @@ fn project_empty_sections_still_emitted() {
     )
     .unwrap();
     let out = project_render(dir.path(), "p:x").unwrap();
-    for section in ["## Decisions", "## Tasks", "## Experiments", "## Datasets"] {
+    // Every section is emitted even with no members: a reader has to be able to
+    // tell "nothing here" from "this kind is not tracked".
+    for section in [
+        "## Workstreams",
+        "## Meetings",
+        "## Decisions",
+        "## Tasks / blockers",
+        "## Experiments",
+        "## Datasets",
+        "## Artifacts",
+        "## Codebases / workspaces",
+        "## Products / capabilities",
+        "## Sources",
+    ] {
         assert!(out.contains(section), "missing {section}: {out}");
     }
-    assert_eq!(
-        out,
-        "# Project X\n\n## Decisions\n\n## Tasks\n\n## Experiments\n\n## Datasets\n"
-    );
+    // `Project ID` carries the id minus a `project:` prefix, so the reader can pass
+    // it straight back to `innen project`. This fixture's node id is `p:x`, which
+    // has no such prefix, so it is echoed unchanged.
+    assert!(out.starts_with("# Project X\n\n- Project ID: `p:x`\n"));
+    assert!(out.contains("- Graph generated: `"));
 }
