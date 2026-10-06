@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -60,6 +61,54 @@ def source_files() -> list[pathlib.Path]:
     return found
 
 
+def committed_lines(rel: str) -> int | None:
+    """Line count of `rel` as committed, or None outside a repository.
+
+    The debt list must describe the repository, not whatever another session
+    happens to have in its working tree. Measured from a dirty tree once, this
+    recorded a 384-line committed file as 530 because a concurrent session was
+    mid-refactor, and CI rejected the result.
+    """
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{rel}"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    return len(result.stdout.splitlines())
+
+
+def write_baseline(files: list[pathlib.Path]) -> int:
+    """Regenerate the baseline from committed content."""
+    entries = []
+    for path in files:
+        rel = str(path.relative_to(REPO))
+        lines = committed_lines(rel)
+        if lines is None:
+            lines = len(path.read_text().splitlines())
+        if lines > 400:
+            entries.append({"file": rel, "lines": lines, "split_by": "TODO"})
+    entries.sort(key=lambda entry: -entry["lines"])
+    BASELINE.write_text(
+        json.dumps(
+            {
+                "comment": (
+                    "Files over the 400-line budget, measured from committed content. Debt "
+                    "to split by single responsibility, not an exemption: remove an entry "
+                    "when the file is split or drops under budget. The gate fails on a stale "
+                    "entry, an unlisted oversized file, and a malformed baseline. Regenerate "
+                    "with `python3 scripts/check-structure.py --write-baseline`, which measures "
+                    "HEAD so another session's uncommitted work cannot move this list."
+                ),
+                "max_lines": 400,
+                "over_budget": entries,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return len(entries)
+
+
 def check_line_budget(files: list[pathlib.Path]) -> None:
     if not BASELINE.is_file():
         for path in files:
@@ -80,7 +129,13 @@ def check_line_budget(files: list[pathlib.Path]) -> None:
     still_over: set[str] = set()
     for path in files:
         name = rel(path)
-        lines = len(path.read_text().splitlines())
+        # Measured from HEAD, like the baseline. A concurrent session's
+        # uncommitted refactor must not appear here as new debt, and must not
+        # appear in the baseline either: the two must describe the same
+        # repository or the gate contradicts itself.
+        lines = committed_lines(name)
+        if lines is None:
+            lines = len(path.read_text().splitlines())
         if lines > budget:
             still_over.add(name)
             if name not in listed:
@@ -108,11 +163,15 @@ def rel(path: pathlib.Path) -> str:
     return str(path.relative_to(REPO))
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
     files = source_files()
     if not files:
         print("structure: no source files discovered", file=sys.stderr)
         return 1
+    if "--write-baseline" in argv:
+        count = write_baseline(files)
+        print(f"structure: baseline rewritten with {count} entries (from HEAD)")
+        return 0
     check_line_budget(files)
     check_task_markers(files)
 
@@ -125,4 +184,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

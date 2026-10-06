@@ -1,5 +1,5 @@
 {
-  "comment": "Files over the 400-line budget. Debt to split by single responsibility, not an exemption: remove an entry when the file is split or drops under budget. The gate fails on a stale entry, an unlisted oversized file, and a malformed baseline.",
+  "comment": "Files over the 400-line budget, measured from committed content. Debt to split by single responsibility, not an exemption: remove an entry when the file is split or drops under budget. The gate fails on a stale entry, an unlisted oversized file, and a malformed baseline. Regenerate with `python3 scripts/check-structure.py --write-baseline`, which measures HEAD so another session's uncommitted work cannot move this list.",
   "max_lines": 400,
   "over_budget": [
     {
@@ -34,7 +34,7 @@
     },
     {
       "file": "crates/innen-core/src/conversation/resume.rs",
-      "lines": 798,
+      "lines": 795,
       "split_by": "TODO"
     },
     {
@@ -65,11 +65,6 @@
     {
       "file": "crates/innen-core/src/conversation.rs",
       "lines": 641,
-      "split_by": "TODO"
-    },
-    {
-      "file": "crates/innen-core/src/conversation/sources.rs",
-      "lines": 530,
       "split_by": "TODO"
     },
     {
