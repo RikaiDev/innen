@@ -447,3 +447,75 @@ fn sweep_reports_no_hard_links_for_an_unshared_session() {
     );
     assert!(run.items[0].detail.is_none());
 }
+
+#[test]
+fn a_session_whose_native_bundle_is_gone_is_not_an_assessment_error() {
+    // A summary row can outlive the files it describes. Before, that surfaced
+    // as `assessment_error`, so every later plan and sweep failed forever on
+    // rows with nothing left to clean.
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("antigravity-cli");
+    let summary = store.join("conversation_summaries.db");
+    fs::create_dir_all(&store).unwrap();
+    run_sqlite_mutation(
+        &summary,
+        "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, not_fully_idle INTEGER, killed INTEGER);",
+    )
+    .unwrap();
+    // Row present, but no brain/ or conversations/ directory exists.
+    run_sqlite_mutation(
+        &summary,
+        &format!("INSERT INTO conversation_summaries VALUES ('{ID}',0,0);"),
+    )
+    .unwrap();
+
+    let missing = Candidate {
+        id: ID.into(),
+        source: Source::Antigravity,
+        modified: Some("2020-01-01T00:00:00Z".into()),
+        path: store.join("conversations").join(format!("{ID}.db")),
+        project: None,
+        parent_id: None,
+    };
+    let assessments = inventory_of(root.path(), &[missing], 0).expect("inventory");
+    assert_eq!(assessments.len(), 1);
+    assert_eq!(
+        assessments[0].blocker_codes,
+        vec!["already_cleaned".to_string()],
+        "a missing bundle is the desired end state, not a failure: {:?}",
+        assessments[0].blockers
+    );
+    assert!(!assessments[0].eligible);
+    assert!(
+        assessments[0].targets.iter().all(|t| !t.exists()),
+        "nothing may be left to delete"
+    );
+}
+
+#[test]
+fn a_real_assessment_failure_still_reports_assessment_error() {
+    // The new branch must not swallow genuine errors: a session whose files
+    // exist but cannot be read keeps the old blocker.
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("antigravity-cli");
+    let brain = store.join("brain").join(ID);
+    fs::create_dir_all(&brain).unwrap();
+    fs::write(brain.join("note.md"), b"x").unwrap();
+    // No summary DB and no conversation db: the bundle hashes fine, so this
+    // exercises the pass-through rather than the new branch.
+    let candidate = Candidate {
+        id: ID.into(),
+        source: Source::Antigravity,
+        modified: None,
+        path: store.join("conversations").join(format!("{ID}.db")),
+        project: None,
+        parent_id: None,
+    };
+    let assessments = inventory_of(root.path(), &[candidate], 0).expect("inventory");
+    assert_eq!(assessments.len(), 1);
+    assert_ne!(
+        assessments[0].blocker_codes,
+        vec!["already_cleaned".to_string()],
+        "an existing bundle must never be called already-cleaned"
+    );
+}

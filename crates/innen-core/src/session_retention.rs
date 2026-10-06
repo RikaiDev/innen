@@ -111,6 +111,11 @@ const BLOCKER_KNOWLEDGE_MISSING: &str = "knowledge_provenance_missing";
 const BLOCKER_SESSION_ACTIVE: &str = "session_active";
 const BLOCKER_ACTIVITY_UNKNOWN: &str = "session_activity_unknown";
 const BLOCKER_ASSESSMENT_ERROR: &str = "assessment_error";
+/// The native bundle is already gone. This is the desired end state, not a
+/// failure: a summary row can outlive the files it describes after a purge, and
+/// reporting that as an error made every later plan and sweep fail forever on
+/// rows that had nothing left to clean.
+const BLOCKER_ALREADY_CLEANED: &str = "already_cleaned";
 
 /// Hot-session window, in days, kept before an attested session may be purged.
 pub const DEFAULT_RETENTION_DAYS: u64 = 7;
