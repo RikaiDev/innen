@@ -22,6 +22,15 @@ pub(super) struct GraphNodeArgs {
     /// Optional body text.
     #[arg(long)]
     pub(super) body: Option<String>,
+    /// Lifecycle status (e.g. open, blocked, complete, superseded).
+    #[arg(long)]
+    pub(super) status: Option<String>,
+    /// One-line summary of what this node records.
+    #[arg(long)]
+    pub(super) summary: Option<String>,
+    /// Date this node describes, `YYYY-MM-DD`.
+    #[arg(long)]
+    pub(super) date: Option<String>,
     /// Provenance (required when kind is custom).
     #[arg(long)]
     pub(super) provenance: Option<String>,
@@ -123,6 +132,15 @@ pub(super) fn cmd_graph_node(root: &std::path::Path, format: &str, args: &GraphN
     });
     if let Some(body) = &args.body {
         payload["body"] = json!(body);
+    }
+    if let Some(status) = &args.status {
+        payload["status"] = json!(status);
+    }
+    if let Some(summary) = &args.summary {
+        payload["summary"] = json!(summary);
+    }
+    if let Some(date) = &args.date {
+        payload["date"] = json!(date);
     }
     if let Some(prov) = &args.provenance {
         payload["provenance"] = json!(prov);

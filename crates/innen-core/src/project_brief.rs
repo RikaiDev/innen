@@ -236,6 +236,16 @@ pub fn render(value: &Value) -> String {
         "Recorded tasks: {} (terminal excluded: {}); next_offset={}\n",
         value["total"], value["excluded_terminal"], value["next_offset"]
     );
+    // Count rows whose status was absent at read time; `list` substitutes the
+    // literal "unknown" for a missing status, so that is the marker.
+    let listed_unknown = value["rows"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter(|r| r.get(2).and_then(Value::as_str) == Some("unknown"))
+                .count()
+        })
+        .unwrap_or(0);
     let pending = value["harvest"]["pending"].as_u64().unwrap_or(0);
     let skipped = value["harvest"]["skipped"].as_u64().unwrap_or(0);
     if pending > 0 || skipped > 0 {
@@ -261,8 +271,14 @@ pub fn render(value: &Value) -> String {
             }
         }
     }
-    out.push_str(
-        "Unknown status is unverified. Evidence: innen project <project-id> --view evidence\n",
-    );
+    // Only warn when a listed task actually lacks a status. Emitting this
+    // unconditionally told readers that status was unverified even when every
+    // row carried one.
+    if listed_unknown > 0 {
+        out.push_str(&format!(
+            "{listed_unknown} row(s) have no recorded status, which is not proof of unfinished work. \
+             Evidence: innen project <project-id> --view evidence\n"
+        ));
+    }
     out
 }
