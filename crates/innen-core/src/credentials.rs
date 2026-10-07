@@ -53,6 +53,17 @@ fn is_ascii_ws(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
+/// True when `at` starts a token rather than continuing one.
+///
+/// A bare `sk-` substring search matches ordinary hyphenated identifiers —
+/// `task-resume-brief-structural-2026-09-06.md` reads as `sk-` plus a 34-char
+/// tail, so `wiki sync` refused to graph a page whose only "secret" was a file
+/// path. A real key is quoted, assigned, or at the start of a token, so the
+/// preceding byte must not be part of a word.
+fn starts_token(bytes: &[u8], at: usize) -> bool {
+    at == 0 || !matches!(bytes[at - 1], b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-')
+}
+
 fn has_aws_key(bytes: &[u8]) -> bool {
     if bytes.len() < 20 {
         return false;
@@ -141,6 +152,7 @@ fn has_anthropic_key(bytes: &[u8]) -> bool {
     }
     for i in 0..=(bytes.len() - PREFIX.len()) {
         if &bytes[i..i + PREFIX.len()] == PREFIX
+            && starts_token(bytes, i)
             && i + PREFIX.len() < bytes.len()
             && is_anthropic_tail(bytes[i + PREFIX.len()])
         {
@@ -157,7 +169,9 @@ fn has_openai_key(bytes: &[u8]) -> bool {
         return false;
     }
     for i in 0..=(bytes.len() - PREFIX.len()) {
-        if &bytes[i..i + PREFIX.len()] == PREFIX {
+        if &bytes[i..i + PREFIX.len()] == PREFIX
+            && starts_token(bytes, i)
+        {
             let mut n = 0;
             for &b in &bytes[i + PREFIX.len()..] {
                 if is_openai_tail(b) {
@@ -335,6 +349,7 @@ fn find_anthropic_offset(bytes: &[u8]) -> Option<usize> {
     }
     for i in 0..=(bytes.len() - PREFIX.len()) {
         if &bytes[i..i + PREFIX.len()] == PREFIX
+            && starts_token(bytes, i)
             && i + PREFIX.len() < bytes.len()
             && matches!(
                 bytes[i + PREFIX.len()],
@@ -354,7 +369,9 @@ fn find_openai_offset(bytes: &[u8]) -> Option<usize> {
         return None;
     }
     for i in 0..=(bytes.len() - PREFIX.len()) {
-        if &bytes[i..i + PREFIX.len()] == PREFIX {
+        if &bytes[i..i + PREFIX.len()] == PREFIX
+            && starts_token(bytes, i)
+        {
             let mut n = 0;
             for &b in &bytes[i + PREFIX.len()..] {
                 if matches!(b, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-') {
@@ -399,6 +416,41 @@ mod tests {
     fn scan_hits_openai_key() {
         let hits = scan_credentials("api_key=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop end");
         assert!(hits.contains(&"openai-key"));
+    }
+
+    #[test]
+    fn a_hyphenated_identifier_ending_in_task_is_not_a_key() {
+        // `task-` contains `sk-`, and the rest of a kebab-case path is a long
+        // tail. This blocked `wiki sync` on a page whose only "secret" was a
+        // file path, so the page silently stayed out of the graph.
+        for text in [
+            "innen/research/conversation/task-resume-brief-structural-2026-09-06.md",
+            "state/task-entry-design-2026-09-06.md review",
+            "/Users/x/task-proposal-real-20260907/wire",
+            "task-risk-assessment-workflow-2026-10-07",
+        ] {
+            assert!(
+                scan_credentials(text).is_empty(),
+                "false positive on ordinary path: {text}"
+            );
+        }
+        // The boundary rule must not weaken real detection.
+        for text in [
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop",
+            "OPENAI_API_KEY=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop",
+            "\"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop\"",
+        ] {
+            assert!(
+                scan_credentials(text).contains(&"openai-key"),
+                "must still detect a real key: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hyphenated_identifier_ending_in_ant_is_not_an_anthropic_key() {
+        assert!(scan_credentials("docs/task-ant-pattern-notes-2026.md").is_empty());
+        assert!(scan_credentials("sk-ant-abcdefghijklmnopqrstuvwxyz012345").contains(&"anthropic-key"));
     }
 
     #[test]
