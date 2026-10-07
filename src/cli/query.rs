@@ -1,8 +1,11 @@
 #[derive(clap::Args)]
 pub(super) struct QueryArgs {
     /// Query string (natural text or literal identifier/filename).
-    #[arg(long)]
-    pub(super) q: String,
+    #[arg(long, required_unless_present = "terms")]
+    pub(super) q: Option<String>,
+    /// Free-text terms appended to --q, so `innen query <words>` works like grep.
+    #[arg(value_name = "TERM")]
+    pub(super) terms: Vec<String>,
     /// Evaluate pinned fact alternatives and dependency closure against the journal.
     #[arg(long, conflicts_with_all = ["as_of", "include_expired", "view", "limit", "offset"])]
     pub(super) evidence_contract: Option<PathBuf>,
@@ -45,7 +48,22 @@ pub(super) struct QueryArgs {
 use super::util::{escape_tsv_field, is_human};
 use std::path::PathBuf;
 
+/// `--q` and the bare terms are one query. A caller that writes grep syntax
+/// gets the same result as one that writes the flag, and neither form can
+/// silently lose the words it passed.
+pub(super) fn query_text(args: &QueryArgs) -> String {
+    let mut text = args.q.clone().unwrap_or_default();
+    for term in &args.terms {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(term);
+    }
+    text
+}
+
 pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) -> i32 {
+    let q = query_text(args);
     if let Some(path) = &args.evidence_contract {
         let result = (|| -> Result<serde_json::Value, String> {
             if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
@@ -57,9 +75,9 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
             if args.prepare_proposal {
                 let raw = innen_core::evidence_closure::read_journal(root)?;
                 let mut out = if args.evidence_ids {
-                    innen_core::task_proposal::id_context(&raw, &contract, &args.q)?
+                    innen_core::task_proposal::id_context(&raw, &contract, &q)?
                 } else {
-                    innen_core::evidence_closure::proposal_context(&raw, &contract, &args.q)?
+                    innen_core::evidence_closure::proposal_context(&raw, &contract, &q)?
                 };
                 out["resolution"] = serde_json::json!("proposal_context_prepared");
                 Ok(out)
@@ -77,7 +95,7 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
                         read_json(path)?,
                     )
                     .map_err(|e| e.to_string())?;
-                    innen_core::task_proposal::bind_draft(&raw, &contract, &args.q, draft)?
+                    innen_core::task_proposal::bind_draft(&raw, &contract, &q, draft)?
                 } else {
                     serde_json::from_value::<innen_core::task_proposal::Proposal>(read_json(path)?)
                         .map_err(|e| e.to_string())?
@@ -93,12 +111,12 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
                 innen_core::task_proposal::evaluate(
                     &raw,
                     &contract,
-                    &args.q,
+                    &q,
                     &proposal,
                     review.as_ref(),
                 )
             } else {
-                innen_core::evidence_closure::query(root, &contract, &args.q)
+                innen_core::evidence_closure::query(root, &contract, &q)
             }
         })();
         return match result {
@@ -127,7 +145,7 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
     }
     if args.view == "hits" {
         let params = innen_core::query::QueryParams {
-            q: args.q.clone(),
+            q: q.clone(),
             as_of: args.as_of.clone(),
             limit: args.limit,
             include_expired: args.include_expired,
@@ -148,7 +166,7 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
         }
     } else {
         let options = innen_core::task_entry::TaskEntryOptions {
-            q: args.q.clone(),
+            q: q.clone(),
             as_of: args.as_of.clone(),
             limit: usize::from(args.limit),
             offset: args.offset,
@@ -159,7 +177,7 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
             Ok(mut out) => {
                 if out["resolution"] == "missing" {
                     let discovery = super::local_discovery::discover(
-                        &args.q,
+                        &q,
                         &super::local_discovery::default_roots(),
                     );
                     out["local_search"] = serde_json::json!({

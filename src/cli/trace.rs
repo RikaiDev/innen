@@ -1,7 +1,14 @@
 #[derive(clap::Args)]
 pub(super) struct TraceArgs {
-    #[arg(long, required_unless_present = "expand", conflicts_with = "expand")]
+    #[arg(
+        long,
+        required_unless_present_any = ["terms", "expand"],
+        conflicts_with = "expand"
+    )]
     pub(super) q: Option<String>,
+    /// Free-text terms appended to --q, so `innen trace <words>` works like grep.
+    #[arg(value_name = "TERM")]
+    pub(super) terms: Vec<String>,
     /// Expand a hash-addressed trace source cache record against current bytes.
     #[arg(long, requires_all = ["record", "expect_sha256"])]
     pub(super) expand: Option<String>,
@@ -36,7 +43,21 @@ pub(super) struct TraceArgs {
 
 use std::path::PathBuf;
 
+/// `--q` and the bare terms are one clue string, so grep syntax and the flag
+/// form resolve identically and no caller word is silently dropped.
+fn clue_text(args: &TraceArgs) -> String {
+    let mut text = args.q.clone().unwrap_or_default();
+    for term in &args.terms {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(term);
+    }
+    text
+}
+
 pub(super) fn cmd_trace(root: &std::path::Path, args: &TraceArgs) -> i32 {
+    let clue = clue_text(args);
     let result = if let Some(key) = &args.expand {
         innen_core::trace::expand(
             root,
@@ -48,7 +69,7 @@ pub(super) fn cmd_trace(root: &std::path::Path, args: &TraceArgs) -> i32 {
         innen_core::trace::search(
             root,
             &innen_core::trace::Options {
-                q: args.q.clone().unwrap_or_default(),
+                q: clue,
                 limit: args.limit,
                 max_sources: args.max_sources,
                 max_bytes: args.max_bytes,

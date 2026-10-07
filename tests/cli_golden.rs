@@ -87,6 +87,62 @@ fn cli_query_golden_via_cli() {
 }
 
 #[test]
+fn grep_style_positional_terms_resolve_like_the_q_flag() {
+    // An agent that guesses `innen query <words>` must get the identical result
+    // to one that writes the flag; no caller word may be silently dropped when
+    // both forms are mixed.
+    let case = golden_case("normal");
+    let dir = tempfile::tempdir().expect("tempdir");
+    build_kb_from_case(&dir, &case);
+    let root = dir.path().to_string_lossy().into_owned();
+    let q = case["query"]["q"].as_str().expect("q str").to_string();
+    let as_of = case["query"]["as_of"]
+        .as_str()
+        .expect("as_of str")
+        .to_string();
+
+    let via_flag = cli_stdout_trimmed(&[
+        "--root", &root, "--format", "json", "query", "--view", "hits", "--q", &q, "--as-of",
+        &as_of,
+    ]);
+    let via_positional = cli_stdout_trimmed(&[
+        "--root", &root, "--format", "json", "query", "--view", "hits", &q, "--as-of", &as_of,
+    ]);
+    assert_eq!(via_flag.0, 0);
+    assert_eq!(via_positional, via_flag);
+
+    // Bare terms are space-joined, so the same words split across the flag and
+    // the positional list must produce the identical query string.
+    let words = ["台羅", "評估"];
+    let joined = words.join(" ");
+    let via_joined_flag = cli_stdout_trimmed(&[
+        "--root", &root, "--format", "json", "query", "--view", "hits", "--q", &joined,
+    ]);
+    let via_mixed = cli_stdout_trimmed(&[
+        "--root", &root, "--format", "json", "query", "--view", "hits", "--q", words[0],
+        words[1],
+    ]);
+    assert_eq!(via_joined_flag.0, 0);
+    assert_eq!(via_mixed, via_joined_flag);
+}
+
+#[test]
+fn search_commands_still_require_a_clue() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_string_lossy().into_owned();
+    for command in ["query", "trace"] {
+        let code = std::process::Command::new(env!("CARGO_BIN_EXE_innen"))
+            .args(["--root", &root, "--format", "json", command])
+            .output()
+            .expect("cli runs");
+        assert!(
+            !code.status.success(),
+            "{command} must refuse to run with no clue at all"
+        );
+    }
+}
+
+#[test]
 fn cli_empty_kb_query_is_empty() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_string_lossy().into_owned();
