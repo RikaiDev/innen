@@ -16,6 +16,9 @@ pub(super) const EDGE_PROVENANCE_PREFIX: &str = "innen:wiki-sync:edge:";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SyncReport {
     pub pages_scanned: u64,
+    /// Pages that could not be parsed. Their existing nodes and edges are
+    /// preserved unchanged and each one is named in `warnings`.
+    pub pages_skipped: u64,
     pub wiki_nodes_created: u64,
     pub wiki_nodes_updated: u64,
     pub wiki_nodes_marked_missing: u64,

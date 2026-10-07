@@ -42,10 +42,32 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
     paths.sort();
 
     // This whole pass is deliberately before Journal::open.
+    //
+    // One unparseable page must not stop the projection: a single false
+    // positive in the credential scan used to keep every page out of the
+    // graph. A page we cannot read is skipped and named in the report; its
+    // existing node and edges are left untouched, because a page we cannot
+    // read is not a page that was deleted.
     let mut pages = Vec::with_capacity(paths.len());
+    let mut skipped_paths: BTreeSet<String> = BTreeSet::new();
     for path in paths {
-        pages.push(parse_page(&canonical_root, &wiki_root, &path)?);
+        match parse_page(&canonical_root, &wiki_root, &path) {
+            Ok(page) => {
+                skipped_paths.remove(&page.wiki_path);
+                pages.push(page);
+            }
+            Err(error) => {
+                let wiki_path = path
+                    .strip_prefix(&wiki_root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                skipped_paths.insert(wiki_path.clone());
+                warnings.push(format!("skipped unreadable page {wiki_path}: {error}"));
+            }
+        }
     }
+    let skipped_count = skipped_paths.len() as u64;
 
     let journal = Journal::open(&canonical_root)?;
     let entries = journal.read_all()?;
@@ -65,12 +87,30 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
     let resolver = WikiResolver::new(&pages);
     let mut report = SyncReport {
         pages_scanned: pages.len() as u64,
+        pages_skipped: skipped_count,
         warnings,
         ..SyncReport::default()
     };
 
     let mut desired_nodes: BTreeMap<String, Value> = BTreeMap::new();
-    let present_paths: HashSet<&str> = pages.iter().map(|page| page.wiki_path.as_str()).collect();
+    // A skipped page counts as present: it must not be marked missing, and its
+    // owned edges must not be retracted. Its node keeps its last synced state
+    // until the page can be read again.
+    let mut present_paths: HashSet<String> =
+        pages.iter().map(|page| page.wiki_path.clone()).collect();
+    let mut skipped_node_ids: BTreeSet<String> = BTreeSet::new();
+    for (id, node) in &graph.nodes {
+        if node.get("managed_by").and_then(Value::as_str) != Some(MANAGED_BY) {
+            continue;
+        }
+        let Some(path) = node.get("wiki_path").and_then(Value::as_str) else {
+            continue;
+        };
+        if skipped_paths.contains(path) {
+            present_paths.insert(path.to_string());
+            skipped_node_ids.insert(id.clone());
+        }
+    }
     for page in &pages {
         desired_nodes.insert(page.id.clone(), wiki_node(page));
     }
@@ -174,6 +214,16 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
     let mut asserts = Vec::new();
 
     for (key, provenances) in &live_owned {
+        // A page we could not read this run is not evidence that its edges
+        // went away. Retracting them here would destroy provenance on the
+        // strength of a parse error.
+        if skipped_node_ids.contains(&key.from) {
+            report.warnings.push(format!(
+                "preserved edges of unreadable page {} -[{}]-> {}",
+                key.from, key.kind, key.to
+            ));
+            continue;
+        }
         let desired = desired_edges.get(key);
         let has_exact = desired.is_some_and(|edge| provenances.contains(edge.provenance.as_str()));
         let has_stale = desired.is_some_and(|edge| {

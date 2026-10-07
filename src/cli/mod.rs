@@ -183,7 +183,18 @@ pub(crate) fn run() -> i32 {
                         "{}",
                         serde_json::to_string(&report).expect("wiki sync report serializes")
                     );
-                    0
+                    // A partial projection is still written, but it must not
+                    // report success: something the operator expects in the
+                    // graph is not there, and only the exit code says so.
+                    if report.pages_skipped > 0 {
+                        eprintln!(
+                            "warning: {} page(s) skipped and left unchanged; see warnings",
+                            report.pages_skipped
+                        );
+                        1
+                    } else {
+                        0
+                    }
                 }
                 Err(error) => {
                     eprintln!("error: {error}");

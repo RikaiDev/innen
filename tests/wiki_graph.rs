@@ -46,9 +46,91 @@ fn credential_like_wiki_content_is_not_projected() {
     let path = root.path().join("02-wiki/private.md");
     let text = std::fs::read_to_string(&path).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
     std::fs::write(&path, text).unwrap();
-    assert!(wiki_graph::sync(root.path()).is_err());
+    // The offending page is skipped, not fatal, and never reaches the journal.
+    let report = wiki_graph::sync(root.path()).expect("sync reports rather than aborting");
+    assert_eq!(report.pages_skipped, 1);
+    assert_eq!(report.pages_scanned, 0);
+    assert!(
+        report.warnings.iter().any(|w| w.contains("private.md")),
+        "the skipped page must be named: {:?}",
+        report.warnings
+    );
     assert!(!root.path().join(".innen/journal.jsonl").exists());
-    assert!(path.exists());
+    assert!(path.exists(), "the source page is retained");
+}
+
+#[test]
+fn one_unreadable_page_does_not_hold_the_rest_of_the_graph_out() {
+    // A single false positive used to abort the whole command, so one page kept
+    // every other page out of the graph and the only clue was the error text.
+    let root = tempfile::tempdir().expect("temp root");
+    write_page(root.path(), "ai/good.md", "[]", "[]");
+    write_page(root.path(), "ai/other.md", "[]", "[]");
+    write_page(root.path(), "ai/bad.md", "[]", "[]");
+    let bad = root.path().join("02-wiki/ai/bad.md");
+    let text =
+        std::fs::read_to_string(&bad).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
+    std::fs::write(&bad, text).unwrap();
+
+    let report = wiki_graph::sync(root.path()).expect("sync completes");
+    assert_eq!(report.pages_skipped, 1);
+    assert_eq!(report.pages_scanned, 2);
+    assert_eq!(
+        report.wiki_nodes_created, 2,
+        "the readable pages are projected"
+    );
+    assert_eq!(report.edges_retracted, 0);
+
+    let projected = graph(root.path());
+    let paths: Vec<&str> = projected
+        .nodes
+        .values()
+        .filter(|node| node["type"] == "Wiki")
+        .filter_map(|node| node["wiki_path"].as_str())
+        .collect();
+    assert!(paths.contains(&"ai/good.md"));
+    assert!(paths.contains(&"ai/other.md"));
+}
+
+#[test]
+fn a_page_that_becomes_unreadable_keeps_its_node_and_edges() {
+    // Skipping must not be mistaken for deletion: the node stays, is not
+    // marked missing, and its edges are not retracted on a parse error.
+    let root = tempfile::tempdir().expect("temp root");
+    write_page(root.path(), "ai/target.md", "[]", "[]");
+    write_page(root.path(), "ai/holder.md", "[\"[[target]]\"]", "[]");
+    let first = wiki_graph::sync(root.path()).expect("first sync");
+    assert_eq!(first.wiki_nodes_created, 2);
+    assert!(first.edges_asserted >= 1);
+
+    let holder = root.path().join("02-wiki/ai/holder.md");
+    let broken =
+        std::fs::read_to_string(&holder).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
+    std::fs::write(&holder, broken).unwrap();
+
+    let second = wiki_graph::sync(root.path()).expect("second sync completes");
+    assert_eq!(second.pages_skipped, 1);
+    assert_eq!(
+        second.wiki_nodes_marked_missing, 0,
+        "skipped is not deleted"
+    );
+
+    let projected = graph(root.path());
+    let node = projected
+        .nodes
+        .values()
+        .find(|node| node["wiki_path"] == "ai/holder.md")
+        .expect("holder node survives an unreadable run");
+    assert_ne!(node["missing"], json!(true));
+    let derived = projected
+        .edges
+        .iter()
+        .filter(|edge| edge.edge == EdgeType::DerivedFrom)
+        .count();
+    assert!(
+        derived >= 1,
+        "edges of an unreadable page must not be retracted"
+    );
 }
 
 #[test]
@@ -160,8 +242,16 @@ fn malformed_yaml_writes_nothing() {
     )
     .expect("bad page");
 
-    let error = wiki_graph::sync(root.path()).expect_err("malformed YAML rejected");
-    assert!(error.to_string().contains("invalid wiki frontmatter"));
+    // Malformed frontmatter is a per-page fault: it is skipped and named, and
+    // it reaches neither the graph nor the journal.
+    let report = wiki_graph::sync(root.path()).expect("sync reports rather than aborting");
+    assert_eq!(report.pages_skipped, 1);
+    assert_eq!(report.pages_scanned, 0);
+    assert!(
+        report.warnings.iter().any(|w| w.contains("invalid wiki frontmatter")),
+        "the fault must be reported verbatim: {:?}",
+        report.warnings
+    );
     assert!(!root.path().join(".innen/journal.jsonl").exists());
 }
 
