@@ -48,7 +48,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::credentials::credential_preview;
-use crate::tap::{load_watermark, Event, Tap, TapError};
+use crate::tap::{Event, Tap, TapError};
 
 /// Pinned tap id for the harvest directory tap.
 pub const TAP_ID: &str = "harvest-dir";
@@ -70,18 +70,16 @@ impl Tap for DirectoryTap {
         TAP_ID
     }
 
-    fn watermark(&self) -> u64 {
-        load_watermark(&self.dir, TAP_ID)
+    fn cursor(&self) -> crate::tap::CursorState {
+        crate::tap::load_cursor(&self.dir, TAP_ID)
     }
 
-    /// Sorted `*.md` files past the watermark count, one `node.upsert`
-    /// event per file. No credential filtering here — the caller
-    /// ([`check`]/[`ingest::run`]) scans before append.
+    /// Files this tap has not consumed, one `node.upsert` event each. No
+    /// credential filtering here — the caller ([`check`]/[`ingest::run`])
+    /// scans before append.
     fn collect(&self) -> Result<Vec<Event>, TapError> {
-        let files = list_inbox_files(&self.dir);
-        let skip = self.watermark() as usize;
         let mut out = Vec::new();
-        for rel in files.into_iter().skip(skip) {
+        for rel in unconsumed(&self.dir).0 {
             let path = self.inbox_dir().join(&rel);
             let bytes = std::fs::read(&path)
                 .map_err(|e| TapError::Io(format!("read {}: {e}", path.display())))?;
@@ -99,6 +97,10 @@ pub struct TapReport {
     pub id: String,
     pub new_files: Vec<String>,
     pub skipped: Vec<String>,
+    /// `missing` | `current` | `legacy_count_rebuilt` | `unreadable_rebuilt`.
+    /// A rebuilt cursor means the inbox was re-listed in full, so the backlog
+    /// below is authoritative rather than a continuation of an old count.
+    pub cursor: String,
 }
 
 /// Dry-run report over all taps (currently exactly one, `harvest-dir`).
@@ -153,6 +155,45 @@ fn sha8(rel: &str) -> String {
     crate::ids::sha256_hex(rel.as_bytes())[..8].to_string()
 }
 
+/// Inbox files this tap has not consumed, in listing order, plus the cursor
+/// state that decided it.
+///
+/// [`check`] and [`ingest::run`] both select through here, so a dry run can
+/// never disagree with the run it previews. A cursor that cannot name its
+/// inputs (legacy count, unreadable file) contributes an empty consumed set:
+/// re-listing everything is safe because the event id is content-derived and
+/// the op is an upsert, whereas guessing a count would skip real files.
+fn unconsumed(root: &Path) -> (Vec<String>, crate::tap::CursorState) {
+    let state = crate::tap::load_cursor(root, TAP_ID);
+    let cursor = state
+        .known()
+        .map(|consumed| crate::tap::Cursor {
+            consumed: consumed.clone(),
+        })
+        .unwrap_or_default();
+    let files = list_inbox_files(root);
+    let pending = cursor
+        .unconsumed(&files)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<String>>();
+    (pending, state)
+}
+
+/// The consumed set to persist after this run: everything already recorded,
+/// plus what this run handled. Not pruned — a name that leaves and comes back
+/// must stay consumed rather than be appended twice.
+fn advance(state: &crate::tap::CursorState, handled: &[String]) -> crate::tap::Cursor {
+    let mut cursor = state
+        .known()
+        .map(|consumed| crate::tap::Cursor {
+            consumed: consumed.clone(),
+        })
+        .unwrap_or_default();
+    cursor.consumed.extend(handled.iter().cloned());
+    cursor
+}
+
 fn source_id(rel: &str) -> String {
     format!("source:{}", sha8(rel))
 }
@@ -178,14 +219,13 @@ fn event_for_file(rel: &str, bytes: &[u8], text: &str) -> Event {
     }
 }
 
-/// DRY-RUN: no appends, no watermark advance.
+/// DRY-RUN: no appends, no cursor advance.
 pub fn check(root: &Path) -> HarvestReport {
-    let files = list_inbox_files(root);
-    let wm = load_watermark(root, TAP_ID) as usize;
+    let (pending, state) = unconsumed(root);
     let mut new_files = Vec::new();
     let mut skipped = Vec::new();
     let inbox = root.join("00-inbox/harvest");
-    for rel in files.into_iter().skip(wm) {
+    for rel in pending {
         let text = std::fs::read_to_string(inbox.join(&rel)).unwrap_or_default();
         if crate::credentials::scan_credentials(&text).is_empty() {
             new_files.push(rel);
@@ -198,6 +238,7 @@ pub fn check(root: &Path) -> HarvestReport {
             id: TAP_ID.to_string(),
             new_files,
             skipped,
+            cursor: state.label().to_string(),
         }],
     }
 }
@@ -206,12 +247,11 @@ pub mod ingest {
     use super::*;
 
     /// Append one `node.upsert` per clean file, skip credential hits
-    /// (reported, never appended), then advance the watermark past all
-    /// consumed files (added + skipped).
+    /// (reported, never appended), then record every consumed name —
+    /// added and skipped alike, so a credential hit is not retried forever
+    /// and a clean file is never skipped by a shifted cursor.
     pub fn run(root: &Path) -> IngestReport {
-        let files = list_inbox_files(root);
-        let wm = load_watermark(root, TAP_ID) as usize;
-        let pending: Vec<String> = files.into_iter().skip(wm).collect();
+        let (pending, state) = unconsumed(root);
         let total = pending.len();
         if total == 0 {
             return IngestReport {
@@ -228,14 +268,11 @@ pub mod ingest {
         let inbox = root.join("00-inbox/harvest");
         let mut added: u64 = 0;
         let mut skipped = Vec::new();
-        let mut processed: usize = 0;
+        let mut processed: Vec<String> = Vec::with_capacity(total);
         for rel in &pending {
             let bytes = match std::fs::read(inbox.join(rel)) {
                 Ok(b) => b,
-                Err(_) => {
-                    processed += 1;
-                    continue;
-                }
+                Err(_) => continue,
             };
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let hits = crate::credentials::scan_credentials(&text);
@@ -245,20 +282,21 @@ pub mod ingest {
                     pattern: pattern.to_string(),
                     preview: credential_preview(&text, pattern),
                 });
-                processed += 1;
+                processed.push(rel.clone());
                 continue;
             }
             let event = event_for_file(rel, &bytes, &text);
             match journal.append(&event.op, &event.payload) {
                 Ok(_) => {
                     added += 1;
-                    processed += 1;
+                    processed.push(rel.clone());
                 }
                 Err(_) => break,
             }
         }
-        if processed > 0 {
-            let _ = crate::tap::store_watermark(root, TAP_ID, wm as u64 + processed as u64);
+        if !processed.is_empty() {
+            let cursor = advance(&state, &processed);
+            let _ = crate::tap::store_cursor(root, TAP_ID, &cursor);
         }
         IngestReport { added, skipped }
     }
@@ -340,14 +378,42 @@ mod tests {
     }
 
     #[test]
-    fn ingest_advances_watermark() {
+    fn ingest_records_the_consumed_file_names() {
         let dir = tempfile::tempdir().unwrap();
         write_inbox(&dir, &[("a.md", "x")]);
         ingest::run(dir.path());
-        let wm = std::fs::read_to_string(watermark_path(dir.path(), "harvest-dir")).unwrap();
-        assert_eq!(wm.trim(), "1");
+        // The cursor names its inputs rather than counting them, which is what
+        // keeps a shrinking inbox from swallowing new files.
+        let state = crate::tap::load_cursor(dir.path(), "harvest-dir");
+        assert_eq!(
+            state,
+            crate::tap::CursorState::Current(crate::tap::Cursor {
+                consumed: ["a.md".to_string()].into_iter().collect()
+            })
+        );
         let ing2 = ingest::run(dir.path());
         assert_eq!(ing2.added, 0);
+    }
+
+    #[test]
+    fn skipped_files_are_consumed_and_do_not_stall_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        write_inbox(
+            &dir,
+            &[
+                ("bad.md", "key AKIAIOSFODNN7EXAMPLE end"),
+                ("ok.md", "hello"),
+            ],
+        );
+        let ing = ingest::run(dir.path());
+        assert_eq!(ing.added, 1);
+        assert_eq!(ing.skipped.len(), 1);
+        let consumed = crate::tap::load_cursor(dir.path(), "harvest-dir")
+            .known()
+            .expect("cursor names its inputs")
+            .clone();
+        assert!(consumed.contains("bad.md"), "skipped files are consumed too");
+        assert!(consumed.contains("ok.md"));
     }
 
     #[test]
@@ -371,5 +437,83 @@ mod tests {
         let ing = ingest::run(dir.path());
         assert_eq!(ing.added, 2);
         assert!(ing.skipped.is_empty());
+    }
+
+    #[test]
+    fn deleting_ingested_files_never_hides_new_ones() {
+        // The failure this replaces: a count cursor plus post-ingest deletion.
+        // Each deletion shifted the window by one, and once the count passed
+        // the listing size `harvest --check` reported an empty backlog while
+        // unprocessed files sat in the inbox — silently, for 17 days.
+        let dir = tempfile::tempdir().unwrap();
+        write_inbox(&dir, &[("a.md", "one"), ("b.md", "two")]);
+        assert_eq!(ingest::run(dir.path()).added, 2);
+        // The pending files' own instructions say to delete them after ingest.
+        std::fs::remove_file(dir.path().join("00-inbox/harvest/a.md")).unwrap();
+        std::fs::remove_file(dir.path().join("00-inbox/harvest/b.md")).unwrap();
+
+        write_inbox(&dir, &[("c.md", "three"), ("d.md", "four")]);
+        let r = check(dir.path());
+        assert_eq!(
+            r.taps[0].new_files,
+            vec!["c.md".to_string(), "d.md".to_string()],
+            "a shrunk inbox must not shift the window past new files"
+        );
+        assert_eq!(r.taps[0].cursor, "current");
+        assert_eq!(ingest::run(dir.path()).added, 2);
+        assert!(check(dir.path()).taps[0].new_files.is_empty());
+    }
+
+    #[test]
+    fn many_ingest_delete_cycles_keep_finding_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for round in 0..12 {
+            let name = format!("pending-{round:04}.md");
+            write_inbox(&dir, &[(name.as_str(), &format!("body {round}"))]);
+            assert_eq!(
+                ingest::run(dir.path()).added,
+                1,
+                "round {round} must ingest its new file"
+            );
+            std::fs::remove_file(dir.path().join("00-inbox/harvest").join(&name)).unwrap();
+        }
+        assert!(check(dir.path()).taps[0].new_files.is_empty());
+    }
+
+    #[test]
+    fn a_legacy_count_cursor_rebuilds_and_says_so() {
+        // The on-disk state this machine was stuck in: a count of 875 with 96
+        // files present. It must re-list the inbox and report the rebuild
+        // rather than presenting an empty backlog.
+        let dir = tempfile::tempdir().unwrap();
+        write_inbox(&dir, &[("a.md", "one"), ("b.md", "two")]);
+        let path = watermark_path(dir.path(), "harvest-dir");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"875").unwrap();
+
+        let r = check(dir.path());
+        assert_eq!(r.taps[0].cursor, "legacy_count_rebuilt");
+        assert_eq!(
+            r.taps[0].new_files,
+            vec!["a.md".to_string(), "b.md".to_string()]
+        );
+
+        let ing = ingest::run(dir.path());
+        assert_eq!(ing.added, 2);
+        assert_eq!(check(dir.path()).taps[0].cursor, "current");
+        assert!(check(dir.path()).taps[0].new_files.is_empty());
+    }
+
+    #[test]
+    fn consumed_names_survive_a_file_returning_to_the_inbox() {
+        let dir = tempfile::tempdir().unwrap();
+        write_inbox(&dir, &[("a.md", "same bytes")]);
+        assert_eq!(ingest::run(dir.path()).added, 1);
+        // Same name, same content, back in the inbox: the cursor still knows
+        // it, so a retry loop cannot append it twice.
+        write_inbox(&dir, &[("a.md", "same bytes")]);
+        assert_eq!(ingest::run(dir.path()).added, 0);
+        let journal = std::fs::read_to_string(dir.path().join(".innen/journal.jsonl")).unwrap();
+        assert_eq!(journal.lines().count(), 1);
     }
 }

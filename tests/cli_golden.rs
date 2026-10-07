@@ -202,7 +202,7 @@ fn cli_doctor_healthy_exits_0() {
     let report: innen_core::doctor::Report =
         serde_json::from_str(out.trim_end()).expect("doctor stdout parses as Report");
     assert_eq!(report.exit_code, 0);
-    assert_eq!(report.checks.len(), 4);
+    assert_eq!(report.checks.len(), 5);
     for c in &report.checks {
         assert!(c.ok, "{} must be ok: {}", c.name, c.detail);
     }

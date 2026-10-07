@@ -354,6 +354,7 @@ struct WantHarvestTap {
     id: String,
     new_files: Vec<String>,
     skipped: Vec<String>,
+    cursor: String,
 }
 
 #[derive(serde::Serialize)]
@@ -400,6 +401,7 @@ fn harvest_check_json_shape() {
             id: "harvest-dir".to_string(),
             new_files: vec!["a.md".to_string(), "b.md".to_string()],
             skipped: vec![],
+            cursor: "missing".to_string(),
         }],
     })
     .expect("want serializes");
@@ -457,8 +459,48 @@ fn ingest_journal_diff() {
         !journal.contains("bad.md"),
         "credential file must never be appended"
     );
-    // Watermark advances past all consumed files (1 added + 1 skipped).
-    let wm = std::fs::read_to_string(dir.path().join(".innen/tap/harvest-dir.watermark"))
-        .expect("read watermark");
-    assert_eq!(wm.trim(), "2", "watermark must cover consumed files");
+    // The cursor names every consumed file, added and skipped alike. A count
+    // would break here: the pending files are deleted after ingest, which is
+    // what silently swallowed the whole inbox for 17 days.
+    let cursor: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".innen/tap/harvest-dir.watermark"))
+            .expect("read cursor"),
+    )
+    .expect("cursor is JSON");
+    assert_eq!(cursor["schema"], "innen.tap.watermark.v2");
+    let consumed: Vec<&str> = cursor["consumed"]
+        .as_array()
+        .expect("consumed is an array")
+        .iter()
+        .map(|v| v.as_str().expect("name is a string"))
+        .collect();
+    assert_eq!(consumed, vec!["bad.md", "ok.md"], "both files are consumed");
+}
+
+#[test]
+fn harvest_check_reports_a_rebuilt_cursor_instead_of_an_empty_backlog() {
+    // The stuck state: a pre-v2 count cursor with a full inbox. Reporting
+    // "nothing new" here is how 96 files sat unprocessed without an error.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let inbox = dir.path().join("00-inbox/harvest");
+    std::fs::create_dir_all(&inbox).expect("mkdir inbox");
+    std::fs::write(inbox.join("a.md"), "hello").expect("write a.md");
+    let cursor = dir.path().join(".innen/tap/harvest-dir.watermark");
+    std::fs::create_dir_all(cursor.parent().unwrap()).expect("mkdir tap");
+    std::fs::write(&cursor, "875").expect("write legacy count");
+
+    let root = dir.path().to_string_lossy().into_owned();
+    let assert = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .args(["--root", &root, "--format", "json", "harvest", "--check"])
+        .assert()
+        .code(0);
+    let report: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("stdout parses");
+    assert_eq!(report["taps"][0]["cursor"], "legacy_count_rebuilt");
+    assert_eq!(
+        report["taps"][0]["new_files"],
+        serde_json::json!(["a.md"]),
+        "the inbox must be re-listed, not reported empty"
+    );
 }

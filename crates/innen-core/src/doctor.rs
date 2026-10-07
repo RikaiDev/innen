@@ -455,6 +455,43 @@ fn check_ref_integrity(root: &Path) -> Check {
 /// Run the four checks in order and fold the exit code.
 ///
 /// `0` = all pass; `1` = quarantine present OR index stale-but-rebuildable;
+/// A tap cursor that cannot name the files it consumed makes the inbox
+/// backlog unknowable: the tap must either replay the whole inbox or, with a
+/// stale count, silently skip real files. Report it instead of letting
+/// `harvest --check` look empty.
+fn check_tap_cursor(root: &Path) -> Check {
+    let state = crate::tap::load_cursor(root, crate::harvest::TAP_ID);
+    let detail = match &state {
+        crate::tap::CursorState::Missing => {
+            return Check {
+                name: "tap_cursor".to_string(),
+                ok: true,
+                detail: "no cursor recorded; inbox is fully unconsumed".to_string(),
+            };
+        }
+        crate::tap::CursorState::Current(cursor) => {
+            return Check {
+                name: "tap_cursor".to_string(),
+                ok: true,
+                detail: format!("current; {} file(s) recorded consumed", cursor.consumed.len()),
+            };
+        }
+        crate::tap::CursorState::LegacyCount(count) => format!(
+            "pre-v2 count cursor ({count}) cannot name its inputs; inbox re-lists in full. \
+             Run `innen ingest` once to rewrite the cursor as consumed file names."
+        ),
+        crate::tap::CursorState::Unreadable(why) => format!(
+            "cursor unreadable ({why}); inbox re-lists in full. \
+             Delete the file or run `innen ingest` once to rewrite it."
+        ),
+    };
+    Check {
+        name: "tap_cursor".to_string(),
+        ok: false,
+        detail,
+    }
+}
+
 /// `2` = journal invalid OR ref-integrity broken. Report-only: performs no
 /// writes (no rebuild, no quarantine moves).
 pub fn run(root: &Path) -> Report {
@@ -462,15 +499,16 @@ pub fn run(root: &Path) -> Report {
     let quarantine = check_quarantine(root);
     let index = check_index(root, journal.ok);
     let refs = check_ref_integrity(root);
+    let cursor = check_tap_cursor(root);
     let exit_code = if !journal.ok || !refs.ok {
         2
-    } else if !quarantine.ok || !index.ok {
+    } else if !quarantine.ok || !index.ok || !cursor.ok {
         1
     } else {
         0
     };
     Report {
-        checks: vec![journal, quarantine, index, refs],
+        checks: vec![journal, quarantine, index, refs, cursor],
         exit_code,
     }
 }
@@ -548,7 +586,8 @@ mod tests {
                 "journal-valid",
                 "quarantine-list",
                 "index-rebuildable",
-                "ref-integrity"
+                "ref-integrity",
+                "tap_cursor"
             ],
             "checks in spec order: {report:?}"
         );
@@ -563,7 +602,7 @@ mod tests {
             .get("checks")
             .and_then(|v| v.as_array())
             .expect("checks is an array");
-        assert_eq!(checks.len(), 4);
+        assert_eq!(checks.len(), 5);
         assert_eq!(
             checks[0].get("name").and_then(|v| v.as_str()),
             Some("journal-valid")
@@ -573,6 +612,34 @@ mod tests {
         assert_eq!(journal_bytes(dir.path()), before);
         assert!(!dir.path().join(".innen/index.redb").exists());
         assert!(!dir.path().join(".innen/fts").exists());
+    }
+
+    #[test]
+    fn a_cursor_that_cannot_name_its_inputs_is_reported_not_silent() {
+        // A pre-v2 count cursor left the inbox backlog unknowable: the tap
+        // either skipped real files or reported nothing to do. Both states
+        // must surface as a failing check with the repair named.
+        for (contents, expect) in [("875\n", "count cursor"), ("{not json", "unreadable")] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            fixture_two_nodes_one_edge(dir.path());
+            let path = crate::tap::watermark_path(dir.path(), "harvest-dir");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, contents.as_bytes()).unwrap();
+
+            let report = run(dir.path());
+            let check = report
+                .checks
+                .iter()
+                .find(|c| c.name == "tap_cursor")
+                .expect("tap_cursor check present");
+            assert!(!check.ok, "{contents:?} must fail the check: {check:?}");
+            assert!(
+                check.detail.contains(expect),
+                "detail must name the fault: {}",
+                check.detail
+            );
+            assert_eq!(report.exit_code, 1, "{contents:?} degrades to exit 1");
+        }
     }
 
     #[test]
