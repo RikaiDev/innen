@@ -670,7 +670,10 @@ fn scan_opencode_sessions(
 
     if let Ok(rows) = sources::sqlite(
         &db_path,
-        "SELECT json_object('id',id,'directory',directory,'modified',datetime(time_updated/1000,'unixepoch')) FROM session",
+        &format!(
+                            "SELECT json_object('id',id,'directory',directory,'modified',datetime(time_updated/1000,'unixepoch')) FROM {}",
+                            sources::session_table(&db_path)?
+                        ),
     ) {
         for row in rows {
             let dir = row.get("directory").and_then(Value::as_str).unwrap_or("");
