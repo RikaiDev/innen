@@ -77,27 +77,66 @@ def committed_lines(rel: str) -> int | None:
     return len(result.stdout.splitlines())
 
 
+def read_entries() -> dict[str, dict]:
+    """Existing baseline entries keyed by file, or {} when unreadable.
+
+    The debt list carries a promise as well as a measurement, and a promise is
+    written by a person, not by a measurement. Regenerating must therefore
+    re-measure `lines` while preserving `split_by` and `exempt` for every file
+    that is already listed. Rewriting the whole list replaced every recorded
+    cut with "TODO", so the one artefact that said how the debt gets paid was
+    destroyed by the act of keeping the list current.
+    """
+    if not BASELINE.is_file():
+        return {}
+    try:
+        baseline = json.loads(BASELINE.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return {
+        entry["file"]: entry
+        for entry in baseline.get("over_budget", [])
+        if isinstance(entry, dict) and "file" in entry
+    }
+
+
 def write_baseline(files: list[pathlib.Path]) -> int:
-    """Regenerate the baseline from committed content."""
+    """Re-measure the baseline from committed content, keeping recorded plans."""
+    existing = read_entries()
     entries = []
     for path in files:
         rel = str(path.relative_to(REPO))
         lines = committed_lines(rel)
         if lines is None:
             lines = len(path.read_text().splitlines())
-        if lines > 400:
-            entries.append({"file": rel, "lines": lines, "split_by": "TODO"})
+        if lines <= 400:
+            continue
+        previous = existing.get(rel, {})
+        entry = {"file": rel, "lines": lines}
+        for field in ("split_by", "exempt"):
+            if previous.get(field):
+                entry[field] = previous[field]
+        if "split_by" not in entry and "exempt" not in entry:
+            # New debt arrives unnamed. That is honest -- nobody has decided the
+            # cut yet -- and the gate refuses it until someone does.
+            entry["split_by"] = "TODO"
+        entries.append(entry)
     entries.sort(key=lambda entry: -entry["lines"])
     BASELINE.write_text(
         json.dumps(
             {
                 "comment": (
-                    "Files over the 400-line budget, measured from committed content. Debt "
-                    "to split by single responsibility, not an exemption: remove an entry "
-                    "when the file is split or drops under budget. The gate fails on a stale "
-                    "entry, an unlisted oversized file, and a malformed baseline. Regenerate "
-                    "with `python3 scripts/check-structure.py --write-baseline`, which measures "
-                    "HEAD so another session's uncommitted work cannot move this list."
+                    "Files over the 400-line budget, measured from committed content. Each "
+                    "entry states either `split_by`, the responsibility seams the file will be "
+                    "cut along, or `exempt`, why it is not debt. Exactly one of the two, never "
+                    "empty and never the placeholder TODO: a debt entry that does not say how it "
+                    "gets paid is not a plan, and the gate refuses it. These are not exemptions "
+                    "-- remove an entry when the file is split or drops under budget. The gate "
+                    "fails on a stale entry, an unlisted oversized file, a malformed baseline, "
+                    "and an entry with no plan. Regenerate with `python3 scripts/check-structure.py "
+                    "--write-baseline`, which measures HEAD so another session's uncommitted work "
+                    "cannot move this list, and preserves `split_by` and `exempt` for files "
+                    "already listed."
                 ),
                 "max_lines": 400,
                 "over_budget": entries,
@@ -123,8 +162,28 @@ def check_line_budget(files: list[pathlib.Path]) -> None:
         fail(f"{rel(BASELINE)}: malformed JSON ({error}); the gate cannot trust it")
         return
 
+    entries = baseline.get("over_budget", [])
     budget = baseline.get("max_lines", 400)
-    listed = {entry["file"] for entry in baseline.get("over_budget", [])}
+    listed = {entry["file"] for entry in entries}
+
+    # A debt entry is a promise: either the seams it will be cut along, or why
+    # it is not debt. "TODO" is what `--write-baseline` gives a file nobody has
+    # decided about yet, and accepting it would make an unnamed entry
+    # indistinguishable from a decided one -- so every entry in this list would
+    # read as planned while planning nothing.
+    for entry in entries:
+        name = entry.get("file", "<unnamed>")
+        plan = str(entry.get("split_by", "")).strip()
+        exempt = str(entry.get("exempt", "")).strip()
+        if plan and exempt:
+            fail(f"{name}: baseline entry has both split_by and exempt; state one")
+        elif not plan and not exempt:
+            fail(f"{name}: baseline entry names neither a cut nor an exemption")
+        elif plan == "TODO":
+            fail(
+                f"{name}: baseline entry is still TODO; record the seams it will be cut "
+                f"along in split_by, or why it is not debt in exempt"
+            )
 
     still_over: set[str] = set()
     for path in files:

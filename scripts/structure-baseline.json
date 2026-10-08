@@ -1,121 +1,121 @@
 {
-  "comment": "Files over the 400-line budget, measured from committed content. Debt to split by single responsibility, not an exemption: remove an entry when the file is split or drops under budget. The gate fails on a stale entry, an unlisted oversized file, and a malformed baseline. Regenerate with `python3 scripts/check-structure.py --write-baseline`, which measures HEAD so another session's uncommitted work cannot move this list.",
+  "comment": "Files over the 400-line budget, measured from committed content. Each entry states either `split_by`, the responsibility seams the file will be cut along, or `exempt`, why it is not debt. Exactly one of the two, never empty and never the placeholder TODO: a debt entry that does not say how it gets paid is not a plan, and the gate refuses it. These are not exemptions -- remove an entry when the file is split or drops under budget. The gate fails on a stale entry, an unlisted oversized file, a malformed baseline, and an entry with no plan. Regenerate with `python3 scripts/check-structure.py --write-baseline`, which measures HEAD so another session's uncommitted work cannot move this list, and preserves `split_by` and `exempt` for files already listed.",
   "max_lines": 400,
   "over_budget": [
     {
       "file": "crates/innen-core/src/graph.rs",
       "lines": 1476,
-      "split_by": "TODO"
+      "split_by": "vocabulary+adjacency validation / materialisation and project resolution / write-path request validation / inline tests"
     },
     {
       "file": "crates/innen-core/src/doctor.rs",
-      "lines": 1069,
-      "split_by": "TODO"
+      "lines": 1072,
+      "split_by": "one check per source of truth (journal, quarantine, index, ref-integrity, tap cursor) / path helpers / inline tests"
     },
     {
       "file": "crates/innen-core/src/task_entry.rs",
-      "lines": 1036,
-      "split_by": "TODO"
+      "lines": 1046,
+      "split_by": "query-term extraction / node identity and anchor text / admission and scoring gates / inline tests"
     },
     {
       "file": "crates/innen-core/src/middleware/history.rs",
       "lines": 929,
-      "split_by": "TODO"
+      "split_by": "request model and validation / ancestry and applicability engine / prepare() / inline tests"
     },
     {
       "file": "crates/innen-core/src/conversation/prune.rs",
       "lines": 848,
-      "split_by": "TODO"
+      "split_by": "tool-action extraction and empty-output detection / prune_page() / inline tests"
     },
     {
       "file": "crates/innen-core/src/config.rs",
       "lines": 807,
-      "split_by": "TODO"
+      "split_by": "layer parsing (project, machine, env) / merge and load / global config get+set / root resolution / inline tests"
     },
     {
       "file": "crates/innen-core/src/conversation/resume.rs",
       "lines": 798,
-      "split_by": "TODO"
+      "split_by": "one file per agent adapter (dash, codex, antigravity, opencode) / shared scan plumbing / candidate resolution and dedup"
     },
     {
       "file": "crates/innen-core/src/evidence_closure.rs",
       "lines": 783,
-      "split_by": "TODO"
+      "split_by": "contract validation / snapshot and cutoff / edge eligibility and closure / packet assembly"
     },
     {
       "file": "crates/innen-core/src/task_proposal.rs",
       "lines": 758,
-      "split_by": "TODO"
+      "split_by": "id context and draft binding / statement and proposal model / review and disposition"
     },
     {
       "file": "crates/innen-core/src/artifact.rs",
       "lines": 730,
-      "split_by": "TODO"
+      "exempt": "384 lines of production code; the overage is 346 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
       "file": "crates/innen-core/src/artifact/ledger.rs",
       "lines": 719,
-      "split_by": "TODO"
+      "split_by": "constants and data model / public Ledger operations / projection and event replay / filesystem primitives (lock, atomic write, hash)"
     },
     {
       "file": "crates/innen-core/src/index.rs",
       "lines": 678,
-      "split_by": "TODO"
+      "exempt": "341 lines of production code; the overage is 337 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
       "file": "crates/innen-core/src/conversation.rs",
       "lines": 642,
-      "split_by": "TODO"
+      "split_by": "public re-export facade / record and brief types / read and read_lines / page formatting / event bounding"
     },
     {
       "file": "crates/innen-core/src/trace/source.rs",
       "lines": 524,
-      "split_by": "TODO"
+      "split_by": "cache schema and passage types / file read path / native read path / cache persist"
     },
     {
       "file": "crates/innen-core/src/session_retention/tests.rs",
       "lines": 521,
-      "split_by": "TODO"
+      "exempt": "Pure test module: it contains no production code, so there is no responsibility to separate. Splitting tests to satisfy a line count changes no design and only makes the suite harder to navigate."
     },
     {
       "file": "crates/innen-core/src/session_retention.rs",
       "lines": 506,
-      "split_by": "TODO"
+      "split_by": "types and blocker constants / per-candidate assessment / sweep orchestration"
     },
     {
       "file": "crates/innen-core/src/query.rs",
       "lines": 498,
-      "split_by": "TODO"
+      "exempt": "398 lines of production code; the overage is 100 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
       "file": "crates/innen-core/src/credentials.rs",
-      "lines": 491,
-      "split_by": "TODO"
+      "lines": 489,
+      "exempt": "394 lines of production code; the overage is 95 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
       "file": "crates/innen-core/src/conversation/unfinished.rs",
       "lines": 481,
-      "split_by": "TODO"
+      "split_by": "time parsing / candidate collection and filtering / structural evidence inspection"
     },
     {
       "file": "crates/innen-core/src/conversation/grammar.rs",
       "lines": 474,
-      "split_by": "TODO"
+      "split_by": "decoder and rule application / token accounting / inline tests"
+    },
+    {
+      "file": "crates/innen-core/src/harvest.rs",
+      "lines": 468,
+      "split_by": "directory tap (collect + cursor) / ingest orchestration / report projection"
     },
     {
       "file": "crates/innen-core/src/conversation/projection.rs",
       "lines": 467,
-      "split_by": "TODO"
-    },
-    {
-      "file": "crates/innen-core/src/harvest.rs",
-      "lines": 465,
-      "split_by": "TODO"
+      "split_by": "context projection / index projection / dialogue projection / delivery-phase tests"
     },
     {
       "file": "crates/innen-core/src/context_selection.rs",
       "lines": 456,
-      "split_by": "TODO"
+      "exempt": "297 lines of production code; the overage is 159 lines of inline tests. We do not split test modules to hit a line number."
     }
   ]
 }
