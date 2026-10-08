@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod compact;
 pub mod deltas;
 pub mod grammar;
+pub mod opencode_db;
 pub mod pickup;
 mod prefixes;
 mod projection;

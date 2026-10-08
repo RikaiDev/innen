@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.11.0] - 2026-10-07
+
+### Fixed
+
+- The harvest tap tracks consumed files by name instead of by count, so
+  deleting an ingested file no longer shifts the window past unprocessed ones.
+  A pre-v2 count cursor re-lists the inbox and says so in `harvest --check` and
+  in a new `doctor` check, instead of reporting an empty backlog.
+- OpenCode v2 session storage (`session_v2` / `session_message`) is read
+  through the same schema decision as session discovery, so sessions written
+  after 2026-09-09 are no longer reported as missing.
+- `sk-` must start a token before the credential scanner calls it a key, so
+  kebab-case identifiers such as `task-resume-brief-structural-2026-09-06.md`
+  no longer read as secrets.
+- `wiki sync` skips an unreadable page and names it instead of aborting; the
+  skipped page keeps its node and its edges, and the command exits non-zero.
+- `query` and `trace` accept bare terms joined onto `--q`.
+
+### Changed
+
+- `harvest --check` reports `cursor`; `wiki sync` reports `pages_skipped` and
+  can exit 1 for a partial projection; `doctor` gained a `tap_cursor` check.
+- The harvest watermark file moved from a bare integer to
+  `innen.tap.watermark.v2`. An old file is rebuilt on the next `ingest`.
+
 ## [0.8.0] - 2026-09-24
 
 ### Added

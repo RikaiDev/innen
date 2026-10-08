@@ -3,12 +3,15 @@
 //! Pinned inbox: `<root>/00-inbox/harvest` (flat `*.md`, sorted).
 //! Mapping: `id = "source:<sha8(relative_path)>"` (sha8 = first 8 hex of
 //! `sha256_hex(relative_path)`); provenance `{path, bytes, sha256,
-//! observed_utc}`; `idempotency_key` = full content sha256 hex; watermark =
-//! files consumed count via [`crate::tap`] (`harvest-dir`).
+//! observed_utc}`; `idempotency_key` = full content sha256 hex.
 //!
-//! Known limitation (accepted tradeoff): the watermark is count-based, not
-//! content-addressed, so rename/delete shifts counts and misaligns the
-//! consumed prefix. A content-addressed cursor is future work.
+//! The cursor via [`crate::tap`] (`harvest-dir`) records consumed file names,
+//! not a count. It used to record a count, which was accepted as a known
+//! limitation — "rename/delete shifts counts and misaligns the consumed
+//! prefix" — and that misalignment is exactly what silently stranded a whole
+//! inbox: once the count passed the listing size, `check` reported nothing new
+//! and `ingest` appended nothing, with exit 0. A deletion is normal here,
+//! because each pending file asks to be deleted once consumed.
 //!
 //! Credential scan runs in the caller ([`check`]/[`ingest::run`]) BEFORE any
 //! append: a hit skips the file + reports it, never appends. [`TapError`]
@@ -46,6 +49,8 @@
 //!   needs a report-shape decision first.
 
 use std::path::{Path, PathBuf};
+
+pub mod ingest;
 
 use crate::credentials::credential_preview;
 use crate::tap::{Event, Tap, TapError};
@@ -240,65 +245,6 @@ pub fn check(root: &Path) -> HarvestReport {
             skipped,
             cursor: state.label().to_string(),
         }],
-    }
-}
-
-pub mod ingest {
-    use super::*;
-
-    /// Append one `node.upsert` per clean file, skip credential hits
-    /// (reported, never appended), then record every consumed name —
-    /// added and skipped alike, so a credential hit is not retried forever
-    /// and a clean file is never skipped by a shifted cursor.
-    pub fn run(root: &Path) -> IngestReport {
-        let (pending, state) = unconsumed(root);
-        let total = pending.len();
-        if total == 0 {
-            return IngestReport {
-                added: 0,
-                skipped: Vec::new(),
-            };
-        }
-        let Ok(journal) = crate::journal::Journal::open(root) else {
-            return IngestReport {
-                added: 0,
-                skipped: Vec::new(),
-            };
-        };
-        let inbox = root.join("00-inbox/harvest");
-        let mut added: u64 = 0;
-        let mut skipped = Vec::new();
-        let mut processed: Vec<String> = Vec::with_capacity(total);
-        for rel in &pending {
-            let bytes = match std::fs::read(inbox.join(rel)) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            let hits = crate::credentials::scan_credentials(&text);
-            if let Some(pattern) = hits.first() {
-                skipped.push(Skipped {
-                    path: rel.clone(),
-                    pattern: pattern.to_string(),
-                    preview: credential_preview(&text, pattern),
-                });
-                processed.push(rel.clone());
-                continue;
-            }
-            let event = event_for_file(rel, &bytes, &text);
-            match journal.append(&event.op, &event.payload) {
-                Ok(_) => {
-                    added += 1;
-                    processed.push(rel.clone());
-                }
-                Err(_) => break,
-            }
-        }
-        if !processed.is_empty() {
-            let cursor = advance(&state, &processed);
-            let _ = crate::tap::store_cursor(root, TAP_ID, &cursor);
-        }
-        IngestReport { added, skipped }
     }
 }
 
