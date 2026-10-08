@@ -133,6 +133,8 @@ fn err(path: &Path, e: impl std::fmt::Display) -> ReadError {
 #[cfg(test)]
 mod opencode_schema_tests {
     use super::*;
+    use crate::conversation::sources::locate;
+    use std::fs;
 
     fn create(db: &Path, sql: &str) {
         let status = std::process::Command::new("sqlite3")
