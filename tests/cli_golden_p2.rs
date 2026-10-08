@@ -105,7 +105,7 @@ fn guide_contains_query() {
     // Pinned guide text — byte-exact means byte-exact. Hardcoded here (not
     // `guide_text()`) so drift fails the test. Keep in sync with
     // `innen_core::parity::guide_text`.
-    const GUIDE_TEXT: &str = "innen is a local-first knowledge graph over an append-only journal.\nWhat remains? project [id] returns compact recorded tasks across projects or one project.\nNeed evidence? project <id> --view evidence; legacy project page: --view full.\nFind prior knowledge: query --q <term>. Continue a conversation: resume <session-id>.\nTrace original sources: wiki sync after wiki edits, then trace --q <clue>; use returned expand_argv for exact records.\nTask status is recorded evidence; unknown status and heuristic conversation candidates are not confirmed unfinished work.";
+    const GUIDE_TEXT: &str = "innen is a local-first knowledge graph over an append-only journal.\n\nBy intent:\n  find something recorded before   query <any words>\n  continue an unfinished session   unfinished, then pickup\n  read one known conversation      conversation <session-id>\n  see what a project still owes    project [id]\n  trace a clue to its source       trace <any words>\n  check whether state is sound     doctor\n\nquery returns a compact task-context brief; project <id> --view evidence expands it, and --view full is the legacy page. trace needs wiki sync after wiki edits and returns expand_argv for exact records.\n\nTwo outputs are not failures: harvest --check reports cursor=legacy_count_rebuilt when it re-lists an inbox whose cursor it cannot trust, and wiki sync exits 1 when some pages were skipped and left unchanged.\n\nTask status is recorded evidence; unknown status and heuristic conversation candidates are not confirmed unfinished work.";
     // Exact first line + contains query (robustness probes on the decoded text).
     let first_line = GUIDE_TEXT.lines().next().expect("guide has first line");
     assert_eq!(
@@ -116,12 +116,55 @@ fn guide_contains_query() {
         GUIDE_TEXT.contains("query"),
         "guide text must contain query"
     );
+    // The guide must route by intent, not only list verbs: an agent that has
+    // to guess which command answers its question is the failure this text
+    // exists to remove.
+    for intent in [
+        "find something recorded before",
+        "continue an unfinished session",
+        "read one known conversation",
+        "see what a project still owes",
+        "trace a clue to its source",
+    ] {
+        assert!(
+            GUIDE_TEXT.contains(intent),
+            "guide must route intent {intent:?}"
+        );
+    }
     // Full stdout EQUALS pinned expected JSON (single line + trailing newline).
+    // The root line is resolved per invocation, so it is asserted separately
+    // rather than pinned to a tempdir path.
     let want = serde_json::to_string(&WantGuide {
-        text: GUIDE_TEXT.to_string(),
+        text: format!("{GUIDE_TEXT}\nactive KB root: {root}"),
     })
     .expect("want serializes");
     assert_eq!(out, format!("{want}\n"), "guide stdout must be byte-exact");
+}
+
+#[test]
+fn guide_names_an_unresolvable_root_instead_of_staying_silent() {
+    // The guide is the operational source of truth, so it has to say which
+    // knowledge base it is talking about. An unresolved root is reported, not
+    // fatal: the navigation text is still worth reading.
+    let assert = Command::cargo_bin("innen")
+        .expect("cargo bin innen")
+        .env_remove("INNEN_ROOT")
+        .args([
+            "--root",
+            "/nonexistent-kb-root-for-test",
+            "--format",
+            "json",
+            "guide",
+        ])
+        .assert()
+        .code(0);
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(out.trim_end()).expect("stdout parses");
+    let text = value["text"].as_str().expect("text is a string");
+    assert!(
+        text.contains("active KB root:"),
+        "guide must report a root: {text}"
+    );
 }
 
 // ---------------------------------------------------------------------------

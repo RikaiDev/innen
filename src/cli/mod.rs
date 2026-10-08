@@ -92,7 +92,15 @@ pub(crate) fn run() -> i32 {
             }
         },
         Commands::Completions { shell } => navigation::cmd_completions(shell),
-        Commands::Guide => navigation::cmd_guide(&cli.format),
+        Commands::Guide => {
+            // The guide is the operational source of truth, so it names the
+            // root it resolved. An unresolvable root is reported, not fatal:
+            // the navigation text is still worth reading.
+            match resolve_root(cli.root.clone()) {
+                Ok(root) => navigation::cmd_guide(&cli.format, Some(&root), None),
+                Err(e) => navigation::cmd_guide(&cli.format, None, Some(&e.to_string())),
+            }
+        }
         Commands::Status => {
             let root = resolve_or_exit!(cli.root.clone());
             navigation::cmd_status(&root, &cli.format)

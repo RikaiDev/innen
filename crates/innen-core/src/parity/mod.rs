@@ -9,7 +9,7 @@ mod project_render;
 mod status;
 mod timeline;
 
-pub use guide::guide_text;
+pub use guide::{guide_text, root_line};
 pub use profile::profile_render;
 pub use project_render::project_render;
 pub use status::{status, StatusReport};

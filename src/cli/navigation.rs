@@ -170,17 +170,18 @@ pub(super) fn cmd_timeline(root: &std::path::Path, format: &str, args: &Timeline
     0
 }
 
-pub(super) fn cmd_guide(format: &str) -> i32 {
-    let text = innen_core::parity::guide_text();
+pub(super) fn cmd_guide(format: &str, root: Option<&std::path::Path>, error: Option<&str>) -> i32 {
+    let text = format!(
+        "{}{}",
+        innen_core::parity::guide_text(),
+        innen_core::parity::root_line(root, error)
+    );
     if is_human(format) {
         println!("{text}");
     } else {
         println!(
             "{}",
-            serde_json::to_string(&GuideJson {
-                text: text.to_string(),
-            })
-            .expect("guide output serializes")
+            serde_json::to_string(&GuideJson { text }).expect("guide output serializes")
         );
     }
     0
