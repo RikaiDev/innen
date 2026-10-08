@@ -8,13 +8,13 @@
       "split_by": "TODO"
     },
     {
-      "file": "crates/innen-core/src/task_entry.rs",
-      "lines": 1036,
+      "file": "crates/innen-core/src/doctor.rs",
+      "lines": 1069,
       "split_by": "TODO"
     },
     {
-      "file": "crates/innen-core/src/doctor.rs",
-      "lines": 1002,
+      "file": "crates/innen-core/src/task_entry.rs",
+      "lines": 1036,
       "split_by": "TODO"
     },
     {
@@ -34,7 +34,7 @@
     },
     {
       "file": "crates/innen-core/src/conversation/resume.rs",
-      "lines": 795,
+      "lines": 798,
       "split_by": "TODO"
     },
     {
@@ -68,6 +68,11 @@
       "split_by": "TODO"
     },
     {
+      "file": "crates/innen-core/src/conversation/sources.rs",
+      "lines": 531,
+      "split_by": "TODO"
+    },
+    {
       "file": "crates/innen-core/src/trace/source.rs",
       "lines": 524,
       "split_by": "TODO"
@@ -78,6 +83,11 @@
       "split_by": "TODO"
     },
     {
+      "file": "crates/innen-core/src/harvest.rs",
+      "lines": 519,
+      "split_by": "TODO"
+    },
+    {
       "file": "crates/innen-core/src/session_retention.rs",
       "lines": 506,
       "split_by": "TODO"
@@ -85,6 +95,11 @@
     {
       "file": "crates/innen-core/src/query.rs",
       "lines": 498,
+      "split_by": "TODO"
+    },
+    {
+      "file": "crates/innen-core/src/credentials.rs",
+      "lines": 491,
       "split_by": "TODO"
     },
     {
@@ -105,11 +120,6 @@
     {
       "file": "crates/innen-core/src/context_selection.rs",
       "lines": 456,
-      "split_by": "TODO"
-    },
-    {
-      "file": "crates/innen-core/src/credentials.rs",
-      "lines": 439,
       "split_by": "TODO"
     }
   ]
