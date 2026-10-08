@@ -618,6 +618,16 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
             // label/body, which an id never appears in.
             let exact_id_match = !q_lower.is_empty() && id_lower == q_lower;
 
+            // An exact id match is a seed in its own right. It must not depend
+            // on the literal substring test below, which skips the id branch
+            // whenever the label looks path-like (`workspace:`, or any `/`):
+            // a node labelled "session/repo" would otherwise be unfindable by
+            // its own id, and the all-terms gate would never even be consulted.
+            if exact_id_match {
+                literal_matched = true;
+                exact_match = true;
+            }
+
             // Check exact query match (min 2 chars)
             if q_lower.chars().count() >= 2
                 && (label.contains(&q_lower) || (!path_like_label && id_lower.contains(&q_lower)))

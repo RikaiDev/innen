@@ -286,3 +286,67 @@ fn partial_id_still_obeys_the_all_terms_gate() {
         "a node matching only one term must stay out: {ids:?}"
     );
 }
+
+#[test]
+fn exact_node_id_is_retrievable_even_when_the_label_looks_path_like() {
+    // Regression: a label containing `/` (or `workspace:`) is treated as
+    // path-like, and the literal substring test then skips the id branch
+    // entirely. Because the id match only exempted the all-terms gate instead
+    // of seeding the candidate itself, such a node was unfindable by its own
+    // id. The first version of this test used a label without a slash and so
+    // passed while the defect was live.
+    let kb = tempfile::tempdir().expect("temp kb");
+    let journal = Journal::open(kb.path()).expect("open journal");
+    node(
+        &journal,
+        "harvest-gap:stop-hook-snapshot-volume",
+        "harvest-gap",
+        "Antigravity Stop 每輪觸發：單一 session 兩天產生 93 筆快照，session/repo 組合 11 組",
+        "快照量是 session 時長的函數，不是工作量的函數。",
+    );
+    node(
+        &journal,
+        "harvest-gap:workspace-scoped-thing",
+        "harvest-gap",
+        "workspace: scope is a label prefix here",
+        "unrelated body",
+    );
+    drop(journal);
+
+    let out = task_entry(
+        kb.path(),
+        &TaskEntryOptions {
+            q: "harvest-gap:stop-hook-snapshot-volume".to_string(),
+            ..TaskEntryOptions::default()
+        },
+    )
+    .expect("task entry succeeds");
+
+    let fields: Vec<&str> = out["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let col = |name: &str| fields.iter().position(|f| *f == name).expect("field column");
+    let (id_c, score_c, why_c) = (col("id"), col("score"), col("why"));
+    let rows = out["rows"].as_array().expect("rows array");
+    let first = rows[0].as_array().expect("row array");
+    assert_eq!(
+        first[id_c].as_str(),
+        Some("harvest-gap:stop-hook-snapshot-volume"),
+        "an exact id must rank first regardless of label shape: {out}"
+    );
+    assert_eq!(first[why_c].as_str(), Some("literal_match"), "why: {out}");
+    assert_eq!(first[score_c].as_f64(), Some(1.0), "score: {out}");
+    // The path-like guard must still keep unrelated nodes out of a partial match.
+    let ids: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| r.as_array())
+        .filter_map(|r| r[id_c].as_str())
+        .collect();
+    assert!(
+        !ids.contains(&"harvest-gap:workspace-scoped-thing"),
+        "an unrelated path-like node must not join an exact-id query: {ids:?}"
+    );
+}
