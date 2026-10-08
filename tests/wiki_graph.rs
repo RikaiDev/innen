@@ -68,8 +68,7 @@ fn one_unreadable_page_does_not_hold_the_rest_of_the_graph_out() {
     write_page(root.path(), "ai/other.md", "[]", "[]");
     write_page(root.path(), "ai/bad.md", "[]", "[]");
     let bad = root.path().join("02-wiki/ai/bad.md");
-    let text =
-        std::fs::read_to_string(&bad).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
+    let text = std::fs::read_to_string(&bad).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
     std::fs::write(&bad, text).unwrap();
 
     let report = wiki_graph::sync(root.path()).expect("sync completes");
@@ -248,7 +247,10 @@ fn malformed_yaml_writes_nothing() {
     assert_eq!(report.pages_skipped, 1);
     assert_eq!(report.pages_scanned, 0);
     assert!(
-        report.warnings.iter().any(|w| w.contains("invalid wiki frontmatter")),
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("invalid wiki frontmatter")),
         "the fault must be reported verbatim: {:?}",
         report.warnings
     );

@@ -119,8 +119,7 @@ fn grep_style_positional_terms_resolve_like_the_q_flag() {
         "--root", &root, "--format", "json", "query", "--view", "hits", "--q", &joined,
     ]);
     let via_mixed = cli_stdout_trimmed(&[
-        "--root", &root, "--format", "json", "query", "--view", "hits", "--q", words[0],
-        words[1],
+        "--root", &root, "--format", "json", "query", "--view", "hits", "--q", words[0], words[1],
     ]);
     assert_eq!(via_joined_flag.0, 0);
     assert_eq!(via_mixed, via_joined_flag);

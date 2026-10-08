@@ -358,7 +358,10 @@ mod tests {
             .known()
             .expect("cursor names its inputs")
             .clone();
-        assert!(consumed.contains("bad.md"), "skipped files are consumed too");
+        assert!(
+            consumed.contains("bad.md"),
+            "skipped files are consumed too"
+        );
         assert!(consumed.contains("ok.md"));
     }
 

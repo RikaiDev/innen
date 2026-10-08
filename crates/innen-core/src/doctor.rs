@@ -473,7 +473,10 @@ fn check_tap_cursor(root: &Path) -> Check {
             return Check {
                 name: "tap_cursor".to_string(),
                 ok: true,
-                detail: format!("current; {} file(s) recorded consumed", cursor.consumed.len()),
+                detail: format!(
+                    "current; {} file(s) recorded consumed",
+                    cursor.consumed.len()
+                ),
             };
         }
         crate::tap::CursorState::LegacyCount(count) => format!(

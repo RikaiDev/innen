@@ -51,7 +51,10 @@ pub struct Cursor {
 impl Cursor {
     /// The listed inputs this cursor has not consumed, in listing order.
     pub fn unconsumed<'a>(&self, listed: &'a [String]) -> Vec<&'a String> {
-        listed.iter().filter(|name| !self.consumed.contains(*name)).collect()
+        listed
+            .iter()
+            .filter(|name| !self.consumed.contains(*name))
+            .collect()
     }
 }
 
@@ -85,7 +88,10 @@ impl CursorState {
 
     /// True when the cursor had to be discarded and the inbox re-scanned.
     pub fn rebuilt(&self) -> bool {
-        matches!(self, CursorState::LegacyCount(_) | CursorState::Unreadable(_))
+        matches!(
+            self,
+            CursorState::LegacyCount(_) | CursorState::Unreadable(_)
+        )
     }
 
     /// Stable, human-readable state name for reports.
@@ -135,9 +141,9 @@ pub fn load_cursor(root: &Path, tap_id: &str) -> CursorState {
         return CursorState::LegacyCount(count);
     }
     match serde_json::from_str::<StoredCursor>(trimmed) {
-        Ok(stored) if stored.schema == WATERMARK_SCHEMA => {
-            CursorState::Current(Cursor { consumed: stored.consumed })
-        }
+        Ok(stored) if stored.schema == WATERMARK_SCHEMA => CursorState::Current(Cursor {
+            consumed: stored.consumed,
+        }),
         Ok(stored) => CursorState::Unreadable(format!(
             "unknown cursor schema {:?} in {}",
             stored.schema,
@@ -167,7 +173,8 @@ pub fn store_cursor(root: &Path, tap_id: &str, cursor: &Cursor) -> Result<(), Ta
             .map_err(|e| TapError::Parse(format!("serialize cursor: {e}")))?,
     )
     .map_err(|e| TapError::Io(format!("write {}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, &path).map_err(|e| TapError::Io(format!("rename {}: {e}", path.display())))
+    std::fs::rename(&tmp, &path)
+        .map_err(|e| TapError::Io(format!("rename {}: {e}", path.display())))
 }
 
 #[cfg(test)]
@@ -208,7 +215,9 @@ mod tests {
     fn cursor_round_trips_and_shrinks_when_files_are_deleted() {
         let dir = tempfile::tempdir().unwrap();
         let mut cursor = Cursor::default();
-        cursor.consumed.extend(["a.md".to_string(), "b.md".to_string()]);
+        cursor
+            .consumed
+            .extend(["a.md".to_string(), "b.md".to_string()]);
         store_cursor(dir.path(), "t", &cursor).unwrap();
         assert_eq!(
             load_cursor(dir.path(), "t"),

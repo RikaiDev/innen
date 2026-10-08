@@ -169,9 +169,7 @@ fn has_openai_key(bytes: &[u8]) -> bool {
         return false;
     }
     for i in 0..=(bytes.len() - PREFIX.len()) {
-        if &bytes[i..i + PREFIX.len()] == PREFIX
-            && starts_token(bytes, i)
-        {
+        if &bytes[i..i + PREFIX.len()] == PREFIX && starts_token(bytes, i) {
             let mut n = 0;
             for &b in &bytes[i + PREFIX.len()..] {
                 if is_openai_tail(b) {
@@ -369,9 +367,7 @@ fn find_openai_offset(bytes: &[u8]) -> Option<usize> {
         return None;
     }
     for i in 0..=(bytes.len() - PREFIX.len()) {
-        if &bytes[i..i + PREFIX.len()] == PREFIX
-            && starts_token(bytes, i)
-        {
+        if &bytes[i..i + PREFIX.len()] == PREFIX && starts_token(bytes, i) {
             let mut n = 0;
             for &b in &bytes[i + PREFIX.len()..] {
                 if matches!(b, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-') {
@@ -450,7 +446,9 @@ mod tests {
     #[test]
     fn a_hyphenated_identifier_ending_in_ant_is_not_an_anthropic_key() {
         assert!(scan_credentials("docs/task-ant-pattern-notes-2026.md").is_empty());
-        assert!(scan_credentials("sk-ant-abcdefghijklmnopqrstuvwxyz012345").contains(&"anthropic-key"));
+        assert!(
+            scan_credentials("sk-ant-abcdefghijklmnopqrstuvwxyz012345").contains(&"anthropic-key")
+        );
     }
 
     #[test]

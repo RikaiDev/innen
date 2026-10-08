@@ -108,13 +108,7 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
                             .map_err(|e| e.to_string())
                     })
                     .transpose()?;
-                innen_core::task_proposal::evaluate(
-                    &raw,
-                    &contract,
-                    &q,
-                    &proposal,
-                    review.as_ref(),
-                )
+                innen_core::task_proposal::evaluate(&raw, &contract, &q, &proposal, review.as_ref())
             } else {
                 innen_core::evidence_closure::query(root, &contract, &q)
             }
