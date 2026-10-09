@@ -3,39 +3,9 @@
   "max_lines": 400,
   "over_budget": [
     {
-      "file": "crates/innen-core/src/graph.rs",
-      "lines": 1476,
-      "split_by": "vocabulary+adjacency validation / materialisation and project resolution / write-path request validation / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/doctor.rs",
-      "lines": 1072,
-      "split_by": "one check per source of truth (journal, quarantine, index, ref-integrity, tap cursor) / path helpers / inline tests"
-    },
-    {
       "file": "crates/innen-core/src/task_entry.rs",
       "lines": 1046,
       "split_by": "query-term extraction / node identity and anchor text / admission and scoring gates / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/middleware/history.rs",
-      "lines": 929,
-      "split_by": "request model and validation / ancestry and applicability engine / prepare() / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/conversation/prune.rs",
-      "lines": 848,
-      "split_by": "tool-action extraction and empty-output detection / prune_page() / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/config.rs",
-      "lines": 807,
-      "split_by": "layer parsing (project, machine, env) / merge and load / global config get+set / root resolution / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/conversation/resume.rs",
-      "lines": 798,
-      "split_by": "one file per agent adapter (dash, codex, antigravity, opencode) / shared scan plumbing / candidate resolution and dedup"
     },
     {
       "file": "crates/innen-core/src/evidence_closure.rs",
@@ -53,19 +23,19 @@
       "exempt": "384 lines of production code; the overage is 346 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
-      "file": "crates/innen-core/src/artifact/ledger.rs",
-      "lines": 719,
-      "split_by": "constants and data model / public Ledger operations / projection and event replay / filesystem primitives (lock, atomic write, hash)"
-    },
-    {
       "file": "crates/innen-core/src/index.rs",
       "lines": 678,
       "exempt": "341 lines of production code; the overage is 337 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
-      "file": "crates/innen-core/src/conversation.rs",
-      "lines": 642,
-      "split_by": "public re-export facade / record and brief types / read and read_lines / page formatting / event bounding"
+      "file": "crates/innen-core/src/graph/tests.rs",
+      "lines": 575,
+      "exempt": "Inline test module moved out of graph.rs during the single-responsibility split. It holds no production code, so there is no responsibility to separate; splitting it further would only make the suite harder to navigate."
+    },
+    {
+      "file": "crates/innen-core/src/doctor/tests.rs",
+      "lines": 551,
+      "exempt": "Inline test module moved out of doctor.rs during the single-responsibility split. It holds no production code, so there is no responsibility to separate; splitting it further would only make the suite harder to navigate."
     },
     {
       "file": "crates/innen-core/src/trace/source.rs",
