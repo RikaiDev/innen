@@ -328,7 +328,12 @@ fn exact_node_id_is_retrievable_even_when_the_label_looks_path_like() {
         .iter()
         .filter_map(|v| v.as_str())
         .collect();
-    let col = |name: &str| fields.iter().position(|f| *f == name).expect("field column");
+    let col = |name: &str| {
+        fields
+            .iter()
+            .position(|f| *f == name)
+            .expect("field column")
+    };
     let (id_c, score_c, why_c) = (col("id"), col("score"), col("why"));
     let rows = out["rows"].as_array().expect("rows array");
     let first = rows[0].as_array().expect("row array");
