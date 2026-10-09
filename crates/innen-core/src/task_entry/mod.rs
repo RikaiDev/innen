@@ -13,7 +13,7 @@ pub use entry::task_entry;
 pub use node_identity::node_searchable_text;
 pub use query_terms::{extract_query_terms, has_asset_edit_intent};
 pub use render::render;
-pub use types::{CandidateItem, TaskEntryOptions};
+pub use types::TaskEntryOptions;
 
 #[cfg(test)]
 mod tests;

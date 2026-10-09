@@ -47,23 +47,32 @@ by using the tool. Follow-on from v0.11.0.
 - **Line numbers are not cut boundaries.** `grep -nE '^(pub )?(fn|struct|enum)'`
   cannot see `#[derive]`, doc comments or brace pairing. This broke `config.rs`
   seven times and produced a wrong seam map handed to an agent.
+- **A classification is a claim that needs checking, not an inference.** The same
+  mistake, in nine forms, cost this run most of its wall clock: grouping
+  `version` and `PassageScan` as "reached by `trace/tests.rs`" without checking
+  each; writing a `split_by` for `session_retention.rs` from a grep outline that
+  described two responsibilities already living in `policy.rs` and `sweep.rs`;
+  and, writing the `excerpt` regression test, accepting two versions that passed
+  against broken code. Each was caught by something other than the check that
+  produced it — CI, a compiler, or a standalone probe.
+- **An empty result from a command that did not execute is not a pass.** The
+  singleflight wrapper refused twice with exit 75 and a one-line diagnostic while
+  the machine was below its storage floor; `grep` over that output is empty.
+  That empty grep was read as "clippy is clean" and a tag was moved onto a commit
+  CI then rejected.
 
 ## Open problems
 
-See the table at the end of `checks.md`. The load-bearing ones:
+All three code findings from v0.11.2 are fixed in v0.11.3. One remains, and it is
+not innen's to close:
 
-1. `trace::excerpt` computes its match offset on the lowercased string and applies
-   it to the original. Reported in the v0.11.2 notes, not fixed — fixing it
-   changes output, and that release promised no behaviour change.
-2. `session_retention/policy.rs` has a 21-line duplicated early return; the second
-   copy is unreachable.
-3. `task_entry::CandidateItem` is exported and never constructed.
-4. `fansee/the-mirror` has 455 uncommitted files, last commit 2026-10-06. Not
-   innen's to discard; needs its owner.
+`fansee/the-mirror` has 455 uncommitted files, last commit 2026-10-06, idle two
+days. Not innen's data to discard; needs its owner.
 
 ## Next step
 
-Fix (1) as its own change with a test that fails on `İstanbul`, since it is the
-only one with a user-visible wrong answer. (2) and (3) are deletions and can go in
-the same change. Then close out the three known issues in the release notes rather
-than letting them accumulate as a second debt list.
+None outstanding in innen. The structure gate is green with no unpaid entries and
+the release notes carry no open defects.
+
+If more work arrives, the load-bearing lesson from this run is in the two
+`Conversation with the agent` entries below, not in the code.

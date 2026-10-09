@@ -12,6 +12,9 @@ use crate::conversation::{self, Source};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod excerpt_tests;
+
 // Reached by `trace/tests.rs` only, so it lives exactly as long as that module.
 #[cfg(test)]
 pub(in crate::trace) use self::read_file::file_passages;
@@ -158,14 +161,42 @@ pub(in crate::trace) fn source(
     Ok((cached, key, false, count))
 }
 
-pub(in crate::trace) fn excerpt(text: &str, query: &[String]) -> String {
-    let lower = text.to_lowercase();
-    let at = query
+/// Byte offset of the earliest case-insensitive match, in `text`'s own bytes.
+///
+/// Never built a lowercased copy to search. Lowercasing is not byte-length
+/// preserving -- `İ` is two bytes and lowercases to three -- so an offset found
+/// in `text.to_lowercase()` belongs to a different string and drifts by one byte
+/// per such character before the match. Past the excerpt's 120-byte lookback the
+/// window opens *after* the match, so the excerpt comes back without the term
+/// the caller searched for.
+fn first_match_byte(text: &str, query: &[String]) -> usize {
+    let starts: Vec<usize> = text.char_indices().map(|(at, _)| at).collect();
+    let folded: Vec<Vec<char>> = query
         .iter()
-        .filter_map(|q| lower.find(q))
-        .min()
-        .unwrap_or(0)
-        .min(text.len());
+        .map(|q| q.to_lowercase().chars().collect())
+        .collect();
+    let mut best: Option<usize> = None;
+    for term in folded.iter().filter(|t| !t.is_empty()) {
+        for &start in &starts {
+            let matched = text[start..]
+                .chars()
+                .flat_map(char::to_lowercase)
+                .take(term.len())
+                .eq(term.iter().copied());
+            if matched {
+                best = Some(match best {
+                    Some(current) => current.min(start),
+                    None => start,
+                });
+                break;
+            }
+        }
+    }
+    best.unwrap_or(0)
+}
+
+pub(in crate::trace) fn excerpt(text: &str, query: &[String]) -> String {
+    let at = first_match_byte(text, query);
     let mut start = at.saturating_sub(120);
     while start > 0 && !text.is_char_boundary(start) {
         start -= 1;

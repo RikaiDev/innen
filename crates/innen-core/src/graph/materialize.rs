@@ -146,7 +146,7 @@ fn is_canonical_ts(s: &str) -> bool {
 /// [`is_canonical_ts`] enforces that shape during replay; offset (`+08:00`)
 /// or fractional timestamps are skipped rather than mis-ordered.
 ///
-/// `typ.parse().unwrap()` is infallible by construction: [`EdgeType`] (like
+/// `typ.parse().unwrap_or_else(|never| match never {})` is infallible by construction: [`EdgeType`] (like
 /// [`NodeType`](super::adjacency::NodeType)) maps unknown names to `Custom`
 /// instead of returning `Err`.
 pub fn materialize(
@@ -215,7 +215,7 @@ pub fn materialize(
                 ) else {
                     continue;
                 };
-                let edge: EdgeType = typ.parse().unwrap();
+                let edge: EdgeType = typ.parse().unwrap_or_else(|never| match never {});
                 let weight = payload
                     .get("weight")
                     .and_then(|v| v.as_f64())
@@ -269,7 +269,7 @@ pub fn materialize(
                 ) else {
                     continue;
                 };
-                let edge: EdgeType = typ.parse().unwrap();
+                let edge: EdgeType = typ.parse().unwrap_or_else(|never| match never {});
                 for row in edges.iter_mut() {
                     if row.from == from && row.to == to && row.edge == edge {
                         row.retracted = true;

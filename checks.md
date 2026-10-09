@@ -26,7 +26,17 @@ context). A separate self-review round was run instead — see "Self-review" bel
 | `trace::excerpt` offset defect fixed or reported | reported | `docs/release-v0.11.2.md` §Fixed: offset computed on `text.to_lowercase()`, applied to `text`; `İstanbul` 9 bytes → 10, so offset 2 is `s` not `t`. **Not fixed** — see Open problems | — |
 | Tests pass | pass | 403 passed / 0 failed, 30 `test result: ok` lines, exit 0, after `cargo fmt --all` converged | — |
 | Clippy strict + fmt clean | pass | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → no output; `cargo fmt --all -- --check` → 0 `Diff in` | — |
-| Release published | pass | `https://github.com/RikaiDev/innen/releases/tag/v0.11.2` | — |
+| Release published | pass | `https://github.com/RikaiDev/innen/releases/tag/v0.11.2`; CI security + test/ubuntu + test/macos all success on `ae87bcf` | — |
+
+## v0.11.3 — the three findings from v0.11.2, fixed
+
+| requirement | pass/fail | evidence | fix |
+|---|---|---|---|
+| `trace::excerpt` returns a window containing the search term | pass | `trace/source/excerpt_tests.rs`; the regression test FAILS on the pre-fix code (`head "…zzzzzz…"`, term absent) and passes after | replaced the lowercased-copy search with a case-insensitive comparison over `text` itself, so no offset can drift |
+| The dead 21-line early return is gone | pass | `session_retention/policy.rs` lines 18-38 and 39-59 compared byte-identical before deletion; the first always returns, so the second was unreachable | deleted |
+| `task_entry::CandidateItem` removed | pass | whole-workspace grep found exactly two occurrences: the definition and the re-export; never constructed | deleted, re-export dropped |
+| No panic path left in graph materialization | pass | `typ.parse().unwrap_or_else(\|never\| match never {})` × 3; `EdgeType::Err = Infallible` so behaviour is identical | — |
+| Tests pass | pass | 407 passed / 0 failed (403 before + 4 new excerpt tests) | — |
 
 ## Self-review round
 
@@ -44,12 +54,32 @@ reports did not surface:
    responsibilities that already lived in `policy.rs` and `sweep.rs` — the plan
    was written from a `grep` outline without reading the file.
 
+A second round, on the v0.11.3 changes, found two more:
+
+5. The first two versions of the `excerpt` regression test passed against the
+   broken code. Confirmed the third version fails on the unfixed implementation
+   with a standalone `rustc` probe before committing it.
+6. Deleting `CandidateItem` left its `serde` imports unused; clippy caught it.
+
+### Verification that was invalid, and what it cost
+
+Two local `cargo clippy` runs returned no error output and were read as passing.
+Both had been refused by the singleflight wrapper with exit 75 and a one-line
+diagnostic, because the machine was below its VM storage floor. `grep` over that
+one line is empty. A tag was moved onto the resulting commit; CI rejected it with
+two real clippy errors — `trace::source::version` and
+`clippy::type_complexity` in `task_entry/traversal.rs` — neither of which any
+local run had reported.
+
+Recording this because the failure is not exotic: an empty result from a command
+that did not execute reads exactly like a passing result, and the exit code of a
+pipeline is the exit code of its last stage.
+
 ## Open problems (not done)
 
-| problem | why not fixed now | where recorded |
+All three code findings from v0.11.2 are fixed in v0.11.3. One remains, and it is
+not innen's to close.
+
+| problem | status | evidence |
 |---|---|---|
-| `trace::excerpt` byte-offset mismatch | Pre-existing, unrelated to the split. Fixing it changes output for non-ASCII matches; that is a behaviour change and this release promised none. | `docs/release-v0.11.2.md` §Fixed |
-| `policy.rs` duplicated 21-line block | Dead code in a file the split did not touch. | `docs/release-v0.11.2.md` §Known issues |
-| `task_entry::CandidateItem` unused | Removing it is an API change. | `docs/release-v0.11.2.md` §Known issues |
-| `graph/materialize` `typ.parse().unwrap()` | Sound only because `EdgeType::Err = Infallible`. | `docs/release-v0.11.2.md` §Known issues |
-| `harvest-check` on `the-mirror`: 455 uncommitted files, last commit 2026-10-06 | Not innen's data and not mine to discard. | `harvest-gap:stop-hook-snapshot-volume` node, 2026-10-08 |
+| `fansee/the-mirror`: 455 uncommitted files, last commit 2026-10-06, idle 2 days | **open — not innen's data** | `harvest-gap:stop-hook-snapshot-volume` node, 2026-10-08 |

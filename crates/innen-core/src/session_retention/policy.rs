@@ -36,27 +36,6 @@ pub(super) fn assess_candidate_with_graph(
             targets,
         });
     }
-    // A store can keep a session row after its files are gone. That is the
-    // desired end state, so it is decided before every gate: an absent bundle
-    // has no bytes to protect, no attestation to prove, and nothing to purge.
-    // Checking later left these rows to fail on `assessment_error` inside
-    // `hash_targets`, which made every plan and sweep fail forever on sessions
-    // that were already clean.
-    let targets = candidate_targets(candidate);
-    if !targets.iter().any(|target| target.exists()) {
-        return Ok(Assessment {
-            session_id: candidate.id.clone(),
-            source: candidate.source.as_str().into(),
-            modified: candidate.modified.clone(),
-            cutoff_utc: cutoff,
-            source_bytes: 0,
-            source_sha256: String::new(),
-            eligible: false,
-            blockers: vec!["native bundle already removed".into()],
-            blocker_codes: vec![BLOCKER_ALREADY_CLEANED.into()],
-            targets,
-        });
-    }
     if !is_trustworthy_modified(candidate.modified.as_deref())
         || candidate
             .modified
