@@ -3,21 +3,6 @@
   "max_lines": 400,
   "over_budget": [
     {
-      "file": "crates/innen-core/src/task_entry.rs",
-      "lines": 1046,
-      "split_by": "query-term extraction / node identity and anchor text / admission and scoring gates / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/evidence_closure.rs",
-      "lines": 783,
-      "split_by": "contract validation / snapshot and cutoff / edge eligibility and closure / packet assembly"
-    },
-    {
-      "file": "crates/innen-core/src/task_proposal.rs",
-      "lines": 758,
-      "split_by": "id context and draft binding / statement and proposal model / review and disposition"
-    },
-    {
       "file": "crates/innen-core/src/artifact.rs",
       "lines": 730,
       "exempt": "384 lines of production code; the overage is 346 lines of inline tests. We do not split test modules to hit a line number."
@@ -38,19 +23,9 @@
       "exempt": "Inline test module moved out of doctor.rs during the single-responsibility split. It holds no production code, so there is no responsibility to separate; splitting it further would only make the suite harder to navigate."
     },
     {
-      "file": "crates/innen-core/src/trace/source.rs",
-      "lines": 524,
-      "split_by": "cache schema and passage types / file read path / native read path / cache persist"
-    },
-    {
       "file": "crates/innen-core/src/session_retention/tests.rs",
       "lines": 521,
       "exempt": "Pure test module: it contains no production code, so there is no responsibility to separate. Splitting tests to satisfy a line count changes no design and only makes the suite harder to navigate."
-    },
-    {
-      "file": "crates/innen-core/src/session_retention.rs",
-      "lines": 506,
-      "split_by": "types and blocker constants / per-candidate assessment / sweep orchestration"
     },
     {
       "file": "crates/innen-core/src/query.rs",
@@ -61,26 +36,6 @@
       "file": "crates/innen-core/src/credentials.rs",
       "lines": 489,
       "exempt": "394 lines of production code; the overage is 95 lines of inline tests. We do not split test modules to hit a line number."
-    },
-    {
-      "file": "crates/innen-core/src/conversation/unfinished.rs",
-      "lines": 481,
-      "split_by": "time parsing / candidate collection and filtering / structural evidence inspection"
-    },
-    {
-      "file": "crates/innen-core/src/conversation/grammar.rs",
-      "lines": 474,
-      "split_by": "decoder and rule application / token accounting / inline tests"
-    },
-    {
-      "file": "crates/innen-core/src/harvest.rs",
-      "lines": 468,
-      "split_by": "directory tap (collect + cursor) / ingest orchestration / report projection"
-    },
-    {
-      "file": "crates/innen-core/src/conversation/projection.rs",
-      "lines": 467,
-      "split_by": "context projection / index projection / dialogue projection / delivery-phase tests"
     },
     {
       "file": "crates/innen-core/src/context_selection.rs",
