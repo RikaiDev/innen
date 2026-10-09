@@ -4,7 +4,13 @@
 //! run can never disagree with the run it previews. This module owns only the
 //! append side and what a skipped file reports.
 
-use super::*;
+use std::path::Path;
+
+use crate::credentials::credential_preview;
+
+use super::report::{IngestReport, Skipped};
+use super::scan::{advance, event_for_file, unconsumed};
+use super::tap::TAP_ID;
 
 /// Append one `node.upsert` per clean file, skip credential hits
 /// (reported, never appended), then record every consumed name —
