@@ -12,10 +12,9 @@ use crate::conversation::{self, Source};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-// Reached by siblings in `trace`; `file_passages`/`PassageScan` are reached by
-// `trace/tests.rs` only, so they live exactly as long as it does.
+// Reached by `trace/tests.rs` only, so it lives exactly as long as that module.
 #[cfg(test)]
-pub(in crate::trace) use self::read_file::{file_passages, PassageScan};
+pub(in crate::trace) use self::read_file::file_passages;
 pub(in crate::trace) use self::schema::{Passage, SourceCache, Version};
 pub(in crate::trace) use self::store::valid_key;
 
