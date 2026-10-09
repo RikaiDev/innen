@@ -21,18 +21,22 @@ fn is_editable_format(label: &str, path: &str) -> bool {
         || lower.ends_with(".sketch")
 }
 
+/// What one traversal yields: project links, connected decisions, per-candidate
+/// status, and the approved subset with its (id, label, status) triple.
+pub(super) type TraversalOutput = (
+    BTreeSet<String>,
+    Vec<Value>,
+    BTreeMap<String, String>,
+    Vec<(String, String, String)>,
+);
+
 /// Walk the ranked candidates once, recording display status, the approved
 /// editable baseline, explicit project ownership, and informing decisions.
 pub(super) fn traverse_candidates(
     ranked_candidates: &[(String, f64, String)],
     nodes: &HashMap<String, Value>,
     edges: &[StoredEdge],
-) -> (
-    BTreeSet<String>,
-    Vec<Value>,
-    BTreeMap<String, String>,
-    Vec<(String, String, String)>,
-) {
+) -> TraversalOutput {
     let mut linked_projects: BTreeSet<String> = BTreeSet::new();
     let mut connected_decisions: Vec<Value> = Vec::new();
     let mut candidate_status_map: BTreeMap<String, String> = BTreeMap::new();
