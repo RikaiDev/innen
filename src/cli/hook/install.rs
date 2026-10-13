@@ -42,7 +42,7 @@ pub(super) fn pending_command(kb: &Path) -> String {
         .map(|p| shell_quote(&p.to_string_lossy()))
         .unwrap_or_else(|| "innen".to_string());
     format!(
-        "{executable} hook pending --kb-root {}",
+        "{executable} hook pending --root {}",
         shell_quote(&kb.to_string_lossy())
     )
 }

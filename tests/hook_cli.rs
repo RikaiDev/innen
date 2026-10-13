@@ -252,6 +252,48 @@ fn hook_install_claude_code_project_is_idempotent() {
 }
 
 #[test]
+fn hook_install_session_start_command_is_accepted_by_the_cli() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_string_lossy().into_owned();
+    let cwd = dir.path().to_str().expect("cwd").to_string();
+    let (code, _) = cli(&[
+        "--root",
+        &root,
+        "hook",
+        "install",
+        "--agent",
+        "claude-code",
+        "--scope",
+        "project",
+        "--cwd",
+        &cwd,
+        "--kb-root",
+        &root,
+    ]);
+    assert_eq!(code, 0);
+    let settings = std::fs::read_to_string(dir.path().join(".claude/settings.json"))
+        .expect("settings written");
+    let v: serde_json::Value = serde_json::from_str(&settings).expect("settings json");
+    let command = v["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("SessionStart command");
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .expect("sh runs");
+    assert!(
+        out.status.success(),
+        "installed SessionStart command `{command}` rejected: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim_end(),
+        r#"{"pending":[]}"#
+    );
+}
+
+#[test]
 fn hook_install_codex_project_adds_stop_and_is_idempotent() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_string_lossy().into_owned();
