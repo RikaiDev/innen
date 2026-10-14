@@ -73,7 +73,9 @@ result, `2 ≠ 1`, was real and is what motivated the change.
 
 `cargo test --test hook_cli` was then run on the fixed tree: 12 passed, 0
 failed. The workspace suite and clippy for this tag are the CI run that built
-it.
+it: `cargo test --workspace --all-features --locked` passed 409 tests on each of
+`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`, and clippy completed with
+`-D warnings` clean on both.
 
 `cargo fmt --all --check` and `python3 scripts/check-structure.py` clean (184
 files). The clippy and workspace test results for this tag are the CI run that
@@ -88,11 +90,12 @@ into one green statement, because they were established separately:
 
 - v0.11.4 was verified locally (clippy, fmt, structure, 408 workspace tests)
   and again on CI.
-- v0.11.5 was verified locally only for `cargo test --test hook_cli`
-  (12 passed). The workspace suite and clippy are the CI run for this tag,
-  because this machine's APFS container had 11.6 GB free — under the 8 GiB
-  running floor the build coordinator enforces — and two full local attempts
-  were stopped for that reason rather than by a test failure.
+- v0.11.5 was verified locally for `cargo test --test hook_cli` (12 passed) and
+  on CI for everything else — clippy clean under `-D warnings` on both targets,
+  409 workspace tests on each, and the release package built and version-checked.
+  The full local suite was not run: this machine's APFS container had 11.6 GB
+  free — under the 8 GiB running floor the build coordinator enforces — and two
+  local attempts were stopped for that reason rather than by a test failure.
 
 The first CI run of this commit failed, on the test's own assertion rather than
 on `install_grok`. A red result proves the test catches the defect it was
