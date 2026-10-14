@@ -8,5 +8,8 @@ rustc-wrapper = "sccache"
 
 [env]
 SCCACHE_CACHE_SIZE = "2G"
-# sccache and incremental are mutually exclusive; cache wins (deps dominate).
-CARGO_INCREMENTAL = "0"
+# Incremental compilation is switched off in Cargo.toml, under [profile.dev]
+# and [profile.test]. It used to be set here as CARGO_INCREMENTAL, which
+# duplicated the same decision in a second place that Cargo reads profiles
+# from -- and the directory it produced, target/debug/incremental, reached
+# 1.2 GiB on this machine.

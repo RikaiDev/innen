@@ -1,6 +1,6 @@
 [package]
 name = "innen"
-version = "0.11.4"
+version = "0.11.5"
 license = "MIT"
 edition = "2021"
 rust-version = "1.90"
@@ -49,3 +49,14 @@ workspace = true
 
 [patch.crates-io]
 tantivy = { path = "vendor/tantivy" }
+
+# One cache, declared where Cargo reads it. sccache (see .cargo/config.toml)
+# already caches every crate including this workspace's own, so incremental
+# compilation duplicates work that is then thrown away -- and Cargo never
+# reclaims what it writes, which is how target/debug/incremental reached 1.2 GiB
+# here while the build reported itself cached.
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false

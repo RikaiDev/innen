@@ -394,6 +394,77 @@ fn hook_install_codex_replaces_bare_innen_handlers_with_absolute_executable() {
     }
 }
 
+/// `hook install` must replace the handlers an earlier innen binary wrote, not
+/// append beside them. Every emitted command embeds `current_exe()`, so the
+/// string changes whenever the binary moves — a bare `innen` on PATH becomes
+/// an absolute path, an old prefix becomes a new one. An agent whose install
+/// only merges therefore keeps a dead copy of the old command forever, and
+/// both copies run on every session.
+///
+/// The stale fixture uses the exact shape 0.11.3 left behind: a bare
+/// executable, `--kb-root`, and a root that is not this run's.
+#[test]
+fn hook_install_grok_replaces_stale_handlers_with_absolute_executable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_string_lossy().into_owned();
+    let cwd = dir.path().to_str().expect("cwd").to_string();
+    let hooks_dir = dir.path().join(".grok/hooks");
+    std::fs::create_dir_all(&hooks_dir).expect("hooks dir");
+    std::fs::write(
+        hooks_dir.join("innen-progress.json"),
+        r#"{
+          "hooks": {
+            "SessionEnd": [{"hooks": [{"type": "command", "command": "innen hook run --event session-end --kb-root /old"}]}],
+            "SessionStart": [{"hooks": [{"type": "command", "command": "innen hook pending --kb-root /old"}], "matcher": "startup|resume"}]
+          }
+        }"#,
+    )
+    .expect("old hooks");
+
+    let args: &[&str] = &[
+        "--root",
+        &root,
+        "--format",
+        "json",
+        "hook",
+        "install",
+        "--agent",
+        "grok",
+        "--scope",
+        "project",
+        "--cwd",
+        &cwd,
+        "--kb-root",
+        &root,
+    ];
+    let (code, _) = cli(args);
+    assert_eq!(code, 0);
+
+    let config =
+        std::fs::read_to_string(hooks_dir.join("innen-progress.json")).expect("Grok hooks written");
+    let v: serde_json::Value = serde_json::from_str(&config).expect("hooks json");
+    for event in ["SessionEnd", "SessionStart"] {
+        let entries = v["hooks"][event].as_array().expect("event holds an array");
+        assert_eq!(
+            entries.len(),
+            1,
+            "{event} kept a stale handler beside the new one: {entries:?}"
+        );
+        let command = entries[0]["hooks"][0]["command"]
+            .as_str()
+            .expect("installed command");
+        assert!(
+            command.starts_with('/'),
+            "command must be absolute: {command}"
+        );
+        assert!(!command.contains("/old"), "stale root survived: {command}");
+        assert!(
+            !command.contains("--kb-root"),
+            "{event} must not use --kb-root: {command}"
+        );
+    }
+}
+
 /// Antigravity's documented hook payload. Verified against the contract
 /// embedded in `agy` 1.2.16: camelCase protojson, `workspacePaths` as an array,
 /// and no `cwd` key at all — it runs the hook with its cwd set to the

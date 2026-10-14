@@ -99,9 +99,11 @@ pub(super) fn install_grok(kb: &Path, scope: &str, cwd: &Path) -> Result<String,
         scope_dir(scope, cwd, Path::new(".grok/hooks/innen-progress.json"))?
     };
     let mut doc = read_json_file(&path);
+    let mut changed = false;
+    changed |= remove_hook_commands(&mut doc, "SessionEnd", "hook run --event session-end");
+    changed |= remove_hook_commands(&mut doc, "SessionStart", "hook pending");
     let run = run_command(kb, "session-end");
     let pend = pending_command(kb);
-    let mut changed = false;
     changed |= merge_hook_entry(
         &mut doc,
         &["hooks", "SessionEnd"],
