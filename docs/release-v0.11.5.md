@@ -59,9 +59,21 @@ occasional cleanup.
 
 | | before | after |
 | --- | --- | --- |
-| `hook_install_grok_replaces_stale_handlers_with_absolute_executable` | fails: `SessionEnd kept a stale handler beside the new one`, 2 ≠ 1 | passes |
+| `hook_install_grok_replaces_stale_handlers_with_absolute_executable` on the fixed `install_grok` | fails: `SessionEnd kept a stale handler beside the new one`, 2 ≠ 1 | passes |
+| `cargo test --test hook_cli` | 11 passed, 1 failed (over-constrained assertion) | 12 passed, 0 failed |
 | innen handlers in `~/.grok/hooks/innen-progress.json` after re-running install | 4 | 2 |
 | `target/debug/incremental` after a build | 1.2 GiB | 0 B |
+
+The regression test's first CI run failed for a reason unrelated to
+`install_grok`: it asserted that `--kb-root` appears in neither event, while
+`hook run --event session-end` is supposed to carry it — that flag belongs to
+`HookRunArgs` and is exactly what v0.11.4 left alone. The assertion now applies
+only to `SessionStart`, the one subcommand that rejects it. The original red
+result, `2 ≠ 1`, was real and is what motivated the change.
+
+`cargo test --test hook_cli` was then run on the fixed tree: 12 passed, 0
+failed. The workspace suite and clippy for this tag are the CI run that built
+it.
 
 `cargo fmt --all --check` and `python3 scripts/check-structure.py` clean (184
 files). The clippy and workspace test results for this tag are the CI run that
@@ -71,6 +83,17 @@ attempts were stopped for that reason rather than by a test failure.
 
 ## Note on verification
 
-The claim that CI is green for this tag is evidence, not a formality: the
-previous release in this series was verified both locally and on CI, and this
-one only on CI. Both are stated rather than merged into one claim.
+Two things in this release are reported as separate claims rather than merged
+into one green statement, because they were established separately:
+
+- v0.11.4 was verified locally (clippy, fmt, structure, 408 workspace tests)
+  and again on CI.
+- v0.11.5 was verified locally only for `cargo test --test hook_cli`
+  (12 passed). The workspace suite and clippy are the CI run for this tag,
+  because this machine's APFS container had 11.6 GB free — under the 8 GiB
+  running floor the build coordinator enforces — and two full local attempts
+  were stopped for that reason rather than by a test failure.
+
+The first CI run of this commit failed, on the test's own assertion rather than
+on `install_grok`. A red result proves the test catches the defect it was
+written for; it does not prove the fix makes it green, and here it did not.

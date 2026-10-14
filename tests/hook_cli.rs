@@ -458,10 +458,15 @@ fn hook_install_grok_replaces_stale_handlers_with_absolute_executable() {
             "command must be absolute: {command}"
         );
         assert!(!command.contains("/old"), "stale root survived: {command}");
-        assert!(
-            !command.contains("--kb-root"),
-            "{event} must not use --kb-root: {command}"
-        );
+        // `--kb-root` is only wrong where the subcommand does not accept it.
+        // `hook run` takes it (HookRunArgs.kb_root) and always did; the flag
+        // v0.11.4 removed was the one `hook pending` rejects.
+        if event == "SessionStart" {
+            assert!(
+                !command.contains("--kb-root"),
+                "{event} must not use --kb-root: {command}"
+            );
+        }
     }
 }
 
