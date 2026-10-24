@@ -8,6 +8,7 @@ use super::bounded::{
     bounded_event, event_text, is_injected_envelope, read_capped_line, shell_quote,
 };
 use super::read::io_error;
+use super::task_state::{extract_file as extract_task_state, TaskItemStatus, TaskState};
 use super::{checkpoint, sources, ReadError, Source};
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,6 +30,10 @@ pub struct Brief {
     pub latest_agent_messages: Vec<Record>,
     pub unresolved: Vec<EvidencePointer>,
     pub checkpoint: Option<checkpoint::Checkpoint>,
+    /// The plan the agent wrote as a tool event, recovered from the
+    /// transcript. Present when the transcript carried one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_state: Option<TaskState>,
     pub omitted_records: usize,
     pub coverage_incomplete: bool,
     pub warnings: Vec<String>,
@@ -60,6 +65,7 @@ pub fn brief(source_root: Option<&Path>, source: &str, id: &str) -> Result<Brief
         latest_agent_messages: Vec::new(),
         unresolved: Vec::new(),
         checkpoint: None,
+        task_state: None,
         omitted_records: 0,
         coverage_incomplete: false,
         warnings: Vec::new(),
@@ -178,6 +184,8 @@ pub fn brief(source_root: Option<&Path>, source: &str, id: &str) -> Result<Brief
         out.warnings.push("brief latest-record extraction is unavailable for this source adapter; use explicit --view context/events".into());
     }
     out.latest_agent_messages.sort_by_key(|r| r.line);
+    out.task_state = extract_task_state(&located.path).state;
+    collect_latest_signals(&mut out);
     Ok(out)
 }
 
@@ -194,6 +202,28 @@ fn newer(candidate: &Record, current: Option<&Record>) -> bool {
 
 fn collect_latest_signals(brief: &mut Brief) {
     brief.unresolved.clear();
+    // A structured task state is evidence: the agent wrote it as a tool
+    // event. The lexical scan below only runs for transcripts that carry no
+    // task-state tool events at all, and it stays labelled as the weaker
+    // signal it is.
+    if let Some(state) = brief.task_state.as_ref() {
+        for item in &state.items {
+            if matches!(
+                item.status,
+                TaskItemStatus::InProgress | TaskItemStatus::Pending
+            ) {
+                brief.unresolved.push(EvidencePointer {
+                    line: state.line,
+                    marker: format!("task_{}", item.status.as_str()),
+                    basis: "structured_task_state".into(),
+                    preview: item.content.chars().take(240).collect(),
+                });
+            }
+        }
+        if !brief.unresolved.is_empty() {
+            return;
+        }
+    }
     let mut selected = Vec::new();
     if let Some(record) = brief.latest_user.clone() {
         selected.push(record);

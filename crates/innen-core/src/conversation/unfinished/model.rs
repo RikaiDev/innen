@@ -1,7 +1,7 @@
 //! The candidate report shape: what a classification is allowed to say, and the
 //! serialisation the CLI and JSON consumers depend on.
 
-use crate::conversation::{checkpoint::Checkpoint, sources::Source};
+use crate::conversation::{checkpoint::Checkpoint, sources::Source, task_state::TaskState};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -30,6 +30,10 @@ pub struct UnfinishedCandidate {
     pub reasons: Vec<Reason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<Checkpoint>,
+    /// The plan the agent wrote as a tool event, recovered from the
+    /// transcript. Present when the transcript carried one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_state: Option<TaskState>,
     pub path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,

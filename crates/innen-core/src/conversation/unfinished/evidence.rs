@@ -5,6 +5,7 @@
 use super::model::{Confidence, Reason};
 use crate::conversation::checkpoint::{Checkpoint, CheckpointStatus};
 use crate::conversation::sources::Source;
+use crate::conversation::task_state::{TaskItemStatus, TaskState};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::fs::File;
@@ -16,6 +17,7 @@ pub(super) fn inspect_structural_evidence(
     transcript_path: &Path,
     source: Source,
     checkpoint: Option<&Checkpoint>,
+    task_state: Option<&TaskState>,
 ) -> (Vec<Reason>, Confidence) {
     let mut reasons = Vec::new();
 
@@ -35,6 +37,30 @@ pub(super) fn inspect_structural_evidence(
                 });
             }
             _ => {}
+        }
+    }
+
+    // Structured task state evidence: the agent wrote its own plan as a tool
+    // event, so an item still in progress is a fact rather than a reading.
+    if let Some(state) = task_state {
+        let in_progress = state
+            .items
+            .iter()
+            .filter(|item| item.status == TaskItemStatus::InProgress)
+            .count();
+        let pending = state
+            .items
+            .iter()
+            .filter(|item| item.status == TaskItemStatus::Pending)
+            .count();
+        if in_progress > 0 || pending > 0 {
+            reasons.push(Reason {
+                code: "task_state_outstanding".into(),
+                detail: format!(
+                    "structured task state at line {} reports {in_progress} in progress and {pending} pending",
+                    state.line
+                ),
+            });
         }
     }
 
@@ -153,6 +179,7 @@ pub(super) fn inspect_structural_evidence(
                 | "checkpoint_blocked"
                 | "interrupted_or_cancelled"
                 | "trailing_user_request_unanswered"
+                | "task_state_outstanding"
         )
     });
     let has_medium = reasons.iter().any(|r| r.code == "unresolved_tool_failure");

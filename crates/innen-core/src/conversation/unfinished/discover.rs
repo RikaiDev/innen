@@ -103,8 +103,13 @@ fn filter_and_analyze_candidates(
         }
 
         // 3. Inspect structural evidence
-        let (reasons, confidence) =
-            inspect_structural_evidence(&candidate.path, candidate.source, latest_cp.as_ref());
+        let task_state = crate::conversation::task_state::extract_file(&candidate.path).state;
+        let (reasons, confidence) = inspect_structural_evidence(
+            &candidate.path,
+            candidate.source,
+            latest_cp.as_ref(),
+            task_state.as_ref(),
+        );
 
         unfinished.push(UnfinishedCandidate {
             id: candidate.id,
@@ -120,6 +125,7 @@ fn filter_and_analyze_candidates(
             confidence,
             reasons,
             checkpoint: latest_cp,
+            task_state,
             path: candidate.path,
             parent_id: candidate.parent_id,
         });

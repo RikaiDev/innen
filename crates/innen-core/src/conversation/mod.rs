@@ -19,6 +19,7 @@ pub mod prune;
 pub mod resume;
 pub mod scan;
 pub(crate) mod sources;
+pub mod task_state;
 pub mod unfinished;
 pub use checkpoint::{Checkpoint, CheckpointStatus};
 pub use format::format_page;
@@ -32,6 +33,10 @@ pub use record::{brief, Brief, EvidencePointer, Record};
 pub use resume::{find_all_candidates, find_project_candidates, Candidate, ResumeTarget};
 pub use scan::{ScanLimits, ScanResult};
 pub use sources::{Located, Source};
+pub use task_state::{
+    extract_events as extract_task_state_events, extract_file as extract_task_state, TaskCounts,
+    TaskItem, TaskItemStatus, TaskState, TaskStateExtraction,
+};
 pub use unfinished::{
     find_all_unfinished_candidates, find_unfinished_candidates, Confidence, Reason,
     UnfinishedCandidate,

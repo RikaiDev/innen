@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::checkpoint::{latest_checkpoint_for_session, resolve_project_root, Checkpoint};
 use super::sources::{self, Source};
+use super::task_state::{extract_file as extract_task_state, TaskState};
 use super::unfinished::{
     find_all_unfinished_candidates, find_unfinished_candidates, Confidence, Reason,
     UnfinishedCandidate,
@@ -27,6 +28,23 @@ pub struct EvidencePointers {
     pub event_count: usize,
 }
 
+/// Where a continuation field came from.
+///
+/// A generic sentence is a placeholder, not a finding. Reporting the basis
+/// keeps a caller from reading "Run project test suite" as an instruction the
+/// agent actually wrote down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceBasis {
+    /// The agent recorded it explicitly in a checkpoint.
+    Checkpoint,
+    /// Recovered from the structured task state the agent wrote as a tool event.
+    TaskState,
+    /// No evidence was available; the text is a placeholder.
+    Placeholder,
+}
+
+/// The task state recovered from the transcript, when it carried one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PickedUpSession {
     pub session_id: String,
@@ -34,9 +52,15 @@ pub struct PickedUpSession {
     pub project: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<Checkpoint>,
+    /// The plan the agent wrote as a tool event, recovered from the
+    /// transcript without asking the agent to restate it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_state: Option<TaskState>,
     pub evidence_pointers: EvidencePointers,
     pub next_action: String,
+    pub next_action_basis: EvidenceBasis,
     pub verification: String,
+    pub verification_basis: EvidenceBasis,
     pub resume_command: String,
 }
 
@@ -92,18 +116,6 @@ pub fn resolve_pickup(
         let (reasons, confidence, count) =
             inspect_transcript_evidence(&located.path, located.source, checkpoint.as_ref());
 
-        let next_action = checkpoint
-            .as_ref()
-            .map(|cp| cp.next_action.clone())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "Inspect recent context and continue objective".into());
-
-        let verification = checkpoint
-            .as_ref()
-            .map(|cp| cp.verification.clone())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "Run project test suite".into());
-
         let resume_command = if source_filter.is_some() {
             format!(
                 "innen resume {} --source {}",
@@ -114,22 +126,19 @@ pub fn resolve_pickup(
             format!("innen resume {}", validated_id)
         };
 
-        return Ok(PickupTarget::PickedUp(Box::new(PickedUpSession {
-            session_id: validated_id,
-            source: located.source,
-            project: project_root,
-            checkpoint,
-            evidence_pointers: EvidencePointers {
+        return Ok(PickupTarget::PickedUp(Box::new(build_pickup(
+            PickupParts {
+                session_id: validated_id,
+                source: located.source,
+                project: project_root,
+                checkpoint,
                 transcript_path: located.path,
-                latest_checkpoint_at: None,
                 reasons,
                 confidence,
                 event_count: count,
+                resume_command,
             },
-            next_action,
-            verification,
-            resume_command,
-        })));
+        ))));
     }
 
     let candidates = find_unfinished_candidates(&project_root, source_filter, source_root, since)?;
@@ -145,38 +154,19 @@ pub fn resolve_pickup(
         1 => {
             let candidate = candidates.into_iter().next().unwrap();
             let count = count_file_lines(&candidate.path);
-            let next_action = candidate
-                .checkpoint
-                .as_ref()
-                .map(|cp| cp.next_action.clone())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "Inspect recent context with resume command".into());
-
-            let verification = candidate
-                .checkpoint
-                .as_ref()
-                .map(|cp| cp.verification.clone())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "Run project test suite".into());
-
             let resume_command = format!("innen resume {}", candidate.id);
 
-            Ok(PickupTarget::PickedUp(Box::new(PickedUpSession {
+            Ok(PickupTarget::PickedUp(Box::new(build_pickup(PickupParts {
                 session_id: candidate.id,
                 source: candidate.source,
                 project: project_root,
                 checkpoint: candidate.checkpoint,
-                evidence_pointers: EvidencePointers {
-                    transcript_path: candidate.path,
-                    latest_checkpoint_at: None,
-                    reasons: candidate.reasons,
-                    confidence: candidate.confidence,
-                    event_count: count,
-                },
-                next_action,
-                verification,
+                transcript_path: candidate.path,
+                reasons: candidate.reasons,
+                confidence: candidate.confidence,
+                event_count: count,
                 resume_command,
-            })))
+            }))))
         }
         count => Ok(PickupTarget::Ambiguous {
             project: project_root.clone(),
@@ -206,20 +196,6 @@ pub fn resolve_all_projects_pickup(
         1 => {
             let candidate = candidates.into_iter().next().unwrap();
             let count = count_file_lines(&candidate.path);
-            let next_action = candidate
-                .checkpoint
-                .as_ref()
-                .map(|cp| cp.next_action.clone())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "Inspect recent context with resume command".into());
-
-            let verification = candidate
-                .checkpoint
-                .as_ref()
-                .map(|cp| cp.verification.clone())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "Run project test suite".into());
-
             let proj_path = if candidate.project != "unknown" {
                 PathBuf::from(&candidate.project)
             } else {
@@ -228,22 +204,17 @@ pub fn resolve_all_projects_pickup(
 
             let resume_command = format!("innen resume {}", candidate.id);
 
-            Ok(PickupTarget::PickedUp(Box::new(PickedUpSession {
+            Ok(PickupTarget::PickedUp(Box::new(build_pickup(PickupParts {
                 session_id: candidate.id,
                 source: candidate.source,
                 project: proj_path,
                 checkpoint: candidate.checkpoint,
-                evidence_pointers: EvidencePointers {
-                    transcript_path: candidate.path,
-                    latest_checkpoint_at: None,
-                    reasons: candidate.reasons,
-                    confidence: candidate.confidence,
-                    event_count: count,
-                },
-                next_action,
-                verification,
+                transcript_path: candidate.path,
+                reasons: candidate.reasons,
+                confidence: candidate.confidence,
+                event_count: count,
                 resume_command,
-            })))
+            }))))
         }
         count => Ok(PickupTarget::Ambiguous {
             project: PathBuf::from("all-projects"),
@@ -262,6 +233,103 @@ fn count_file_lines(path: &Path) -> usize {
     } else {
         0
     }
+}
+
+/// The parts of a pickup result that differ between call sites.
+struct PickupParts {
+    session_id: String,
+    source: Source,
+    project: PathBuf,
+    checkpoint: Option<Checkpoint>,
+    transcript_path: PathBuf,
+    reasons: Vec<Reason>,
+    confidence: Confidence,
+    event_count: usize,
+    resume_command: String,
+}
+
+/// Assembles a pickup result from what the evidence supports.
+///
+/// The task state is recovered from the transcript the agent already wrote,
+/// so a continuation does not depend on the agent having summarised its own
+/// plan before it stopped.
+fn build_pickup(parts: PickupParts) -> PickedUpSession {
+    let PickupParts {
+        session_id,
+        source,
+        project,
+        checkpoint,
+        transcript_path,
+        reasons,
+        confidence,
+        event_count,
+        resume_command,
+    } = parts;
+    let task_state = extract_task_state(&transcript_path).state;
+    let (next_action, next_action_basis) =
+        derive_next_action(checkpoint.as_ref(), task_state.as_ref());
+    let (verification, verification_basis) = derive_verification(checkpoint.as_ref());
+    PickedUpSession {
+        session_id,
+        source,
+        project,
+        checkpoint,
+        task_state,
+        evidence_pointers: EvidencePointers {
+            transcript_path,
+            latest_checkpoint_at: None,
+            reasons,
+            confidence,
+            event_count,
+        },
+        next_action,
+        next_action_basis,
+        verification,
+        verification_basis,
+        resume_command,
+    }
+}
+
+/// The next action, and where it came from.
+///
+/// A checkpoint the agent wrote wins. Otherwise the structured task state
+/// names the item the agent was working on, which is evidence rather than a
+/// guess. Only when neither exists does the field fall back to a placeholder,
+/// and the basis says so.
+fn derive_next_action(
+    checkpoint: Option<&Checkpoint>,
+    task_state: Option<&TaskState>,
+) -> (String, EvidenceBasis) {
+    if let Some(text) = checkpoint
+        .map(|cp| cp.next_action.trim())
+        .filter(|text| !text.is_empty())
+    {
+        return (text.to_string(), EvidenceBasis::Checkpoint);
+    }
+    if let Some(state) = task_state {
+        if let Some(item) = state.current().or_else(|| state.next_pending()) {
+            return (item.content.clone(), EvidenceBasis::TaskState);
+        }
+    }
+    (
+        "Inspect recent context and continue objective".into(),
+        EvidenceBasis::Placeholder,
+    )
+}
+
+/// The verification step, and where it came from.
+///
+/// Only a checkpoint states how the work is verified. A task list says what
+/// remains, not how to check it, so this field falls back to a placeholder
+/// unless a checkpoint said otherwise.
+fn derive_verification(checkpoint: Option<&Checkpoint>) -> (String, EvidenceBasis) {
+    if let Some(text) = checkpoint
+        .map(|cp| cp.verification.trim())
+        .filter(|text| !text.is_empty())
+    {
+        return (text.to_string(), EvidenceBasis::Checkpoint);
+    }
+    ("Run project test suite".into(), EvidenceBasis::Placeholder)
 }
 
 fn inspect_transcript_evidence(

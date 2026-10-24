@@ -1,5 +1,18 @@
 use super::util::is_human;
+use innen_core::conversation::pickup::EvidenceBasis;
 use std::path::PathBuf;
+
+/// Names the evidence a continuation field rests on.
+///
+/// A placeholder is a generic sentence, not something the agent wrote, and
+/// the label keeps a reader from taking it for one.
+fn basis_label(basis: EvidenceBasis) -> &'static str {
+    match basis {
+        EvidenceBasis::Checkpoint => "checkpoint",
+        EvidenceBasis::TaskState => "task_state",
+        EvidenceBasis::Placeholder => "placeholder",
+    }
+}
 
 #[derive(clap::Args)]
 pub(super) struct PickupArgs {
@@ -74,13 +87,38 @@ pub(super) fn cmd_pickup(format: &str, args: &PickupArgs) -> i32 {
                     println!("Status:         {}", cp.status.as_str());
                     println!("Objective:      {}", cp.objective);
                 }
+                if let Some(ref state) = session.task_state {
+                    println!(
+                        "Task state:     {} at line {} ({}, {} items, {} outstanding)",
+                        state.tool,
+                        state.line,
+                        if state.confirmed {
+                            "confirmed"
+                        } else {
+                            "unconfirmed"
+                        },
+                        state.items.len(),
+                        state.outstanding()
+                    );
+                    for item in &state.items {
+                        println!("  [{}] {}", item.status.as_str(), item.content);
+                    }
+                }
                 println!("Confidence:     {:?}", session.evidence_pointers.confidence);
                 println!("Reasons:");
                 for r in &session.evidence_pointers.reasons {
                     println!("  - {}: {}", r.code, r.detail);
                 }
-                println!("Next action:    {}", session.next_action);
-                println!("Verification:   {}", session.verification);
+                println!(
+                    "Next action:    {}  [{}]",
+                    session.next_action,
+                    basis_label(session.next_action_basis)
+                );
+                println!(
+                    "Verification:   {}  [{}]",
+                    session.verification,
+                    basis_label(session.verification_basis)
+                );
                 println!("Resume command: {}", session.resume_command);
             } else {
                 let out = serde_json::json!({
@@ -89,9 +127,12 @@ pub(super) fn cmd_pickup(format: &str, args: &PickupArgs) -> i32 {
                     "source": session.source,
                     "project": session.project,
                     "checkpoint": session.checkpoint,
+                    "task_state": session.task_state,
                     "evidence_pointers": session.evidence_pointers,
                     "next_action": session.next_action,
+                    "next_action_basis": session.next_action_basis,
                     "verification": session.verification,
+                    "verification_basis": session.verification_basis,
                     "resume_command": session.resume_command
                 });
                 println!("{}", serde_json::to_string(&out).unwrap());
