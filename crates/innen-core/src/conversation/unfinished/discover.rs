@@ -12,6 +12,46 @@ use crate::conversation::ReadError;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+/// Store-level scan coverage: a silent zero must not masquerade as an
+/// empty scan, so every known default store reports its state.
+#[derive(Clone, serde::Serialize)]
+pub struct StoreCoverage {
+    pub source: String,
+    pub path: String,
+    pub status: String,
+}
+
+/// Reports each store from the default home layout as:
+/// `scanned` (wired scanner, root on disk), `missing` (wired scanner, root
+/// absent on this machine), `skipped` (excluded by the --source filter), or
+/// `not-supported` (known store whose scanner is not wired in this
+/// release). Coverage speaks only to whether a store was inspected; it
+/// never assigns candidates to a project.
+pub fn store_coverage_report(filter: Option<Source>) -> Vec<StoreCoverage> {
+    let Ok(stores) = crate::conversation::sources::default_stores() else {
+        return Vec::new();
+    };
+    stores
+        .into_iter()
+        .map(|(source, root)| {
+            let status = if !crate::conversation::resume::scanner_wired(source) {
+                "not-supported"
+            } else if filter.is_some_and(|f| f != source) {
+                "skipped"
+            } else if !root.try_exists().unwrap_or(false) {
+                "missing"
+            } else {
+                "scanned"
+            };
+            StoreCoverage {
+                source: source.as_str().to_string(),
+                path: root.display().to_string(),
+                status: status.to_string(),
+            }
+        })
+        .collect()
+}
+
 /// Discovers candidate unfinished conversations across all projects (portfolio discovery).
 pub fn find_all_unfinished_candidates(
     source_filter: Option<Source>,
@@ -109,7 +149,13 @@ fn filter_and_analyze_candidates(
             candidate.source,
             latest_cp.as_ref(),
             task_state.as_ref(),
+            Some(&candidate.id),
         );
+
+        // 4. A turn-level completion record (`explicit_turn_completed`)
+        // stays in the report as a marker: it states the turn ended, never
+        // that the task is done. Only an explicit terminal checkpoint
+        // excluded a candidate above.
 
         unfinished.push(UnfinishedCandidate {
             id: candidate.id,

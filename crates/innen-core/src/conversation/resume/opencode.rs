@@ -25,39 +25,39 @@ pub(super) fn scan_opencode_sessions(
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
-    if let Ok(rows) = sources::sqlite(
-        &db_path,
-        &format!(
-                            "SELECT json_object('id',id,'directory',directory,'modified',datetime(time_updated/1000,'unixepoch')) FROM {}",
-                            sources::session_table(&db_path)?
-                        ),
-    ) {
-        for row in rows {
-            let dir = row.get("directory").and_then(Value::as_str).unwrap_or("");
-            let matched = if all_projects {
-                true
-            } else {
-                target_strings.iter().any(|ts| ts == dir)
-            };
-            if matched {
-                if let Some(sid) = row.get("id").and_then(Value::as_str) {
-                    if let Ok(id) = sources::validate_id(sid) {
-                        let modified =
-                            row.get("modified").and_then(Value::as_str).map(String::from);
-                        let project = if dir.is_empty() {
-                            Some("unknown".into())
-                        } else {
-                            Some(dir.to_string())
-                        };
-                        candidates.push(Candidate {
-                            id,
-                            source: Source::Opencode,
-                            modified,
-                            path: db_path.clone(),
-                            project,
-                            parent_id: None,
-                        });
-                    }
+    let sql = format!(
+        "SELECT json_object('id',id,'directory',directory,'modified',datetime(time_updated/1000,'unixepoch')) FROM {}",
+        sources::session_table(&db_path)?
+    );
+    // Completion classification happens only in the unfinished evidence
+    // layer; discovery stays a plain enumeration like every other source.
+    let Some(rows) = super::store_query_with_retry(&db_path, &sql) else {
+        return Ok(());
+    };
+    for row in rows {
+        let dir = row.get("directory").and_then(Value::as_str).unwrap_or("");
+        let matched = if all_projects {
+            true
+        } else {
+            target_strings.iter().any(|ts| ts == dir)
+        };
+        if matched {
+            if let Some(sid) = row.get("id").and_then(Value::as_str) {
+                if let Ok(id) = sources::validate_id(sid) {
+                    let modified = row.get("modified").and_then(Value::as_str).map(String::from);
+                    let project = if dir.is_empty() {
+                        Some("unknown".into())
+                    } else {
+                        Some(dir.to_string())
+                    };
+                    candidates.push(Candidate {
+                        id,
+                        source: Source::Opencode,
+                        modified,
+                        path: db_path.clone(),
+                        project,
+                        parent_id: None,
+                    });
                 }
             }
         }

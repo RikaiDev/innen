@@ -13,7 +13,7 @@ pub(super) struct UnfinishedArgs {
     #[arg(long)]
     source_root: Option<PathBuf>,
     /// Tool to filter (auto, agy, codex, ...).
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
     source: String,
     /// Time cutoff (default yesterday+today; YYYY-MM-DD, RFC3339, 2d, 48h, today, yesterday).
     #[arg(long)]
@@ -41,6 +41,7 @@ pub(super) fn cmd_unfinished(format: &str, args: &UnfinishedArgs) -> i32 {
         ) {
             Ok(candidates) => {
                 if is_human(format) {
+                    print_coverage_summary(&source_filter);
                     if candidates.is_empty() {
                         println!("No unfinished candidate sessions found across all projects.");
                     } else {
@@ -68,12 +69,14 @@ pub(super) fn cmd_unfinished(format: &str, args: &UnfinishedArgs) -> i32 {
                         }
                     }
                 } else {
+                    let coverage = store_coverage_lines(&source_filter);
                     let out = serde_json::json!({
                         "status": "ok",
                         "all_projects": true,
                         "since": args.since,
                         "count": candidates.len(),
-                        "candidates": candidates
+                        "candidates": candidates,
+                        "coverage": coverage
                     });
                     println!("{}", serde_json::to_string(&out).unwrap());
                 }
@@ -104,6 +107,7 @@ pub(super) fn cmd_unfinished(format: &str, args: &UnfinishedArgs) -> i32 {
         ) {
             Ok(candidates) => {
                 if is_human(format) {
+                    print_coverage_summary(&source_filter);
                     if candidates.is_empty() {
                         println!(
                             "No unfinished candidate sessions found for project {}.",
@@ -136,12 +140,14 @@ pub(super) fn cmd_unfinished(format: &str, args: &UnfinishedArgs) -> i32 {
                         }
                     }
                 } else {
+                    let coverage = store_coverage_lines(&source_filter);
                     let out = serde_json::json!({
                         "status": "ok",
                         "project": project_dir,
                         "since": args.since,
                         "count": candidates.len(),
-                        "candidates": candidates
+                        "candidates": candidates,
+                        "coverage": coverage
                     });
                     println!("{}", serde_json::to_string(&out).unwrap());
                 }
@@ -153,4 +159,37 @@ pub(super) fn cmd_unfinished(format: &str, args: &UnfinishedArgs) -> i32 {
             }
         }
     }
+}
+
+/// Coverage rows for the JSON output (same source list as the human summary).
+fn store_coverage_lines(
+    filter: &Option<innen_core::conversation::Source>,
+) -> Vec<innen_core::conversation::unfinished::StoreCoverage> {
+    innen_core::conversation::unfinished::store_coverage_report(*filter)
+}
+
+fn print_coverage_summary(
+    filter: &Option<innen_core::conversation::Source>,
+) {
+    let coverage = innen_core::conversation::unfinished::store_coverage_report(*filter);
+    let mut scanned: Vec<&str> = Vec::new();
+    let mut missing = 0usize;
+    let mut unsupported = 0usize;
+    let mut skipped = 0usize;
+    for row in &coverage {
+        match row.status.as_str() {
+            "scanned" => scanned.push(row.source.as_str()),
+            "missing" => missing += 1,
+            "not-supported" => unsupported += 1,
+            _ => skipped += 1,
+        }
+    }
+    println!(
+        "Store coverage: scanned {} [{}] missing {} not-supported {} skipped {}",
+        scanned.len(),
+        scanned.join(", "),
+        missing,
+        unsupported,
+        skipped
+    );
 }

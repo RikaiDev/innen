@@ -11,5 +11,6 @@ mod model;
 mod since;
 
 pub use discover::{find_all_unfinished_candidates, find_unfinished_candidates};
+pub use discover::{store_coverage_report, StoreCoverage};
 pub use model::{Confidence, Reason, UnfinishedCandidate};
 pub use since::{parse_since, rfc3339_to_secs};

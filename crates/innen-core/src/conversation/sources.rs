@@ -24,6 +24,7 @@ pub enum Source {
     Codex,
     Claude,
     Gemini,
+    Mcode,
     Opencode,
     Grok,
     Copilot,
@@ -43,6 +44,7 @@ impl Source {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Gemini => "gemini",
+            Self::Mcode => "mcode",
             Self::Opencode => "opencode",
             Self::Grok => "grok",
             Self::Copilot => "copilot",
@@ -58,6 +60,7 @@ impl Source {
             "codex" => Ok(Self::Codex),
             "claude" => Ok(Self::Claude),
             "gemini" => Ok(Self::Gemini),
+            "mcode" | "minimax" => Ok(Self::Mcode),
             "opencode" => Ok(Self::Opencode),
             "grok" => Ok(Self::Grok),
             "copilot" => Ok(Self::Copilot),
@@ -86,15 +89,56 @@ pub fn validate_id(id: &str) -> Result<String, ReadError> {
     if uuid {
         return Ok(id.to_ascii_lowercase());
     }
-    if id.starts_with("ses_")
+    if (id.starts_with("ses_") || id.starts_with("mvs_"))
         && (5..=128).contains(&id.len())
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
     {
         return Ok(id.into());
     }
     Err(ReadError(
-        "invalid UUID or native session ID: expected a full UUID or OpenCode ses_... ID".into(),
+        "invalid UUID or native session ID: expected a full UUID or a native session ID (opencode ses_..., mcode mvs_...)".into(),
     ))
+}
+
+/// Resolves the Mcode runtime-state database under a store root: the file
+/// itself, or one of the two conventional layouts below it.
+pub(crate) fn mcode_runtime_db(root: &Path) -> PathBuf {
+    if root.is_file() {
+        return root.to_path_buf();
+    }
+    let direct = root.join("runtime-state.sqlite");
+    if direct.exists() {
+        return direct;
+    }
+    root.join("sqlite").join("runtime-state.sqlite")
+}
+
+/// Mcode transcripts live in dated directories whose names end with
+/// `-session_<base64(session_id)>`; the suffix is deterministic, so a store
+/// can be searched without opening the runtime database.
+pub(crate) fn mcode_session_dir_suffix(id: &str) -> Option<String> {
+    id.strip_prefix("mvs_").filter(|rest| !rest.is_empty())?;
+    Some(format!("-session_{}", base64_nopad(id.as_bytes())))
+}
+
+fn base64_nopad(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let packed = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(packed >> 18) as usize & 63] as char);
+        out.push(TABLE[(packed >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(packed >> 6) as usize & 63] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[packed as usize & 63] as char);
+        }
+    }
+    out
 }
 
 pub(crate) fn default_stores() -> Result<Vec<(Source, PathBuf)>, ReadError> {
@@ -113,6 +157,10 @@ pub(crate) fn default_stores() -> Result<Vec<(Source, PathBuf)>, ReadError> {
         (
             Source::Opencode,
             home.join(".local/share/opencode/opencode.db"),
+        ),
+        (
+            Source::Mcode,
+            home.join(".minimax/v2/sqlite/runtime-state.sqlite"),
         ),
     ];
     for name in ["antigravity-cli", "antigravity", "antigravity-ide"] {
@@ -190,6 +238,39 @@ pub fn locate(root: Option<&Path>, source: &str, id: &str) -> Result<Located, Re
             } else {
                 Vec::new()
             }
+        } else if kind == Source::Mcode {
+            let db = mcode_runtime_db(&root);
+            let sessions_root = if root.is_dir() && root.join("sessions").is_dir() {
+                root.join("sessions")
+            } else {
+                db.ancestors()
+                    .nth(2)
+                    .map(|p| p.join("sessions"))
+                    .unwrap_or_else(|| root.to_path_buf())
+            };
+            let mut list = Vec::new();
+            if db.exists() {
+                // history_relative_dir is the authoritative transcript pointer.
+                if let Ok(rows) = sqlite(
+                    &db,
+                    &format!(
+                        "SELECT json_object('hist',history_relative_dir) FROM local_runtime_sessions WHERE session_id='{}' LIMIT 1",
+                        id
+                    ),
+                ) {
+                    for row in rows {
+                        if let Some(hist) = row.get("hist").and_then(Value::as_str) {
+                            if !hist.is_empty() {
+                                list.push(sessions_root.join(hist).join("messages.jsonl"));
+                            }
+                        }
+                    }
+                }
+            }
+            if list.is_empty() {
+                let _ = walk(&sessions_root, kind, id, 4, &mut list);
+            }
+            list
         } else {
             let mut candidates = Vec::new();
             walk(&root, kind, id, 6, &mut candidates)?;
@@ -244,6 +325,16 @@ fn walk(
         let matched = match source {
             Source::Codex => ext == "jsonl" && (stem == id || stem.ends_with(&format!("-{id}"))),
             Source::Claude | Source::Cursor | Source::Qwen => ext == "jsonl" && stem == id,
+            Source::Mcode => {
+                ext == "jsonl"
+                    && stem == "messages"
+                    && mcode_session_dir_suffix(id).is_some_and(|suffix| {
+                        path.parent()
+                            .and_then(Path::file_name)
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|dir| dir.ends_with(&suffix))
+                    })
+            }
             Source::Antigravity => {
                 (ext == "jsonl" && stem == id)
                     || (ext == "jsonl"

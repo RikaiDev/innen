@@ -115,7 +115,7 @@ pub fn dialogue(source: Source, event: Value) -> Result<Option<Value>, ReadError
                 text(&event["payload"]["content"]),
             )
         }
-        Source::Claude | Source::Cursor => {
+        Source::Claude | Source::Cursor | Source::Mcode => {
             let node = event.get("message").unwrap_or(&event);
             let role = node
                 .get("role")
@@ -185,6 +185,8 @@ pub fn dialogue(source: Source, event: Value) -> Result<Option<Value>, ReadError
 pub(super) fn copy_identity(event: &Value, output: &mut Value) {
     for key in [
         "id",
+        "message_id",
+        "turn_id",
         "uuid",
         "step_index",
         "created_at",

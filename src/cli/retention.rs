@@ -45,7 +45,7 @@ struct CommonSessionArgs {
     /// Native session UUID or OpenCode ses_ id.
     id: String,
     /// Coding tool owning the native store.
-    #[arg(long, value_parser = ["agy", "antigravity", "codex", "claude", "opencode"])]
+    #[arg(long, value_parser = ["agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
     source: String,
     /// Override the native store root.
     #[arg(long)]
@@ -54,7 +54,7 @@ struct CommonSessionArgs {
 
 #[derive(clap::Args)]
 struct PlanArgs {
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "opencode"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
     source: String,
     #[arg(long)]
     source_root: Option<PathBuf>,
@@ -90,7 +90,7 @@ struct PurgeArgs {
 
 #[derive(clap::Args)]
 struct SweepArgs {
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "opencode"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
     source: String,
     #[arg(long)]
     source_root: Option<PathBuf>,

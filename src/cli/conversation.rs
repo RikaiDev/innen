@@ -22,7 +22,7 @@ pub(super) struct ConversationArgs {
     #[arg(long)]
     source_root: Option<PathBuf>,
     /// Tool to read; auto searches standard local stores and rejects ambiguity.
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
     source: String,
     /// Dialogue is text; events retains native fields; index is incomplete navigation previews.
     #[arg(long, default_value = "dialogue", value_parser = ["dialogue", "events", "index", "context"])]

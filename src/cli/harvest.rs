@@ -13,7 +13,7 @@ pub(super) struct HarvestArgs {
     #[command(flatten)]
     pub(super) window: super::retention::RetentionWindow,
     /// Restrict native session inventory to one source.
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "opencode"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
     pub(super) source: String,
     /// Override the native store root; requires a concrete --source.
     #[arg(long, requires = "source")]

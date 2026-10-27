@@ -10,6 +10,9 @@ const ID_1: &str = "11111111-1111-4111-8111-111111111111";
 const ID_2: &str = "22222222-2222-4222-8222-222222222222";
 const ID_3: &str = "33333333-3333-4333-8333-333333333333";
 const ID_4: &str = "44444444-4444-4444-8444-444444444444";
+const ID_5: &str = "55555555-5555-4555-8555-555555555555";
+const ID_6: &str = "66666666-6666-4666-8666-666666666666";
+const ID_7: &str = "77777777-7777-4777-8777-777777777777";
 
 fn recent_rfc3339() -> String {
     let secs = SystemTime::now()
@@ -957,4 +960,383 @@ fn all_projects_pickup_unambiguous_and_ambiguous() {
     assert_eq!(parsed["session_id"], ID_1);
     assert_eq!(parsed["project"], proj_a.to_str().unwrap());
     assert!(parsed["resume_command"].as_str().unwrap().contains(ID_1));
+}
+
+fn write_copilot_session(root: &Path, id: &str, cwd: &str, events: &[Value]) {
+    let dir = root.join(id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("workspace.yaml"),
+        format!("productVersion: 1.0.0\ncwd: {cwd}\n"),
+    )
+    .unwrap();
+    let content = events
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(dir.join("events.jsonl"), content).unwrap();
+}
+
+fn write_grok_session(
+    root: &Path,
+    encoded_project: &str,
+    id: &str,
+    chat: &[Value],
+    events: &[Value],
+    updates: &[Value],
+) {
+    let dir = root.join(encoded_project).join(id);
+    fs::create_dir_all(&dir).unwrap();
+    let lines = |stream: &[Value]| {
+        stream
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    fs::write(dir.join("chat_history.jsonl"), lines(chat)).unwrap();
+    fs::write(dir.join("events.jsonl"), lines(events)).unwrap();
+    if !updates.is_empty() {
+        fs::write(dir.join("updates.jsonl"), lines(updates)).unwrap();
+    }
+}
+
+fn reason_codes(candidate: &Value) -> Vec<String> {
+    candidate["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["code"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn candidate_by_id<'a>(candidates: &'a [Value], id: &str) -> &'a Value {
+    candidates
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("candidate {id} missing in {:?}", candidates.len()))
+}
+
+#[test]
+fn copilot_candidate_discovery_workspaces_and_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store_root = tmp.path().join("session-state");
+    let proj = tmp.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let cwd = proj.to_str().unwrap();
+
+    // Trailing user request after a completed turn: kept, high confidence.
+    write_copilot_session(
+        &store_root,
+        ID_5,
+        cwd,
+        &[
+            json!({"type":"assistant.turn_start"}),
+            json!({"type":"user.message","data":{"text":"First ask"}}),
+            json!({"type":"assistant.message","data":{"text":"Answer"}}),
+            json!({"type":"assistant.turn_end"}),
+            json!({"type":"user.message","data":{"text":"Follow-up"}}),
+        ],
+    );
+    // A cleanly ended turn is the turn-level marker only: discovery keeps
+    // the candidate and the marker surfaces at low confidence.
+    write_copilot_session(
+        &store_root,
+        ID_6,
+        cwd,
+        &[
+            json!({"type":"assistant.turn_start"}),
+            json!({"type":"user.message","data":{"text":"Second ask"}}),
+            json!({"type":"assistant.message","data":{"text":"Answer"}}),
+            json!({"type":"assistant.turn_end"}),
+        ],
+    );
+    // `success:false` stays an unresolved failure; the turn ending after it
+    // does not close it. The request is answered first so the trailing
+    // signal is separate (covered by ID_5).
+    write_copilot_session(
+        &store_root,
+        ID_7,
+        cwd,
+        &[
+            json!({"type":"assistant.turn_start"}),
+            json!({"type":"user.message","data":{"text":"Third ask"}}),
+            json!({"type":"assistant.message","data":{"text":"Trying"}}),
+            json!({"type":"tool.execution_complete","data":{"success":false}}),
+            json!({"type":"assistant.turn_end"}),
+        ],
+    );
+    // A scaffold directory without an animated conversation is not a
+    // candidate (scanner), and workspace.yaml locates the project.
+    let scaffold = store_root.join("88888888-8888-4888-8888-888888888888");
+    fs::create_dir_all(&scaffold).unwrap();
+    fs::write(scaffold.join("workspace.yaml"), format!("cwd: {cwd}\n")).unwrap();
+
+    let output = Command::cargo_bin("innen")
+        .unwrap()
+        .current_dir(&proj)
+        .args([
+            "--format",
+            "json",
+            "unfinished",
+            "--source",
+            "copilot",
+            "--source-root",
+            store_root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed["count"], 3);
+    let candidates = parsed["candidates"].as_array().unwrap();
+    // Scoped discovery reports the process cwd, which the OS resolves
+    // physically (macOS /var -> /private/var); the store keeps the symlinked
+    // form for matching, the report keeps the process view. Canonicalize
+    // compares the two forms.
+    let expected = proj
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(candidates
+        .iter()
+        .all(|c| c["source"] == "copilot" && c["project"].as_str() == Some(expected.as_str())));
+
+    let trailing = candidate_by_id(candidates, ID_5);
+    assert!(reason_codes(trailing).contains(&"trailing_user_request_unanswered".into()));
+    assert_eq!(trailing["confidence"], "high");
+
+    let completed = candidate_by_id(candidates, ID_6);
+    let codes = reason_codes(completed);
+    assert!(codes.contains(&"explicit_turn_completed".into()), "{codes:?}");
+    assert_eq!(completed["confidence"], "low");
+
+    let failed = candidate_by_id(candidates, ID_7);
+    assert!(reason_codes(failed).contains(&"unresolved_tool_failure".into()));
+    assert_eq!(failed["confidence"], "medium");
+}
+
+#[test]
+fn grok_candidate_discovery_stream_evidence_and_unconsumed_acp_channel() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store_root = tmp.path().join("grok-sessions");
+    let proj = tmp.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let encoded = proj.to_string_lossy().replace('/', "%2F");
+
+    // Trailing user request + the last turn ending with an error outcome.
+    // A `reasoning` record after it is not an answer.
+    write_grok_session(
+        &store_root,
+        &encoded,
+        ID_5,
+        &[
+            json!({"type":"user","content":"Build the thing"}),
+            json!({"type":"assistant","content":"Working on it"}),
+            json!({"type":"user","content":"Also fix the tests"}),
+            json!({"type":"reasoning","content":"thinking"}),
+        ],
+        &[
+            json!({"type":"tool_started"}),
+            json!({"type":"tool_completed","outcome":"success"}),
+            json!({"type":"loop_started"}),
+            json!({"type":"turn_ended","outcome":"error"}),
+        ],
+        &[],
+    );
+    // A succeeded turn is the marker; the ACP chunk in updates.jsonl is not
+    // consumed, so no trailing reason appears despite the late chunk.
+    write_grok_session(
+        &store_root,
+        &encoded,
+        ID_6,
+        &[
+            json!({"type":"user","content":"One shot"}),
+            json!({"type":"assistant","content":"Done"}),
+        ],
+        &[
+            json!({"type":"loop_started"}),
+            json!({"type":"tool_completed","outcome":"success"}),
+            json!({"type":"turn_ended","outcome":"success"}),
+        ],
+        &[json!({"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"late ACP ask"}}}})],
+    );
+    // A failed tool outcome after the completed turn stays open.
+    write_grok_session(
+        &store_root,
+        &encoded,
+        ID_7,
+        &[
+            json!({"type":"user","content":"Shot"}),
+            json!({"type":"assistant","content":"Done"}),
+        ],
+        &[
+            json!({"type":"turn_ended","outcome":"success"}),
+            json!({"type":"tool_completed","outcome":"error"}),
+        ],
+        &[],
+    );
+
+    let output = Command::cargo_bin("innen")
+        .unwrap()
+        .current_dir(&proj)
+        .args([
+            "--format",
+            "json",
+            "unfinished",
+            "--source",
+            "grok",
+            "--source-root",
+            store_root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed["count"], 3);
+    let candidates = parsed["candidates"].as_array().unwrap();
+    // Same physical-cwd rule as the copilot test above.
+    let expected = proj
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(candidates
+        .iter()
+        .all(|c| c["source"] == "grok" && c["project"].as_str() == Some(expected.as_str())));
+
+    let unfinished = candidate_by_id(candidates, ID_5);
+    let codes = reason_codes(unfinished);
+    assert!(
+        codes.contains(&"trailing_user_request_unanswered".into())
+            && codes.contains(&"interrupted_or_cancelled".into()),
+        "{codes:?}"
+    );
+    assert_eq!(unfinished["confidence"], "high");
+
+    let completed = candidate_by_id(candidates, ID_6);
+    let codes = reason_codes(completed);
+    assert_eq!(
+        codes,
+        vec!["explicit_turn_completed".to_string()],
+        "{codes:?}"
+    );
+    assert_eq!(completed["confidence"], "low");
+
+    let failed = candidate_by_id(candidates, ID_7);
+    assert!(reason_codes(failed).contains(&"unresolved_tool_failure".into()));
+    assert_eq!(failed["confidence"], "medium");
+
+    // Coverage speaks with a fixed vocabulary per store row.
+    for row in parsed["coverage"].as_array().unwrap() {
+        let status = row["status"].as_str().unwrap();
+        assert!(
+            ["scanned", "missing", "skipped", "not-supported"].contains(&status),
+            "{row:?}"
+        );
+    }
+}
+
+#[test]
+fn mcode_candidate_discovery_and_status_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store_root = tmp.path().join("minimax");
+    let proj = tmp.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let cwd = proj.to_str().unwrap();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let db = store_root.join("sqlite").join("runtime-state.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let status = std::process::Command::new("sqlite3")
+        .arg(&db)
+        .arg(format!(
+            "CREATE TABLE local_runtime_sessions(session_id TEXT PRIMARY KEY, workspace_dir TEXT, project_workspace_dir TEXT, updated_at_ms INTEGER, history_relative_dir TEXT, parent_session_id TEXT, archived INTEGER, visibility TEXT, status TEXT, error_message TEXT); \
+             INSERT INTO local_runtime_sessions VALUES('mvs_aborted001','{cwd}','{cwd}',{now_ms},'day1/dir1','','0','visible','aborted',''); \
+             INSERT INTO local_runtime_sessions VALUES('mvs_error0001','{cwd}','{cwd}',{now_ms},'day1/dir2','','0','visible','error','boom'); \
+             INSERT INTO local_runtime_sessions VALUES('mvs_idle0001','{cwd}','{cwd}',{now_ms},'','','0','visible','idle',''); \
+             INSERT INTO local_runtime_sessions VALUES('mvs_archived1','{cwd}','{cwd}',{now_ms},'day1/dir3','','1','visible','aborted','');"
+        ))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    for dir in ["day1/dir1", "day1/dir2", "day1/dir3"] {
+        let transcript = store_root.join("sessions").join(dir);
+        fs::create_dir_all(&transcript).unwrap();
+        fs::write(
+            transcript.join("messages.jsonl"),
+            "{\"type\":\"message\",\"role\":\"user\",\"content\":\"work\"}\n",
+        )
+        .unwrap();
+    }
+
+    let output = Command::cargo_bin("innen")
+        .unwrap()
+        .current_dir(&proj)
+        .args([
+            "--format",
+            "json",
+            "unfinished",
+            "--source",
+            "mcode",
+            "--source-root",
+            store_root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed["count"], 3);
+    let candidates = parsed["candidates"].as_array().unwrap();
+    // Same physical-cwd rule as the copilot test above.
+    let expected = proj
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(candidates
+        .iter()
+        .all(|c| c["source"] == "mcode" && c["project"].as_str() == Some(expected.as_str())));
+
+    let aborted = candidate_by_id(candidates, "mvs_aborted001");
+    assert!(reason_codes(aborted).contains(&"interrupted_or_cancelled".into()));
+    assert_eq!(aborted["confidence"], "high");
+
+    let errored = candidate_by_id(candidates, "mvs_error0001");
+    let failure = errored["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["code"] == "unresolved_tool_failure")
+        .cloned()
+        .unwrap();
+    assert!(failure["detail"].as_str().unwrap().contains("boom"));
+    assert_eq!(errored["confidence"], "medium");
+
+    // No completed status exists in the runtime database: an idle session
+    // stays a quiet low-confidence recent-activity candidate.
+    let idle = candidate_by_id(candidates, "mvs_idle0001");
+    let codes = reason_codes(idle);
+    assert!(
+        codes.contains(&"recent_activity_uncheckpointed".into()) && codes.len() == 1,
+        "{codes:?}"
+    );
+    assert_eq!(idle["confidence"], "low");
 }

@@ -12,7 +12,7 @@ pub(super) struct ResumeArgs {
     #[arg(long)]
     source_root: Option<PathBuf>,
     /// Tool to read; auto searches standard local stores and rejects ambiguity.
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "gemini", "opencode", "grok", "copilot", "cursor", "vscode", "qwen"])]
     source: String,
     /// Projection view: brief (default), context, dialogue, events, index.
     #[arg(long, value_parser = ["brief", "dialogue", "events", "index", "context"])]

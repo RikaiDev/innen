@@ -238,7 +238,7 @@ These CLI/MCP comparisons describe packaging tradeoffs, not a paired benchmark o
 
 1. **Harvest (`innen harvest` / `innen ingest`)**: Imports conversation transcripts into durable knowledge graph entities and journal events. `harvest --check` inspects staged Markdown in `00-inbox/harvest`; `ingest` appends them to `.innen/journal.jsonl`.
 2. **Checkpoint (`innen checkpoint`)**: Records progress snapshots (`active`, `blocked`, `completed`, `superseded`) in append-only local storage outside Git (`.innen/checkpoints.jsonl` with `.innen/.gitignore`). Checkpoints record goals, completed work, observations, blockers, next actions, and verification without modifying Git or rewriting prior history.
-3. **Unfinished Discovery (`innen unfinished`)**: Discovers recent candidate conversations across local agent stores (`agy`, `codex`, `claude`, etc.) using structural evidence (unanswered user requests, interrupted turns, unresolved tool failures, recent activity). Candidates are explicitly labeled `candidate` based on structural heuristics, never fabricated semantic certainty. Completed or superseded sessions are excluded.
+3. **Unfinished Discovery (`innen unfinished`)**: Discovers recent candidate conversations across local agent stores (`agy`, `codex`, `claude`, etc.) using structural evidence (unanswered user requests, interrupted turns, unresolved tool failures, recent activity). Candidates are explicitly labeled `candidate` based on structural heuristics, never fabricated semantic certainty. Sessions with an explicit `completed`/`superseded` checkpoint are excluded; a completed last turn alone is kept as a low-confidence candidate marker.
 4. **Context Continuation (`innen resume` / `innen pickup`)**: Reconstructs working context without full transcript dumps:
    - `resume`: Emits structured context (`--view context --compact --deltas`) with line provenance.
    - `pickup`: Designed for a fresh agent session. Selects only when unambiguous (or returns concise candidate choices), emits compact checkpoint + evidence pointers + exact resume command, and never executes transcript text.
@@ -488,7 +488,8 @@ innen read <session-id> --source claude --source-root /relocated/projects
 ```
 
 `conversation` is an alias-equivalent command. Auto discovery matches full UUIDs
-or native OpenCode `ses_...` IDs, never a fuzzy prefix. Use `--source` to select
+or native OpenCode `ses_...` / mcode `mvs_...` IDs, never a fuzzy prefix. Use
+`--source` to select
 one tool. `--source-root` requires `--source` and overrides its store location.
 Multiple matching files are an explicit ambiguity error, not an arbitrary choice.
 
@@ -574,7 +575,9 @@ innen unfinished --all-projects
 innen unfinished --all-projects --source codex --since 48h
 ```
 
-Candidates are classified by structural evidence (`interrupted_or_cancelled`, `trailing_user_request_unanswered`, `unresolved_tool_failure`, `recent_activity_uncheckpointed`) with confidence scores. Any session with an explicit `completed` or `superseded` checkpoint is automatically excluded.
+Candidates are classified by structural evidence (`checkpoint_active`, `checkpoint_blocked`, `interrupted_or_cancelled`, `trailing_user_request_unanswered`, `task_state_outstanding`, `unresolved_tool_failure`, `recent_activity_uncheckpointed`) with confidence scores. Exclusion is explicit-terminal-state-only: a session with a `completed` or `superseded` checkpoint is excluded. A turn-level completion record (`explicit_turn_completed`, including a succeeded turn outcome on structured stores) is kept as a low-confidence marker -- it states that the last turn ended, never that the task is done.
+
+Discovery reports per-store `coverage` in JSON output and a coverage summary in human output, with one status per source: `scanned` (wired scanner, store read this run), `missing` (wired scanner, store absent on this machine), `skipped` (excluded by `--source`), or `not-supported` (known store whose scanner is not wired). Coverage tells whether a store was inspected; an empty candidate list is distinguishable from an uninspected store.
 
 When `--all-projects` is specified, `innen` scans across all projects in local agent stores without requiring a current project directory. Each candidate includes its `project` provenance (e.g. `/Users/username/Workspace/project`) or an explicit `"unknown"` identity if no workspace was recorded. Checkpoints remain strictly per-project: if a candidate has a known project directory with `.innen/checkpoints.jsonl`, its per-project checkpoint is respected (`completed`/`superseded` excluded; `active`/`blocked` attached). Project-scoped discovery (`innen unfinished` without `--all-projects` or with `--project <dir>`) remains strictly isolated to that project.
 
@@ -600,13 +603,15 @@ When unambiguous, `pickup` returns the target session, latest checkpoint, struct
 | `claude` | `~/.claude/projects/**/<id>.jsonl` |
 | `qwen` | `~/.qwen/projects/*/chats/<id>.jsonl` |
 | `gemini` | `~/.gemini/tmp/**/session-*.json` or `.jsonl`; full metadata ID checked |
+| `mcode` | `~/.minimax/v2/sqlite/runtime-state.sqlite` (`local_runtime_sessions`) pointing at `~/.minimax/v2/sessions/**/*.jsonl` |
 | `opencode` | `~/.local/share/opencode/opencode.db`; session/messages/parts queried read-only |
-| `grok` | `~/.grok/sessions/**/<id>/chat_history.jsonl` |
+| `grok` | `~/.grok/sessions/**/<id>/chat_history.jsonl`; the sibling `events.jsonl` is read for runtime outcome evidence |
 | `copilot` | `~/.copilot/session-state/<id>/events.jsonl` |
 | `cursor` | `~/.cursor/projects/**/<id>.jsonl` exported agent transcripts |
 | `vscode` | Code / Code - Insiders / VSCodium `User/workspaceStorage/*/chatSessions/<id>.json` under macOS Application Support or Linux `.config` |
 
-OpenCode requires `sqlite3` on PATH; other adapters do not launch another program.
+OpenCode and mcode require `sqlite3` on PATH; other adapters do not launch
+another program.
 Database-only Antigravity, Cursor's private database, cloud-only histories, and
 unlisted source format versions are not decoded. Tool support here refers to the
 listed source formats, not every past or future version. Missing data is reported

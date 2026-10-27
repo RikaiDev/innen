@@ -14,13 +14,19 @@ use super::ReadError;
 
 mod antigravity;
 mod codex;
+mod copilot;
 mod dash;
+mod grok;
+mod mcode;
 mod opencode;
 mod time;
 
 use antigravity::scan_antigravity_sessions;
 use codex::scan_codex_sessions;
+use copilot::scan_copilot_sessions;
 use dash::scan_dash_named_projects;
+use grok::scan_grok_sessions;
+use mcode::scan_mcode_sessions;
 use opencode::scan_opencode_sessions;
 
 pub(crate) use time::system_time_to_rfc3339;
@@ -167,6 +173,15 @@ pub fn find_project_candidates(
             Source::Opencode => {
                 scan_opencode_sessions(&root, &candidate_paths, &mut candidates)?;
             }
+            Source::Mcode => {
+                scan_mcode_sessions(&root, &candidate_paths, &mut candidates)?;
+            }
+            Source::Copilot => {
+                scan_copilot_sessions(&root, &candidate_paths, &mut candidates)?;
+            }
+            Source::Grok => {
+                scan_grok_sessions(&root, &candidate_paths, &mut candidates)?;
+            }
             _ => {}
         }
     }
@@ -205,6 +220,15 @@ pub fn find_all_candidates(
             }
             Source::Opencode => {
                 scan_opencode_sessions(&root, &empty_targets, &mut candidates)?;
+            }
+            Source::Mcode => {
+                scan_mcode_sessions(&root, &empty_targets, &mut candidates)?;
+            }
+            Source::Copilot => {
+                scan_copilot_sessions(&root, &empty_targets, &mut candidates)?;
+            }
+            Source::Grok => {
+                scan_grok_sessions(&root, &empty_targets, &mut candidates)?;
             }
             _ => {}
         }
@@ -272,4 +296,46 @@ fn deduplicate_candidates(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
     let mut out: Vec<_> = selected.into_values().collect();
     out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.id.cmp(&b.id)));
     out
+}
+
+/// Sources whose default-layout scanner arm is wired in this release.
+/// Exhaustive over the source enum so a new store cannot be silently added
+/// to `default_stores` without either wiring it or traveling below.
+pub(crate) fn scanner_wired(source: Source) -> bool {
+    matches!(
+        source,
+        Source::Claude
+            | Source::Qwen
+            | Source::Codex
+            | Source::Antigravity
+            | Source::Opencode
+            | Source::Mcode
+            | Source::Copilot
+            | Source::Grok
+    )
+}
+
+/// Runs a default-store discovery query with one bounded retry: a live
+/// writer momentarily locking its database must not silently empty the
+/// discovery. A persistent failure degrades this one store to "no
+/// candidates" with a stderr note instead of aborting discovery of the
+/// other stores.
+pub(super) fn store_query_with_retry(path: &Path, sql: &str) -> Option<Vec<Value>> {
+    match sources::sqlite(path, sql) {
+        Ok(rows) => Some(rows),
+        Err(first) => {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            match sources::sqlite(path, sql) {
+                Ok(rows) => Some(rows),
+                Err(_) => {
+                    eprintln!(
+                        "innen: store read degraded, treating as no candidates: {} ({})",
+                        path.display(),
+                        first
+                    );
+                    None
+                }
+            }
+        }
+    }
 }
