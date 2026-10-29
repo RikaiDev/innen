@@ -1,12 +1,32 @@
-# innen (因縁) — a deterministic, CLI-first realization of the LLM Wiki
+# innen (因縁) — the knowledge base coding agents hand work to each other through
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 2021](https://img.shields.io/badge/Rust-2021%20%28MSRV%201.90%29-orange.svg)](https://www.rust-lang.org/)
-[![Architecture: Event--Sourced](https://img.shields.io/badge/Architecture-Event--Sourced%20Graph-green.svg)](#architecture)
-[![Zero-Daemon](https://img.shields.io/badge/Runtime-Zero--Daemon%20CLI%20Binary-black.svg)](#why-zero-daemon-cli-over-mcp)
+[![Architecture: Event--Sourced](https://img.shields.io/badge/Architecture-Event--Sourced%20Graph-green.svg)](#7-architecture)
+[![Zero-Daemon](https://img.shields.io/badge/Runtime-Zero--Daemon%20CLI%20Binary-black.svg)](#3-why-zero-daemon-cli-over-mcp)
 [![Read: Local Sessions](https://img.shields.io/badge/Read-Local%20Sessions-blue.svg)](#read-a-conversation-directly-by-session-id)
 
+Every week I moved the same repository between Claude Code and Codex, and every
+switch started from zero — re-explaining the project to an agent that had
+worked in it the day before. Every few weeks I came back to a project, stared
+at a list of old sessions, and realized none of them could hand the work back.
+
+The agent spends its first tokens re-deriving what the last session already
+established. When a session ends, whatever it learned dies inside one tool's
+transcript, in one vendor's format. The work never compounds.
+
+That led to a question: what if the knowledge base already existed, and the
+agent only had to pick up where the last one left off?
+
+That question became innen.
+
 **innen is an open-source knowledge engine built to reduce the context and tokens an LLM agent must reload to continue work, while preserving explicit evidence boundaries.** As a single, zero-daemon Rust binary, it implements an append-only event-sourced journal, dual embedded derived indexes (Redb + Tantivy CJK BM25), and read-only coding-tool conversation adapters. Source retrieval and durable knowledge ingestion are separate operations.
+
+- The knowledge base owns what is known and how it was proven.
+- The agent owns what to do next.
+- innen owns the seam between them: `checkpoint` → `unfinished` → `pickup` —
+  deterministic entry points that make handoff a loop through the KB,
+  not a transcript dump.
 
 Bounded output is a product contract: commands emit compact summaries by default,
 keep raw transcripts and per-item inventories behind explicit detail flags, and
@@ -20,6 +40,8 @@ are output budgets, not claims about provider billing.
 ## Start with the question
 
 ```bash
+innen pickup                          # Get checkpoint + exact resume command for an open thread.
+innen unfinished                      # List candidate conversations still open.
 innen project                         # What remains across recorded projects?
 innen project nhri-pcne                # What remains in this project?
 innen project nhri-pcne --view evidence # Why? Expand task status history and source events.
@@ -33,43 +55,266 @@ journal/transcript parsing is needed to answer the project task question.
 `unfinished` finds heuristic conversation candidates, not confirmed business tasks.
 No new top-level task command is introduced.
 
-`project` now defaults to compact recorded task rows. It replays status updates,
-excludes only explicit terminal statuses, deduplicates memberships, respects current
-edge validity and retractions, and retains unknown status and unassigned tasks.
-The project dictionary also includes projects with no recorded pending tasks;
-that absence does not prove all work is complete. Recorded next actions and
-blockers are included without inventing them from conversation snippets.
-Use `--limit` and `--offset` with `next_offset` for larger portfolios. Paging reads
-current state, so repeat the query if another writer changes the journal mid-read.
+---
 
-**Output migration:** consumers of the previous `{id,render}` project response
-must use `project <id> --view full`. That view preserves the legacy page contract,
-including its unfiltered Tasks section. `--view evidence` includes terminal tasks,
-merged node metadata and append-only history with event IDs and source line numbers.
-The default brief is a navigation layer, not lossless compression of that history.
+## 1. The handoff loop
 
-`query` is also the task-context entry when the project is not yet known. Its
-default `--view context` accepts the original natural-language request and
-returns bounded candidate rows, recorded project links, decisions, authority
-gaps, and a structured evidence-expansion argv. Use `--view hits` for the
-legacy lexical-plus-graph hit wire shape, or `--view evidence` to expand the
-selected rows with node payloads and append-only journal history. Query scope
-is deterministic: `--root` wins, then an absolute `INNEN_ROOT`, then the
-absolute root registered by `innen config set --global root <path>`; an
-unconfigured or malformed global root fails explicitly and never creates a
-`.innen` directory in the current working directory. `--as-of`, `--offset`,
-`--limit`, and `--include-expired` are preserved in expansion handles.
+innen turns handoff between coding agents into a loop through the knowledge
+base, with a deterministic entry point at every stage. The loop is structural,
+not magical: each stage below states what it guarantees and what it does not.
 
-The context view reports lexical candidate resolution and provenance, not
-semantic certainty. A filename or `final` status alone is not an approved
-editable baseline; missing or conflicting authority remains `missing` or
-`ambiguous`.
+```text
+agent A works
+   │  context runs low or the task pauses
+   ▼
+innen checkpoint record            # park: objective, state, next action, evidence
+   │
+   ▼  any tool, any morning, same repository
+innen unfinished                   # discover: ranked candidate threads
+   │
+   ▼
+innen pickup                       # pick up: checkpoint + evidence pointers + resume command
+   │
+   ▼
+innen resume                       # resume: bounded context with line provenance
+   │
+   ▼
+the agent works                    # the loop closes where it started
+   │
+   ▼
+innen harvest --check → innen ingest → wiki/graph    # fold back: knowledge compounds
+   │
+   ▼
+innen query / innen project        # ask: what is known, what remains
+```
 
-When the graph has no candidate, the CLI also performs a bounded, read-only
-filename search in the current user's `~/Documents` and `~/Downloads`. Matching
-office files appear as `unindexed_local_candidates` with absolute paths. This
-does not read file contents, add graph nodes, or archive private files; use
-`artifact add` and an explicit project link after verifying a candidate.
+### 1.1 Park the work: `checkpoint`
+
+2. **Checkpoint (`innen checkpoint`)**: Records progress snapshots (`active`, `blocked`, `completed`, `superseded`) in append-only local storage outside Git (`.innen/checkpoints.jsonl` with `.innen/.gitignore`). Checkpoints record goals, completed work, observations, blockers, next actions, and verification without modifying Git or rewriting prior history.
+
+Checkpoints provide deterministic, local-only progress tracking stored outside Git in `.innen/checkpoints.jsonl` (guarded by an automatic `.innen/.gitignore`):
+
+```bash
+# Record an active checkpoint for a session
+innen checkpoint record --session <session-id> --source codex \
+  --status active \
+  --objective "Implement search indexing" \
+  --completed "Created schema,Wired Tantivy writer" \
+  --evidence "Index file written: target/idx" \
+  --next-action "Add CJK tokenizer tests" \
+  --verification "cargo test --test search"
+
+# Show the latest checkpoint for a session (or auto-discover project candidate)
+innen checkpoint show <session-id>
+innen checkpoint show
+
+# List all latest session checkpoints in the project
+innen checkpoint list
+```
+
+### 1.2 Discover unfinished threads: `unfinished`
+
+3. **Unfinished Discovery (`innen unfinished`)**: Discovers recent candidate conversations across local agent stores (`agy`, `codex`, `claude`, etc.) using structural evidence (unanswered user requests, interrupted turns, unresolved tool failures, recent activity). Candidates are explicitly labeled `candidate` based on structural heuristics, never fabricated semantic certainty. Sessions with an explicit `completed`/`superseded` checkpoint are excluded; a completed last turn alone is kept as a low-confidence candidate marker.
+
+```bash
+# Discover unfinished candidate conversations from yesterday and today (default)
+innen unfinished
+
+# Discover unfinished conversations with custom cutoff (e.g. 3d, 48h, YYYY-MM-DD, RFC3339)
+innen unfinished --since 3d
+
+# Filter candidate discovery by source agent
+innen unfinished --source agy
+
+# Portfolio discovery across all projects (Codex, agy, claude, etc.)
+innen unfinished --all-projects
+
+# Portfolio discovery filtered by source with custom cutoff
+innen unfinished --all-projects --source codex --since 48h
+```
+
+Candidates are classified by structural evidence (`checkpoint_active`, `checkpoint_blocked`, `interrupted_or_cancelled`, `trailing_user_request_unanswered`, `task_state_outstanding`, `unresolved_tool_failure`, `recent_activity_uncheckpointed`) with confidence scores. Exclusion is explicit-terminal-state-only: a session with a `completed` or `superseded` checkpoint is excluded. A turn-level completion record (`explicit_turn_completed`, including a succeeded turn outcome on structured stores) is kept as a low-confidence marker -- it states that the last turn ended, never that the task is done.
+
+Discovery reports per-store `coverage` in JSON output and a coverage summary in human output, with one status per source: `scanned` (wired scanner, store read this run), `missing` (wired scanner, store absent on this machine), `skipped` (excluded by `--source`), or `not-supported` (known store whose scanner is not wired). Coverage tells whether a store was inspected; an empty candidate list is distinguishable from an uninspected store.
+
+When `--all-projects` is specified, `innen` scans across all projects in local agent stores without requiring a current project directory. Each candidate includes its `project` provenance (e.g. `/Users/username/Workspace/project`) or an explicit `"unknown"` identity if no workspace was recorded. Checkpoints remain strictly per-project: if a candidate has a known project directory with `.innen/checkpoints.jsonl`, its per-project checkpoint is respected (`completed`/`superseded` excluded; `active`/`blocked` attached). Project-scoped discovery (`innen unfinished` without `--all-projects` or with `--project <dir>`) remains strictly isolated to that project.
+
+### 1.3 Pick up: `pickup`
+
+4. **Context Continuation (`innen resume` / `innen pickup`)**: Reconstructs working context without full transcript dumps:
+   - `resume`: Emits structured context (`--view context --compact --deltas`) with line provenance.
+   - `pickup`: Designed for a fresh agent session. Selects only when unambiguous (or returns concise candidate choices), emits compact checkpoint + evidence pointers + exact resume command, and never executes transcript text.
+
+```bash
+# Automatically pick up an unambiguous unfinished session for the current project
+innen pickup
+
+# Pick up an unambiguous unfinished session across all projects
+innen pickup --all-projects
+
+# Pick up a specific session by ID
+innen pickup <session-id>
+```
+
+When unambiguous, `pickup` returns the target session, latest checkpoint, structural evidence pointers, and the exact `innen resume` command for continuation. It never executes transcript text. If multiple candidates match, it returns an explicit ambiguity list with IDs, project provenance, and reason codes, never guessing or silently picking another project.
+
+### 1.4 Resume with bounded context: `resume`
+
+   - `resume`: Emits structured context (`--view context --compact --deltas`) with line provenance.
+
+```bash
+# Automatically discover and resume unambiguous session for current project
+innen resume
+
+# Resume explicit session with structured context view and compact+deltas encoding
+innen resume <session-id>
+
+# Resume with specific source, lines, or project override
+innen resume --project /path/to/project --source codex
+innen resume <session-id> --lines 175,307
+innen resume <session-id> --offset 20 --limit 20
+```
+
+`resume` is a self-describing entry point designed for seamless session continuation across coding agents. Unlike raw `read` which defaults to unstructured dialogue, `resume` defaults to `--view context --compact --deltas`, factoring repeated payloads and preserving exact line provenance without inventing semantic summaries.
+
+When called without a session ID (`innen resume`), it inspects available project/session metadata across local stores. If exactly one unambiguous candidate session matches the current project, it resumes it immediately; otherwise it returns concise candidate choices with IDs and explicit ambiguity, never silently choosing another project.
+
+### 1.5 Fold it back into the KB: `harvest` / `ingest`
+
+Finished work becomes durable knowledge: `harvest --check` finds harvestable
+conversations, `ingest` appends them to the journal. See §4 Durable knowledge.
+
+### 1.6 Ask the KB: `query` / `project`
+
+The next session starts from the knowledge base: `query` when the project is
+unknown, `project` when it is. See Start with the question above and §9 Reference.
+
+---
+
+## 2. Why innen exists
+
+The problem is not context windows. Compaction, larger windows, and memory
+features all try to keep one agent's context alive longer. None of them hand
+work between agents: a memory feature remembers for you, but it does not hand
+the work over, and a session transcript belongs to the tool that wrote it.
+The durable thing is not the session. It is the knowledge base the work leaves
+behind — and the loop that keeps it current.
+
+In April 2026, **Andrej Karpathy** published his formal [LLM Wiki Guide](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), outlining a radical shift away from opaque corporate AI memory silos toward an open, explicit, compounding knowledge base:
+
+> *"In the age of LLM agents, sharing specific code or apps is no longer necessary. You only need to share the core idea (an idea file), and everyone's personal agent will tailor-build the realization to their exact needs."*
+
+Karpathy articulated four foundational pillars of the **LLM Wiki**:
+- **Explicit**: The knowledge is laid out in plain sight; you can inspect exactly what the AI knows and what it does not.
+- **Yours**: Held on your own machine under your direct ownership, free from vendor lock-in.
+- **File over app**: Stored in durable formats (Markdown, JSON, images) readable by standard Unix tools.
+- **BYOAI (Bring Your Own AI)**: Model-agnostic; agents across different providers can all read and write to it.
+
+Continuity is the pillar this list does not name: knowledge that compounds
+across sessions, tools, and machines, so the next agent starts from what is
+already proven instead of from zero.
+
+### The Limits of Naive Markdown at Scale
+
+Karpathy's initial observation was elegant: *"At small scale (~100 articles, ~400k words), no RAG is needed; the LLM simply navigates through index files."*
+
+However, once an agentic knowledge base scales to hundreds of daily transcripts across multiple coding tools, multi-project experiment matrixes, and evolving research state, naive flat markdown approaches hit structural ceilings:
+
+1. **Ephemeral Chat Evaporation**: Modern developers switch between multiple coding tools (Codex, Claude Code, Gemini/Antigravity, OpenCode, Grok). Valuable decisions, root-cause analyses, and test receipts vanish into gigabytes of scattered JSON/JSONL logs.
+2. **Context Window & Token Tax**: Dumping raw transcripts and verbose ledgers into prompts rapidly inflates token costs (2,500 – 5,000+ tokens per retrieval), slows inference, and causes context dilution / needle-in-a-haystack forgetting.
+3. **Loss of Temporal Provenance**: Flat file edits overwrite past state. When was a decision made? Which experiment invalidated it? Overwrites destroy causal continuity.
+4. **Daemon Bloat & Vector Flaws**: Traditional memory engines rely on background daemon processes, open HTTP ports, and non-deterministic vector databases that miss exact hashes and issue IDs while consuming excessive battery and memory.
+
+**`innen` is an opinionated, production-grade realization of the LLM Wiki paradigm.** It bridges human-readable markdown with the mathematical rigor of an append-only event journal, deterministic graph retrieval, and multi-agent conversation harvesting.
+
+---
+
+## 3. Why Zero-Daemon CLI over MCP?
+
+Rather than implementing a long-running Model Context Protocol (MCP) server daemon, **`innen` is engineered strictly as a zero-daemon, high-performance CLI (similar to `rtk`, `rg`, and `git`)**.
+
+| Dimension | MCP Server Daemon | innen CLI (`rtk`-style) |
+|---|---|---|
+| **Context Window Overhead** | **1,500 – 2,500 tokens / turn** (Mandatory tool schemas in system prompt) | **0 tokens** (Zero schema tax; tool definitions loaded on demand via skills/AGENTS.md) |
+| **Agent Ecosystem Reach** | Fragmented (Requires separate client configs for Claude Desktop, IDE extensions, etc.) | **100% Universal** (Invoked via standard `run_command` / bash across Codex, Claude, Gemini, OpenCode, Grok) |
+| **Runtime Footprint** | Persistent background daemon, memory leakage risk, open ports | **Stateless**: 17ms cold start, <7MB RAM, terminates immediately after execution |
+| **Concurrency & Locks** | Daemon contention over SQLite / Redb WAL locks | Clean file locks; zero long-lived handles |
+| **Human Ergonomics** | Opaque RPC protocol inaccessible from terminal | First-class Unix citizen (`innen query --q "..." \| fzf`, `innen project <id> \| pbcopy`, git hooks) |
+
+These CLI/MCP comparisons describe packaging tradeoffs, not a paired benchmark of total agent token usage. Discovery, instructions, command arguments, output, and cache behavior still have costs. The OpenCode source reader uses the local `sqlite3` executable.
+
+---
+
+## 4. Durable knowledge
+
+- **Harvest (`innen harvest` / `innen ingest`)**: Imports conversation transcripts into durable knowledge graph entities and journal events. `harvest --check` inspects staged Markdown in `00-inbox/harvest`; `ingest` appends them to `.innen/journal.jsonl`.
+
+`read <session-id>` retrieves local source conversations directly. It does not
+create graph nodes or infer decisions. `harvest --check` currently inspects
+Markdown already present in `00-inbox/harvest`; `ingest` processes that inbox.
+`harvest --coding-sessions` adds a read-only native-store inventory with exact
+retention blockers; it does not treat discovery as extraction.
+To recover document links from an older Codex delivery, inspect one exact
+session with `innen harvest --check --source codex --session <id>`. The result
+includes source lines, whether each linked file still exists, and bounded
+same-name candidates after a move. It never archives a file or treats a linked
+template as the delivered artifact without review.
+
+### Inventory a directory without copying it
+
+Directory artifacts containing private or large source bytes can be inventoried without
+copying those bytes into the versionable knowledge base:
+
+```bash
+innen artifact add-tree \
+  --directory /absolute/source-directory \
+  --manifest /absolute/owner-repo/receipts/tree.json \
+  --project project:id
+```
+
+`add-tree` hashes regular files with bounded memory, records symlinks without following
+them, sorts relative paths, archives the resulting manifest content-addressably, and
+returns `metadata_only: true`. The receipt proves the observed tree; it is not a second
+copy or backup of source bytes. Put the manifest outside the inventoried directory.
+
+### Final-only artifact collections
+
+`artifact add` is an immutable evidence snapshot: it keeps every submitted
+version under `03-output/artifacts/by-sha256/`. Use `artifact finalize` when a
+deliverable must have **one current release** in the wiki. It publishes the
+explicit final files to `03-output/artifacts/collections/<collection>/` and
+removes only the exact source and superseded files listed in a hash-bound plan.
+It does not infer drafts from filenames or delete unrelated files.
+
+```json
+{
+  "format": "innen.final-collection.v1",
+  "collection": "client-quote-2026",
+  "final_files": [
+    {"path": "/absolute/wiki/03-output/quotations/final.pdf", "sha256": "<64 hex characters>"}
+  ],
+  "remove_files": [
+    {"path": "/absolute/wiki/03-output/quotations/draft.pdf", "sha256": "<64 hex characters>"}
+  ]
+}
+```
+
+```bash
+innen artifact finalize --plan /absolute/plan.json
+innen artifact finalize --plan /absolute/plan.json --apply
+```
+
+The first command is a read-only preflight. Apply rechecks every file hash,
+copies and verifies the final bytes in a staged collection, atomically publishes
+the collection, then removes listed files and the original final-file paths.
+The collection's `manifest.json` records only its final files. A later release
+uses a new collection name and may list the old collection files in
+`remove_files`; this preserves final-only visibility without guessing which
+version supersedes another.
+
+---
+
+## 5. Advanced opt-in capabilities
 
 ### Contract-scoped evidence closure (opt-in)
 
@@ -122,6 +367,8 @@ The runtime does not repair malformed model JSON or refresh invalid quotations.
 Malformed model output remains an error; diagnostic repair and controller review
 must never be promoted to automatic success.
 
+Evidence-ID proposal draft: prepare with `query --q QUESTION --evidence-contract scope.json --prepare-proposal --evidence-ids`; pass the emitted output schema to the model transport and only `model_context` as source data. Bind the returned draft with the original `context_sha256` in a trusted envelope and validate using `--task-draft envelope.json`. IDs resolve whole source-body spans; valid references still require semantic review through `--proposal-review`.
+
 ### v0.4.0: source tracing and context middleware
 
 Run `innen wiki sync` after wiki edits to project source references into the
@@ -140,127 +387,220 @@ See [the middleware contract](docs/middleware.md) for the request schema and
 integration boundary. This offline command does not automatically replace the
 history of an already-running agent session.
 
-### v0.3.0 migration
-
-Project lookup now accepts canonical IDs, namespace-free slugs, unique labels,
-unique basenames, and absolute paths containing a `/Workspace/` suffix. An
-ambiguous shorthand fails with candidate IDs instead of guessing.
-
-`artifact add-tree` archives a content-addressed directory manifest, not the
-source bytes. Keep or separately archive the source directory until another
-verified byte copy exists. Accepted task-proposal reviews now require explicit
-premises with supported, missing, or counterevidence spans; source-valid model
-text alone remains insufficient.
-
-Conversation grammar, evidence contracts, and task proposals remain opt-in;
-existing conversation/query defaults are unchanged.
-
-### v0.2.0 migration
-
-Register the knowledge-base root once with an absolute path:
+### Opt-in native conversation grammar
 
 ```bash
-innen config set --global root /absolute/path/to/knowledge-base
+innen conversation <session-id> --view context --compact --deltas --codec conversation
+innen conversation --encode-json /private/ordinary-page.json
+innen conversation --validate-packet /private/packet.json
+innen conversation --decode-packet /private/packet.json
 ```
 
-An explicit `--root` takes precedence, followed by a non-empty `INNEN_ROOT`;
-the registered global root is used otherwise. The root must be absolute.
+The Rust codec compares ordinary and existing compact representations with
+line/content-defined chunks and bounded Re-Pair-style dictionary rules. It scores
+the complete self-describing output with `o200k_base` reference tokens, including
+the grammar guide, and retains the cheaper candidate. It preserves source lines,
+roles, order, corrections, warnings and pagination; it performs no semantic
+selection. Grammar packets verify a canonical source SHA-256 on restore.
 
-The default `query` view is now `context`; use `--view hits` for the legacy
-lexical-plus-graph hit shape and `--view evidence` for expanded evidence. The
-default `project` output is the compact brief; use `project <id> --view full`
-for the legacy full page. `resume <session-id>` emits the bounded brief by
-default; use `--view context`, `--view dialogue`, or `--view events` when a
-different page is needed.
-
-Verify which executable is being used when Homebrew and a local wrapper are
-both installed:
-
-```bash
-command -v innen
-innen --version
-```
-
-`~/.local/bin/innen` (a dev build from `scripts/dev-install.sh`) shadows the
-Homebrew installation until it is retired; see "Build from source" below.
-
-The repository also contains local research harnesses for evaluating output
-length and retrieval fidelity. They are excluded from the release package and
-their private corpora are not release evidence; output size is not billed-token
-savings or a comprehension guarantee.
-
-## 1. Context & Motivation
-
-In April 2026, **Andrej Karpathy** published his formal [LLM Wiki Guide](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), outlining a radical shift away from opaque corporate AI memory silos toward an open, explicit, compounding knowledge base:
-
-> *"In the age of LLM agents, sharing specific code or apps is no longer necessary. You only need to share the core idea (an idea file), and everyone's personal agent will tailor-build the realization to their exact needs."*
-
-Karpathy articulated four foundational pillars of the **LLM Wiki**:
-- **Explicit**: The knowledge is laid out in plain sight; you can inspect exactly what the AI knows and what it does not.
-- **Yours**: Held on your own machine under your direct ownership, free from vendor lock-in.
-- **File over app**: Stored in durable formats (Markdown, JSON, images) readable by standard Unix tools.
-- **BYOAI (Bring Your Own AI)**: Model-agnostic; agents across different providers can all read and write to it.
-
-### The Limits of Naive Markdown at Scale
-
-Karpathy's initial observation was elegant: *"At small scale (~100 articles, ~400k words), no RAG is needed; the LLM simply navigates through index files."*
-
-However, once an agentic knowledge base scales to hundreds of daily transcripts across multiple coding tools, multi-project experiment matrixes, and evolving research state, naive flat markdown approaches hit structural ceilings:
-
-1. **Context Window & Token Tax**: Dumping raw transcripts and verbose ledgers into prompts rapidly inflates token costs (2,500 – 5,000+ tokens per retrieval), slows inference, and causes context dilution / needle-in-a-haystack forgetting.
-2. **Ephemeral Chat Evaporation**: Modern developers switch between multiple coding tools (Codex, Claude Code, Gemini/Antigravity, OpenCode, Grok). Valuable decisions, root-cause analyses, and test receipts vanish into gigabytes of scattered JSON/JSONL logs.
-3. **Loss of Temporal Provenance**: Flat file edits overwrite past state. When was a decision made? Which experiment invalidated it? Overwrites destroy causal continuity.
-4. **Daemon Bloat & Vector Flaws**: Traditional memory engines rely on background daemon processes, open HTTP ports, and non-deterministic vector databases that miss exact hashes and issue IDs while consuming excessive battery and memory.
-
-**`innen` is an opinionated, production-grade realization of the LLM Wiki paradigm.** It bridges human-readable markdown with the mathematical rigor of an append-only event journal, deterministic graph retrieval, and multi-agent conversation harvesting.
+This is a reference-token representation guarantee, not provider billing or model
+comprehension evidence. Encoding admits pages up to 2 MiB; larger pages require
+pagination. Grammar mode cannot combine with attachment externalization.
+Existing defaults remain unchanged. Multi-hop evidence selection, authorization
+and claim sufficiency are separate responsibilities.
 
 ---
 
-## 2. Why Zero-Daemon CLI over MCP?
+## 6. Context and Token Efficiency
 
-Rather than implementing a long-running Model Context Protocol (MCP) server daemon, **`innen` is engineered strictly as a zero-daemon, high-performance CLI (similar to `rtk`, `rg`, and `git`)**.
+Reducing task-relevant context is innen's primary product objective. In a dated
+fixed-snapshot measurement, the default project brief used 2,046 `o200k_base`
+reference tokens versus 21,758 for the complete evidence view (90.60% shorter),
+or 16,564 after limiting both sides to the same task set (87.65% shorter).
 
-| Dimension | MCP Server Daemon | innen CLI (`rtk`-style) |
-|---|---|---|
-| **Context Window Overhead** | **1,500 – 2,500 tokens / turn** (Mandatory tool schemas in system prompt) | **0 tokens** (Zero schema tax; tool definitions loaded on demand via skills/AGENTS.md) |
-| **Agent Ecosystem Reach** | Fragmented (Requires separate client configs for Claude Desktop, IDE extensions, etc.) | **100% Universal** (Invoked via standard `run_command` / bash across Codex, Claude, Gemini, OpenCode, Grok) |
-| **Runtime Footprint** | Persistent background daemon, memory leakage risk, open ports | **Stateless**: 17ms cold start, <7MB RAM, terminates immediately after execution |
-| **Concurrency & Locks** | Daemon contention over SQLite / Redb WAL locks | Clean file locks; zero long-lived handles |
-| **Human Ergonomics** | Opaque RPC protocol inaccessible from terminal | First-class Unix citizen (`innen query --q "..." \| fzf`, `innen project <id> \| pbcopy`, git hooks) |
+Those figures establish historical output-length reduction for that paired
+workload. They are not provider billing savings, total session usage, equivalent
+information, comprehension quality, or a guarantee for v0.3.0. Current-version
+claims require a rerun with a fixed public fixture. See [BENCHMARKS.md](BENCHMARKS.md)
+for the measurement contract and claim boundaries.
 
-These CLI/MCP comparisons describe packaging tradeoffs, not a paired benchmark of total agent token usage. Discovery, instructions, command arguments, output, and cache behavior still have costs. The OpenCode source reader uses the local `sqlite3` executable.
+### Deterministic tool pruning (`--prune`)
+
+Long-running agent conversations accumulate repetitive file reads and search results.
+`innen read` and `innen resume` offer deterministic tool pruning via `--prune`:
+- **Superseded file reads**: File reads followed by subsequent writes or edits to the
+  same file path are truncated to a one-line provenance note (`[omitted: read of 'file' superseded by write at line L]`).
+- **Duplicate unchanged reads**: Redundant earlier reads of the same path without intervening edits are pruned.
+- **Empty search results**: Grep and find queries with zero matches are folded into single-line summaries.
+- **Safety invariants**: User instructions, assistant messages, non-zero exit code failures,
+  and the newest turns (default 4) are pinned and never pruned.
+
+In paired workload measurements on multi-turn tool interaction, deterministic pruning
+reduced serialized reference tokens from 3,129 to 297 `o200k_base` tokens (**90.51% reduction**),
+eliminating stale tool baggage without external LLM summarization or model calls.
 
 ---
 
-## 3. Conversation Operations and Knowledge Boundaries
+## 7. Architecture
 
-`innen` strictly separates five conversation-related operations:
+`innen` strictly decouples immutable ground truth from throwaway, high-speed derived indexes:
 
-1. **Harvest (`innen harvest` / `innen ingest`)**: Imports conversation transcripts into durable knowledge graph entities and journal events. `harvest --check` inspects staged Markdown in `00-inbox/harvest`; `ingest` appends them to `.innen/journal.jsonl`.
-2. **Checkpoint (`innen checkpoint`)**: Records progress snapshots (`active`, `blocked`, `completed`, `superseded`) in append-only local storage outside Git (`.innen/checkpoints.jsonl` with `.innen/.gitignore`). Checkpoints record goals, completed work, observations, blockers, next actions, and verification without modifying Git or rewriting prior history.
-3. **Unfinished Discovery (`innen unfinished`)**: Discovers recent candidate conversations across local agent stores (`agy`, `codex`, `claude`, etc.) using structural evidence (unanswered user requests, interrupted turns, unresolved tool failures, recent activity). Candidates are explicitly labeled `candidate` based on structural heuristics, never fabricated semantic certainty. Sessions with an explicit `completed`/`superseded` checkpoint are excluded; a completed last turn alone is kept as a low-confidence candidate marker.
-4. **Context Continuation (`innen resume` / `innen pickup`)**: Reconstructs working context without full transcript dumps:
-   - `resume`: Emits structured context (`--view context --compact --deltas`) with line provenance.
-   - `pickup`: Designed for a fresh agent session. Selects only when unambiguous (or returns concise candidate choices), emits compact checkpoint + evidence pointers + exact resume command, and never executes transcript text.
-5. **Evidence-gated retention (`innen retention`)**: Inventories native stores with a
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            The LLM Agent                                │
+│          (Codex / Claude Code / Gemini / OpenCode / Grok)               │
+└───────────────────▲─────────────────────────────────┬───────────────────┘
+                    │ query / project (bounded views) │ harvest / ingest / append
+                    │ (measure per fixed workload)    │ (append-only)
+┌───────────────────┴─────────────────────────────────▼───────────────────┐
+│                               innen CLI                                 │
+│                      (Single Static Rust Binary)                        │
+├────────────────────────────────┬────────────────────────────────────────┤
+│  Derived Indexes (Rebuild 30ms)│        Source of Truth (Append-Only)   │
+│  ┌──────────────────────────┐  │  ┌──────────────────────────────────┐  │
+│  │   Tantivy CJK FTS        │  │  │   .innen/journal.jsonl           │  │
+│  │   (BM25 + Jieba CJK)     │  │  │   (Canonical JSON, SHA256 ID,    │  │
+│  ├──────────────────────────┤  │  │    Bi-temporal: observed/valid)  │  │
+│  │   redb (Embedded KV)     │  │  └──────────────────────────────────┘  │
+│  │   (ACID, Adjacency Graph)│  │  ┌──────────────────────────────────┐  │
+│  └──────────────────────────┘  │  │   01-raw/ & 02-wiki/ Markdown    │  │
+│                                │  └──────────────────────────────────┘  │
+└────────────────────────────────┴────────────────────────────────────────┘
+```
+
+### Core Principles
+
+- **Append-Only Event Sourcing**:
+  Every entity (`node.upsert`), relation (`edge.assert`), and cancellation (`edge.retract`) is recorded as an immutable JSON line in `.innen/journal.jsonl`. Edits never erase history; retraction preserves historical auditability while updating materialized graph views.
+- **Bi-Temporal Modeling**:
+  Events record both `observed_utc` (when the system recorded the event) and `valid_from` / `valid_until` (when the fact was true in the real world). Queries traverse historical snapshots using `--as-of <TIMESTAMP>`.
+- **Zero-Daemon Dual Indexes**:
+  - **Redb**: Embedded, pure-Rust transactional key-value store maintaining materialized node tables and adjacency graphs.
+  - **Tantivy CJK FTS**: Embedded full-text search engine with bundled Jieba CJK segmentation. No background services, no open ports, zero cloud dependencies.
+- **Instant Index Rebuilds**:
+  Indexes are strictly derived state. Corrupted or stale indexes can be regenerated from scratch via `innen index rebuild` in **under 35 milliseconds**.
+- **Deterministic Integrity (`doctor` / `lint`)**:
+  Zero-mutation health checks ensure all edge endpoints resolve, quarantine directories remain empty, and journals parse flawlessly, returning strict exit codes (`0` for clean, `1` for quarantined, `2` for corruption/dangling edges).
+
+---
+
+## 8. Installation and Everyday Workflow
+
+### Installation
+
+Install the current stable formula via Homebrew on macOS:
+
+```bash
+brew install rikaidev/tap/innen
+```
+
+Or build from source (the OpenCode reader additionally uses `sqlite3` on PATH):
+
+```bash
+git clone https://github.com/RikaiDev/innen.git
+cd innen
+
+# Run the test suite
+cargo test --workspace
+
+# Build optimized release binary
+cargo build --release
+
+# Install a dev build as ~/.local/bin/innen (records a provenance marker)
+scripts/dev-install.sh
+```
+
+A dev build is temporary. After tagging a release, finish with
+`scripts/post-release.sh vX.Y.Z`: it waits for the Homebrew formula, upgrades,
+and removes the dev build once the release contains its commit. A dev build
+that is still installed when Homebrew already holds a newer version removes
+itself on its next run and hands the command to the Homebrew binary.
+
+The steps follow the handoff loop from §1:
+
+### Everyday Agent Workflow
+
+```bash
+# 1. Pick up an unfinished task from prior agent session or inspect candidates
+innen pickup
+innen unfinished
+
+# 2. Record or update a local progress checkpoint
+innen checkpoint record --status active --objective "Refactor parser" --next-action "Fix tests"
+
+# 3. Harvest incoming transcripts from agent chat sessions (dry-run check)
+innen harvest --check
+
+# 4. Ingest structured notes and append new knowledge to the journal
+innen ingest
+
+# 5. Retrieve relevant subgraph context (BM25 + 1~3 hop graph expansion)
+innen query --q "clinical decision support" --format human
+
+# 6. Inspect deterministic project rollup (Decisions, Tasks, Experiments)
+innen project nhri-pcne
+
+# 7. Full-text lexical search
+innen search --keyword "medication error"
+
+# 8. Verify repository health and reference integrity
+innen doctor
+innen lint
+
+# 9. Rebuild local derived indexes from journal (~30ms)
+innen index rebuild
+```
+
+---
+
+## 9. Reference
+
+### Project and query contracts
+
+`project` now defaults to compact recorded task rows. It replays status updates,
+excludes only explicit terminal statuses, deduplicates memberships, respects current
+edge validity and retractions, and retains unknown status and unassigned tasks.
+The project dictionary also includes projects with no recorded pending tasks;
+that absence does not prove all work is complete. Recorded next actions and
+blockers are included without inventing them from conversation snippets.
+Use `--limit` and `--offset` with `next_offset` for larger portfolios. Paging reads
+current state, so repeat the query if another writer changes the journal mid-read.
+
+
+Historical migration notes (the v0.2 and v0.3 upgrades and the earlier
+project-output change) live in [docs/MIGRATION.md](docs/MIGRATION.md).
+
+`query` is also the task-context entry when the project is not yet known. Its
+default `--view context` accepts the original natural-language request and
+returns bounded candidate rows, recorded project links, decisions, authority
+gaps, and a structured evidence-expansion argv. Use `--view hits` for the
+legacy lexical-plus-graph hit wire shape, or `--view evidence` to expand the
+selected rows with node payloads and append-only journal history. Query scope
+is deterministic: `--root` wins, then an absolute `INNEN_ROOT`, then the
+absolute root registered by `innen config set --global root <path>`; an
+unconfigured or malformed global root fails explicitly and never creates a
+`.innen` directory in the current working directory. `--as-of`, `--offset`,
+`--limit`, and `--include-expired` are preserved in expansion handles.
+
+The context view reports lexical candidate resolution and provenance, not
+semantic certainty. A filename or `final` status alone is not an approved
+editable baseline; missing or conflicting authority remains `missing` or
+`ambiguous`.
+
+When the graph has no candidate, the CLI also performs a bounded, read-only
+filename search in the current user's `~/Documents` and `~/Downloads`. Matching
+office files appear as `unindexed_local_candidates` with absolute paths. This
+does not read file contents, add graph nodes, or archive private files; use
+`artifact add` and an explicit project link after verifying a candidate.
+
+### Retain knowledge, then purge native sessions
+
+- **Evidence-gated retention (`innen retention`)**: Inventories native stores with a
    7-day hot window by default (`--retention-days N` to change it,
    `--no-retention` for none). Age or a harvest watermark never authorizes
    deletion. `retention attest` binds the current native bundle hash to durable
    knowledge nodes linked to the canonical conversation;
    `retention purge` revalidates every byte and graph gate before deletion.
-
-`read <session-id>` retrieves local source conversations directly. It does not
-create graph nodes or infer decisions. `harvest --check` currently inspects
-Markdown already present in `00-inbox/harvest`; `ingest` processes that inbox.
-`harvest --coding-sessions` adds a read-only native-store inventory with exact
-retention blockers; it does not treat discovery as extraction.
-To recover document links from an older Codex delivery, inspect one exact
-session with `innen harvest --check --source codex --session <id>`. The result
-includes source lines, whether each linked file still exists, and bounded
-same-name candidates after a move. It never archives a file or treats a linked
-template as the delivered artifact without review.
-
-### Retain knowledge, then purge native sessions
 
 ```bash
 # Read-only inventory across Claude, Codex, OpenCode and agy/Antigravity.
@@ -307,55 +647,8 @@ filesystem-identity checks, innen removes the summary row transactionally and
 then the exact native bundle. SQLite busy/lock failures skip only that item.
 A successful source read or pickup must not be reported as completed knowledge ingestion.
 
-Directory artifacts containing private or large source bytes can be inventoried without
-copying those bytes into the versionable knowledge base:
 
-```bash
-innen artifact add-tree \
-  --directory /absolute/source-directory \
-  --manifest /absolute/owner-repo/receipts/tree.json \
-  --project project:id
-```
-
-`add-tree` hashes regular files with bounded memory, records symlinks without following
-them, sorts relative paths, archives the resulting manifest content-addressably, and
-returns `metadata_only: true`. The receipt proves the observed tree; it is not a second
-copy or backup of source bytes. Put the manifest outside the inventoried directory.
-
-### Final-only artifact collections
-
-`artifact add` is an immutable evidence snapshot: it keeps every submitted
-version under `03-output/artifacts/by-sha256/`. Use `artifact finalize` when a
-deliverable must have **one current release** in the wiki. It publishes the
-explicit final files to `03-output/artifacts/collections/<collection>/` and
-removes only the exact source and superseded files listed in a hash-bound plan.
-It does not infer drafts from filenames or delete unrelated files.
-
-```json
-{
-  "format": "innen.final-collection.v1",
-  "collection": "client-quote-2026",
-  "final_files": [
-    {"path": "/absolute/wiki/03-output/quotations/final.pdf", "sha256": "<64 hex characters>"}
-  ],
-  "remove_files": [
-    {"path": "/absolute/wiki/03-output/quotations/draft.pdf", "sha256": "<64 hex characters>"}
-  ]
-}
-```
-
-```bash
-innen artifact finalize --plan /absolute/plan.json
-innen artifact finalize --plan /absolute/plan.json --apply
-```
-
-The first command is a read-only preflight. Apply rechecks every file hash,
-copies and verifies the final bytes in a staged collection, atomically publishes
-the collection, then removes listed files and the original final-file paths.
-The collection's `manifest.json` records only its final files. A later release
-uses a new collection name and may list the old collection files in
-`remove_files`; this preserves final-only visibility without guessing which
-version supersedes another.
+### Dialogue views and historical benchmark claims
 
 The dialogue view includes user and assistant text. Tool results, control events,
 and original source fields can be inspected with `--view events` when checking
@@ -366,113 +659,6 @@ Historical local benchmark claims are omitted from this release. The public
 contract documents retrieval behavior and provenance; local output-size studies
 require private corpora and excluded research tooling, and do not establish
 answer accuracy, knowledge completeness, or billed-token savings.
-
----
-
-## 4. Architecture
-
-`innen` strictly decouples immutable ground truth from throwaway, high-speed derived indexes:
-
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            The LLM Agent                                │
-│          (Codex / Claude Code / Gemini / OpenCode / Grok)               │
-└───────────────────▲─────────────────────────────────┬───────────────────┘
-                    │ query / project (bounded views) │ harvest / ingest / append
-                    │ (measure per fixed workload)    │ (append-only)
-┌───────────────────┴─────────────────────────────────▼───────────────────┐
-│                               innen CLI                                 │
-│                      (Single Static Rust Binary)                        │
-├────────────────────────────────┬────────────────────────────────────────┤
-│  Derived Indexes (Rebuild 30ms)│        Source of Truth (Append-Only)   │
-│  ┌──────────────────────────┐  │  ┌──────────────────────────────────┐  │
-│  │   Tantivy CJK FTS        │  │  │   .innen/journal.jsonl           │  │
-│  │   (BM25 + Jieba CJK)     │  │  │   (Canonical JSON, SHA256 ID,    │  │
-│  ├──────────────────────────┤  │  │    Bi-temporal: observed/valid)  │  │
-│  │   redb (Embedded KV)     │  │  └──────────────────────────────────┘  │
-│  │   (ACID, Adjacency Graph)│  │  ┌──────────────────────────────────┐  │
-│  └──────────────────────────┘  │  │   01-raw/ & 02-wiki/ Markdown    │  │
-│                                │  └──────────────────────────────────┘  │
-└────────────────────────────────┴────────────────────────────────────────┘
-```
-
-### Core Principles
-
-- **Append-Only Event Sourcing**:
-  Every entity (`node.upsert`), relation (`edge.assert`), and cancellation (`edge.retract`) is recorded as an immutable JSON line in `.innen/journal.jsonl`. Edits never erase history; retraction preserves historical auditability while updating materialized graph views.
-- **Bi-Temporal Modeling**:
-  Events record both `observed_utc` (when the system recorded the event) and `valid_from` / `valid_until` (when the fact was true in the real world). Queries traverse historical snapshots using `--as-of <TIMESTAMP>`.
-- **Zero-Daemon Dual Indexes**:
-  - **Redb**: Embedded, pure-Rust transactional key-value store maintaining materialized node tables and adjacency graphs.
-  - **Tantivy CJK FTS**: Embedded full-text search engine with bundled Jieba CJK segmentation. No background services, no open ports, zero cloud dependencies.
-- **Instant Index Rebuilds**:
-  Indexes are strictly derived state. Corrupted or stale indexes can be regenerated from scratch via `innen index rebuild` in **under 35 milliseconds**.
-- **Deterministic Integrity (`doctor` / `lint`)**:
-  Zero-mutation health checks ensure all edge endpoints resolve, quarantine directories remain empty, and journals parse flawlessly, returning strict exit codes (`0` for clean, `1` for quarantined, `2` for corruption/dangling edges).
-
----
-
-## 5. Context and Token Efficiency
-
-Reducing task-relevant context is innen's primary product objective. In a dated
-fixed-snapshot measurement, the default project brief used 2,046 `o200k_base`
-reference tokens versus 21,758 for the complete evidence view (90.60% shorter),
-or 16,564 after limiting both sides to the same task set (87.65% shorter).
-
-Those figures establish historical output-length reduction for that paired
-workload. They are not provider billing savings, total session usage, equivalent
-information, comprehension quality, or a guarantee for v0.3.0. Current-version
-claims require a rerun with a fixed public fixture. See [BENCHMARKS.md](BENCHMARKS.md)
-for the measurement contract and claim boundaries.
-
-### Deterministic tool pruning (`--prune`)
-
-Long-running agent conversations accumulate repetitive file reads and search results.
-`innen read` and `innen resume` offer deterministic tool pruning via `--prune`:
-- **Superseded file reads**: File reads followed by subsequent writes or edits to the
-  same file path are truncated to a one-line provenance note (`[omitted: read of 'file' superseded by write at line L]`).
-- **Duplicate unchanged reads**: Redundant earlier reads of the same path without intervening edits are pruned.
-- **Empty search results**: Grep and find queries with zero matches are folded into single-line summaries.
-- **Safety invariants**: User instructions, assistant messages, non-zero exit code failures,
-  and the newest turns (default 4) are pinned and never pruned.
-
-In paired workload measurements on multi-turn tool interaction, deterministic pruning
-reduced serialized reference tokens from 3,129 to 297 `o200k_base` tokens (**90.51% reduction**),
-eliminating stale tool baggage without external LLM summarization or model calls.
-
----
-
-## 6. Quick Start
-
-### Installation
-
-Install the current stable formula via Homebrew on macOS:
-
-```bash
-brew install rikaidev/tap/innen
-```
-
-Or build from source (the OpenCode reader additionally uses `sqlite3` on PATH):
-
-```bash
-git clone https://github.com/RikaiDev/innen.git
-cd innen
-
-# Run the test suite
-cargo test --workspace
-
-# Build optimized release binary
-cargo build --release
-
-# Install a dev build as ~/.local/bin/innen (records a provenance marker)
-scripts/dev-install.sh
-```
-
-A dev build is temporary. After tagging a release, finish with
-`scripts/post-release.sh vX.Y.Z`: it waits for the Homebrew formula, upgrades,
-and removes the dev build once the release contains its commit. A dev build
-that is still installed when Homebrew already holds a newer version removes
-itself on its next run and hands the command to the Homebrew binary.
 
 ### Read a conversation directly by session ID
 
@@ -493,108 +679,7 @@ or native OpenCode `ses_...` / mcode `mvs_...` IDs, never a fuzzy prefix. Use
 one tool. `--source-root` requires `--source` and overrides its store location.
 Multiple matching files are an explicit ambiguity error, not an arbitrary choice.
 
-### Opt-in native conversation grammar
-
-```bash
-innen conversation <session-id> --view context --compact --deltas --codec conversation
-innen conversation --encode-json /private/ordinary-page.json
-innen conversation --validate-packet /private/packet.json
-innen conversation --decode-packet /private/packet.json
-```
-
-The Rust codec compares ordinary and existing compact representations with
-line/content-defined chunks and bounded Re-Pair-style dictionary rules. It scores
-the complete self-describing output with `o200k_base` reference tokens, including
-the grammar guide, and retains the cheaper candidate. It preserves source lines,
-roles, order, corrections, warnings and pagination; it performs no semantic
-selection. Grammar packets verify a canonical source SHA-256 on restore.
-
-This is a reference-token representation guarantee, not provider billing or model
-comprehension evidence. Encoding admits pages up to 2 MiB; larger pages require
-pagination. Grammar mode cannot combine with attachment externalization.
-Existing defaults remain unchanged. Multi-hop evidence selection, authorization
-and claim sufficiency are separate responsibilities.
-
-### Resume a conversation into working context
-
-```bash
-# Automatically discover and resume unambiguous session for current project
-innen resume
-
-# Resume explicit session with structured context view and compact+deltas encoding
-innen resume <session-id>
-
-# Resume with specific source, lines, or project override
-innen resume --project /path/to/project --source codex
-innen resume <session-id> --lines 175,307
-innen resume <session-id> --offset 20 --limit 20
-```
-
-`resume` is a self-describing entry point designed for seamless session continuation across coding agents. Unlike raw `read` which defaults to unstructured dialogue, `resume` defaults to `--view context --compact --deltas`, factoring repeated payloads and preserving exact line provenance without inventing semantic summaries.
-
-When called without a session ID (`innen resume`), it inspects available project/session metadata across local stores. If exactly one unambiguous candidate session matches the current project, it resumes it immediately; otherwise it returns concise candidate choices with IDs and explicit ambiguity, never silently choosing another project.
-
-### Record, inspect, and list checkpoints
-
-Checkpoints provide deterministic, local-only progress tracking stored outside Git in `.innen/checkpoints.jsonl` (guarded by an automatic `.innen/.gitignore`):
-
-```bash
-# Record an active checkpoint for a session
-innen checkpoint record --session <session-id> --source codex \
-  --status active \
-  --objective "Implement search indexing" \
-  --completed "Created schema,Wired Tantivy writer" \
-  --evidence "Index file written: target/idx" \
-  --next-action "Add CJK tokenizer tests" \
-  --verification "cargo test --test search"
-
-# Show the latest checkpoint for a session (or auto-discover project candidate)
-innen checkpoint show <session-id>
-innen checkpoint show
-
-# List all latest session checkpoints in the project
-innen checkpoint list
-```
-
-### Discover unfinished candidate conversations
-
-```bash
-# Discover unfinished candidate conversations from yesterday and today (default)
-innen unfinished
-
-# Discover unfinished conversations with custom cutoff (e.g. 3d, 48h, YYYY-MM-DD, RFC3339)
-innen unfinished --since 3d
-
-# Filter candidate discovery by source agent
-innen unfinished --source agy
-
-# Portfolio discovery across all projects (Codex, agy, claude, etc.)
-innen unfinished --all-projects
-
-# Portfolio discovery filtered by source with custom cutoff
-innen unfinished --all-projects --source codex --since 48h
-```
-
-Candidates are classified by structural evidence (`checkpoint_active`, `checkpoint_blocked`, `interrupted_or_cancelled`, `trailing_user_request_unanswered`, `task_state_outstanding`, `unresolved_tool_failure`, `recent_activity_uncheckpointed`) with confidence scores. Exclusion is explicit-terminal-state-only: a session with a `completed` or `superseded` checkpoint is excluded. A turn-level completion record (`explicit_turn_completed`, including a succeeded turn outcome on structured stores) is kept as a low-confidence marker -- it states that the last turn ended, never that the task is done.
-
-Discovery reports per-store `coverage` in JSON output and a coverage summary in human output, with one status per source: `scanned` (wired scanner, store read this run), `missing` (wired scanner, store absent on this machine), `skipped` (excluded by `--source`), or `not-supported` (known store whose scanner is not wired). Coverage tells whether a store was inspected; an empty candidate list is distinguishable from an uninspected store.
-
-When `--all-projects` is specified, `innen` scans across all projects in local agent stores without requiring a current project directory. Each candidate includes its `project` provenance (e.g. `/Users/username/Workspace/project`) or an explicit `"unknown"` identity if no workspace was recorded. Checkpoints remain strictly per-project: if a candidate has a known project directory with `.innen/checkpoints.jsonl`, its per-project checkpoint is respected (`completed`/`superseded` excluded; `active`/`blocked` attached). Project-scoped discovery (`innen unfinished` without `--all-projects` or with `--project <dir>`) remains strictly isolated to that project.
-
-### Pick up an unfinished conversation for continuation
-
-```bash
-# Automatically pick up an unambiguous unfinished session for the current project
-innen pickup
-
-# Pick up an unambiguous unfinished session across all projects
-innen pickup --all-projects
-
-# Pick up a specific session by ID
-innen pickup <session-id>
-```
-
-When unambiguous, `pickup` returns the target session, latest checkpoint, structural evidence pointers, and the exact `innen resume` command for continuation. It never executes transcript text. If multiple candidates match, it returns an explicit ambiguity list with IDs, project provenance, and reason codes, never guessing or silently picking another project.
+### Source stores and adapter limits
 
 | Source | Default store / format |
 |---|---|
@@ -616,6 +701,8 @@ Database-only Antigravity, Cursor's private database, cloud-only histories, and
 unlisted source format versions are not decoded. Tool support here refers to the
 listed source formats, not every past or future version. Missing data is reported
 as unavailable, never as an empty successful conversation read.
+
+### Paging, views, and line retrieval
 
 Default `dialogue` projects source-order user and assistant text without semantic
 summarization. `events` retains original JSON fields (OpenCode combines each
@@ -658,6 +745,8 @@ This conflicts with pagination and attachment retrieval options. Follow each
 context/index page's `next_offset` until null; source access remains necessary.
 This is deterministic middleware with zero model calls, not automatic semantic
 summarization or a claim that discarded metadata can never matter.
+
+### Compact encoding envelopes
 
 `--compact` is an opt-in, model-free middleware encoding of the selected page.
 It factors repeated event fields and exact repeated long strings without
@@ -742,42 +831,9 @@ tokenizer environments are maintained outside this public release. The public
 contract is the CLI behavior and its source-provenance guarantees; local output
 measurements are not claims about comprehension or billed-token savings.
 
-### Everyday Agent Workflow
-
-```bash
-# 1. Pick up an unfinished task from prior agent session or inspect candidates
-innen pickup
-innen unfinished
-
-# 2. Record or update a local progress checkpoint
-innen checkpoint record --status active --objective "Refactor parser" --next-action "Fix tests"
-
-# 3. Harvest incoming transcripts from agent chat sessions (dry-run check)
-innen harvest --check
-
-# 4. Ingest structured notes and append new knowledge to the journal
-innen ingest
-
-# 5. Retrieve relevant subgraph context (BM25 + 1~3 hop graph expansion)
-innen query --q "clinical decision support" --format human
-
-# 6. Inspect deterministic project rollup (Decisions, Tasks, Experiments)
-innen project nhri-pcne
-
-# 7. Full-text lexical search
-innen search --keyword "medication error"
-
-# 8. Verify repository health and reference integrity
-innen doctor
-innen lint
-
-# 9. Rebuild local derived indexes from journal (~30ms)
-innen index rebuild
-```
-
 ---
 
-## 7. Repository Layout
+## 10. Repository Layout, License, and Provenance
 
 ```text
 crates/
@@ -788,14 +844,12 @@ tests/
   cli_golden.rs   End-to-end golden parity test suite
 ```
 
----
-
-## 8. License & Acknowledgments
+### License & Acknowledgments
 
 - Grounded in the **LLM Wiki** philosophy pioneered by **Andrej Karpathy**.
 - Licensed under the [MIT License](LICENSE).
 
-## CI and Release Provenance
+### CI and Release Provenance
 
 [The Rust CI workflow](.github/workflows/rust.yml) checks formatting and builds/tests
 the workspace on GitHub-hosted Linux and macOS for pull requests and main pushes.
@@ -814,4 +868,3 @@ before updating the formula. It requires `HOMEBREW_TAP_TOKEN` for cross-reposito
 writes; if absent, it emits a notice and the verified formula must be updated
 manually. This does not affect the release package checks.
 
-Evidence-ID proposal draft: prepare with `query --q QUESTION --evidence-contract scope.json --prepare-proposal --evidence-ids`; pass the emitted output schema to the model transport and only `model_context` as source data. Bind the returned draft with the original `context_sha256` in a trusted envelope and validate using `--task-draft envelope.json`. IDs resolve whole source-body spans; valid references still require semantic review through `--proposal-review`.
