@@ -155,7 +155,7 @@ pub(super) fn assess_candidate_with_graph(
         }
     }
     if blockers.is_empty() {
-        match session_activity(&bundle.targets) {
+        match session_activity(&liveness_targets(candidate.source, &bundle.targets)) {
             Activity::Idle => {}
             Activity::Active => {
                 blockers.push("native session has an open file handle".into());

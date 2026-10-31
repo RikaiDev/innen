@@ -7,6 +7,9 @@ pub(super) enum Activity {
 
 #[cfg(target_os = "linux")]
 pub(super) fn session_activity(targets: &[PathBuf]) -> Activity {
+    if targets.is_empty() {
+        return Activity::Idle;
+    }
     let canonical = targets
         .iter()
         .filter_map(|path| path.canonicalize().ok())
@@ -43,8 +46,30 @@ pub(super) fn session_activity(targets: &[PathBuf]) -> Activity {
     Activity::Idle
 }
 
+/// Targets whose open handle proves that THIS session is live.
+///
+/// A shared store file is not such a signal. Every client of every session in
+/// that store holds the same handle, so the check cannot tell "this session is
+/// being written" from "the tool happens to be running": it blocks the whole
+/// source while anything is open, and it blocks nothing when the owning tool
+/// writes through a different path. For a shared store the per-session digest
+/// (the exported native bytes) carries that signal instead, and it is
+/// re-verified immediately before deletion.
+pub(super) fn liveness_targets(source: Source, targets: &[PathBuf]) -> Vec<PathBuf> {
+    match source {
+        Source::Opencode => Vec::new(),
+        _ => targets.to_vec(),
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn session_activity(targets: &[PathBuf]) -> Activity {
+    if targets.is_empty() {
+        // Nothing session-specific to inspect. lsof without file arguments
+        // lists every open file on the machine, which would report Active for
+        // the whole host.
+        return Activity::Idle;
+    }
     let mut command = Command::new("/usr/sbin/lsof");
     command.arg("-Fn");
     for target in targets {

@@ -1,9 +1,34 @@
 use super::archive::{antigravity_targets, hash_targets};
-use super::delete_adapter::{delete_candidate, run_delete, run_sqlite_mutation};
+use super::delete_adapter::{
+    delete_candidate, opencode_delete_args, run_delete, run_sqlite_mutation,
+};
 use super::policy::is_trustworthy_modified;
 use super::*;
 
 const ID: &str = "e3a92b35-4931-427b-9adf-1baa29318ca6";
+
+/// A shared session database is not a per-session liveness signal: its handle
+/// is held by every client of every session, so the open-handle check blocks
+/// the whole source while the tool runs and proves nothing about one session.
+/// The per-session digest carries that signal, and the opencode delete must
+/// stay off the background service that holds the shared database open.
+#[test]
+fn a_shared_session_database_does_not_decide_whether_one_session_is_live() {
+    let shared = vec![PathBuf::from("/tmp/opencode.db")];
+    assert!(
+        liveness_targets(Source::Opencode, &shared).is_empty(),
+        "the shared database handle cannot prove that one session is live"
+    );
+    assert_eq!(liveness_targets(Source::Claude, &shared), shared);
+    assert!(
+        matches!(session_activity(&[]), Activity::Idle),
+        "no session-specific target means no open-handle verdict"
+    );
+    assert_eq!(
+        opencode_delete_args("ses_abc"),
+        vec!["session", "delete", "ses_abc", "--standalone"]
+    );
+}
 
 fn setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let kb = tempfile::tempdir().unwrap();

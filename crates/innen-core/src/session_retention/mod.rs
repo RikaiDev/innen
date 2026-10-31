@@ -60,7 +60,7 @@ use types::{
     BLOCKER_MODIFIED_TIME_UNKNOWN, BLOCKER_RETENTION_WINDOW, BLOCKER_SESSION_ACTIVE, SCHEMA,
 };
 
-use activity::{session_activity, Activity};
+use activity::{liveness_targets, session_activity, Activity};
 use archive::{bundle, candidate_targets, find_candidate};
 use compact::compact_and_attest;
 use delete_adapter::delete_candidate;

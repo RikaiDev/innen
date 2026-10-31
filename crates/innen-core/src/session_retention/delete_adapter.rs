@@ -1,5 +1,6 @@
 use super::activity::{
-    session_activity, snapshot_target_identities, verify_target_identities, Activity,
+    liveness_targets, session_activity, snapshot_target_identities, verify_target_identities,
+    Activity,
 };
 use super::*;
 pub(super) fn delete_candidate(
@@ -24,7 +25,7 @@ pub(super) fn delete_candidate(
         ));
     }
     verify_target_identities(&identities)?;
-    match session_activity(&assessment.targets) {
+    match session_activity(&liveness_targets(candidate.source, &assessment.targets)) {
         Activity::Idle => {}
         Activity::Active => {
             return Err(Error::Purge(
@@ -41,7 +42,15 @@ pub(super) fn delete_candidate(
 
     match candidate.source {
         Source::Codex => run_delete("codex", &["delete", "--force", &candidate.id])?,
-        Source::Opencode => run_delete("opencode", &["session", "delete", &candidate.id])?,
+        // --standalone keeps the delete off the shared background service: that
+        // service holds the session database open for the whole host, so a
+        // delete that goes through it leaves the store locked and every
+        // later session reads as active.
+        Source::Opencode => {
+            let args = opencode_delete_args(&candidate.id);
+            let borrowed = args.iter().map(String::as_str).collect::<Vec<&str>>();
+            run_delete("opencode", &borrowed)?
+        }
         Source::Claude | Source::Qwen => {
             fs::remove_file(&candidate.path).map_err(|error| io(&candidate.path, error))?;
         }
@@ -145,6 +154,20 @@ pub(super) fn run_sqlite_mutation(path: &Path, sql: &str) -> Result<(), Error> {
         output.status,
         detail.trim()
     )))
+}
+
+/// Arguments for `opencode session delete`.
+///
+/// The delete runs against a private server: the shared background service
+/// keeps the session database open for the whole host, and a delete routed
+/// through it leaves that handle behind.
+pub(super) fn opencode_delete_args(session_id: &str) -> Vec<String> {
+    vec![
+        "session".to_string(),
+        "delete".to_string(),
+        session_id.to_string(),
+        "--standalone".to_string(),
+    ]
 }
 
 pub(super) fn run_delete(program: &str, args: &[&str]) -> Result<(), Error> {

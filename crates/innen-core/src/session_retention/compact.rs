@@ -52,7 +52,7 @@ pub(super) fn compact_and_attest(
     candidate: &Candidate,
 ) -> Result<CompactRecord, Error> {
     let before = bundle(candidate)?;
-    match session_activity(&before.targets) {
+    match session_activity(&liveness_targets(candidate.source, &before.targets)) {
         Activity::Idle => {}
         Activity::Active => {
             return Err(Error::Proof(

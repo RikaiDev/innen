@@ -25,7 +25,7 @@ pub fn attest(
     let source = Source::parse(source_name).map_err(|error| Error::Proof(error.to_string()))?;
     let candidate = find_candidate(source, session_id, source_root)?;
     let bundle = bundle(&candidate)?;
-    match session_activity(&bundle.targets) {
+    match session_activity(&liveness_targets(candidate.source, &bundle.targets)) {
         Activity::Idle => {}
         Activity::Active => {
             return Err(Error::Proof(
