@@ -82,20 +82,25 @@ pub(super) fn compact_and_attest(
         let mut bytes = 0u64;
         let mut messages = 0usize;
         let mut rows = Vec::new();
-        crate::conversation::stream_dialogue(&located, &candidate.id, &mut warnings, |line, event| {
-            rows.clear();
-            dialogue_lines(line, &event, &mut rows);
-            for row in &rows {
-                let mut encoded = serde_json::to_vec(row).expect("dialogue row serializes");
-                encoded.push(b'\n');
-                file.write_all(&encoded)
-                    .map_err(|error| crate::conversation::ReadError(error.to_string()))?;
-                hasher.update(&encoded);
-                bytes += encoded.len() as u64;
-                messages += 1;
-            }
-            Ok(())
-        })
+        crate::conversation::stream_dialogue(
+            &located,
+            &candidate.id,
+            &mut warnings,
+            |line, event| {
+                rows.clear();
+                dialogue_lines(line, &event, &mut rows);
+                for row in &rows {
+                    let mut encoded = serde_json::to_vec(row).expect("dialogue row serializes");
+                    encoded.push(b'\n');
+                    file.write_all(&encoded)
+                        .map_err(|error| crate::conversation::ReadError(error.to_string()))?;
+                    hasher.update(&encoded);
+                    bytes += encoded.len() as u64;
+                    messages += 1;
+                }
+                Ok(())
+            },
+        )
         .map_err(|error| Error::Conversation(error.to_string()))?;
         file.sync_all().map_err(|error| io(&partial, error))?;
         Ok((bytes, messages, hex(&hasher.finalize())))

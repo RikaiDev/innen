@@ -1099,11 +1099,7 @@ fn copilot_candidate_discovery_workspaces_and_evidence() {
     // physically (macOS /var -> /private/var); the store keeps the symlinked
     // form for matching, the report keeps the process view. Canonicalize
     // compares the two forms.
-    let expected = proj
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let expected = proj.canonicalize().unwrap().to_string_lossy().to_string();
     assert!(candidates
         .iter()
         .all(|c| c["source"] == "copilot" && c["project"].as_str() == Some(expected.as_str())));
@@ -1114,7 +1110,10 @@ fn copilot_candidate_discovery_workspaces_and_evidence() {
 
     let completed = candidate_by_id(candidates, ID_6);
     let codes = reason_codes(completed);
-    assert!(codes.contains(&"explicit_turn_completed".into()), "{codes:?}");
+    assert!(
+        codes.contains(&"explicit_turn_completed".into()),
+        "{codes:?}"
+    );
     assert_eq!(completed["confidence"], "low");
 
     let failed = candidate_by_id(candidates, ID_7);
@@ -1165,7 +1164,9 @@ fn grok_candidate_discovery_stream_evidence_and_unconsumed_acp_channel() {
             json!({"type":"tool_completed","outcome":"success"}),
             json!({"type":"turn_ended","outcome":"success"}),
         ],
-        &[json!({"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"late ACP ask"}}}})],
+        &[
+            json!({"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"late ACP ask"}}}}),
+        ],
     );
     // A failed tool outcome after the completed turn stays open.
     write_grok_session(
@@ -1206,11 +1207,7 @@ fn grok_candidate_discovery_stream_evidence_and_unconsumed_acp_channel() {
     assert_eq!(parsed["count"], 3);
     let candidates = parsed["candidates"].as_array().unwrap();
     // Same physical-cwd rule as the copilot test above.
-    let expected = proj
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let expected = proj.canonicalize().unwrap().to_string_lossy().to_string();
     assert!(candidates
         .iter()
         .all(|c| c["source"] == "grok" && c["project"].as_str() == Some(expected.as_str())));
@@ -1306,11 +1303,7 @@ fn mcode_candidate_discovery_and_status_evidence() {
     assert_eq!(parsed["count"], 3);
     let candidates = parsed["candidates"].as_array().unwrap();
     // Same physical-cwd rule as the copilot test above.
-    let expected = proj
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let expected = proj.canonicalize().unwrap().to_string_lossy().to_string();
     assert!(candidates
         .iter()
         .all(|c| c["source"] == "mcode" && c["project"].as_str() == Some(expected.as_str())));

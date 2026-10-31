@@ -39,7 +39,7 @@ pub(super) fn scan_copilot_sessions(
         let Some(sid) = dir.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let id = match sources::validate_id(&sid.to_string()) {
+        let id = match sources::validate_id(sid) {
             Ok(id) => id,
             Err(_) => continue,
         };

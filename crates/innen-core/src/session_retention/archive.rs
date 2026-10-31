@@ -217,13 +217,9 @@ mod tests {
         let scratch = session.join("scratch").join("node_modules");
         fs::create_dir_all(scratch.join(".bin")).unwrap();
         fs::write(scratch.join("core.js"), b"module.exports = 1;").unwrap();
-        symlink(
-            scratch.join("core.js"),
-            scratch.join(".bin").join("core"),
-        )
-        .unwrap();
+        symlink(scratch.join("core.js"), scratch.join(".bin").join("core")).unwrap();
 
-        let bundle = hash_targets(&[session.clone()]).expect("the bundle hashes");
+        let bundle = hash_targets(std::slice::from_ref(&session)).expect("the bundle hashes");
         assert!(bundle.bytes > 0);
     }
 
@@ -238,7 +234,7 @@ mod tests {
         fs::create_dir_all(&session).unwrap();
         symlink(&outside, session.join("escape")).unwrap();
 
-        let error = match hash_targets(&[session.clone()]) {
+        let error = match hash_targets(std::slice::from_ref(&session)) {
             Ok(_) => panic!("an escaping symlink must be refused"),
             Err(error) => error,
         };

@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.12.1] - 2026-10-31
+
+### Fixed
+
+- The release no longer links an unsound compression library. `zstd 0.13.3`,
+  `zstd-safe 7.3.0` and `zstd-sys 2.0.16` carry advisories published on
+  2026-10-16, and they reached the workspace through the dependency tree
+  rather than through a direct requirement. The workspace now resolves the
+  patched `zstd 0.14.3`, `zstd-safe 8.2.0` and `zstd-sys 2.1.2`, and
+  `cargo audit --deny warnings` reports nothing.
+- The tree passes `cargo fmt --check` again. Four files that entered the
+  previous release unformatted are now formatted.
+
+### Changed
+
+- `tantivy-sstable 0.7.0` is vendored and pinned to `zstd 0.14` through the
+  same narrow manifest patch the repository already uses for Tantivy's `lru`.
+  Upstream Tantivy 0.27 would move the whole sstable, columnar and common
+  family to 0.27 with unrelated behaviour changes, so the patch keeps the
+  tested API and the on-disk index format unchanged.
+- The module layout follows the line budget again. `conversation/task_state`,
+  `conversation/sources`, `session_retention/delete_adapter` and
+  `conversation/unfinished/evidence` were split along the seams they had
+  grown: record shapes versus projection, locating versus reading, dispatch
+  versus adapters, and per-source evidence versus the shared tail reader. No
+  behaviour changed.
+
 ## [0.12.0] - 2026-10-31
 
 ### Fixed

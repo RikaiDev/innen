@@ -1,7 +1,8 @@
 use super::archive::{antigravity_targets, hash_targets};
+use super::delete_adapter::sqlite::run_sqlite_mutation;
 use super::delete_adapter::{
     antigravity_store_root, delete_candidate, opencode_delete_args, run_delete,
-    run_sqlite_mutation, DELETE_ADAPTER_SOURCES, NO_DELETE_ADAPTER_SOURCES,
+    DELETE_ADAPTER_SOURCES, NO_DELETE_ADAPTER_SOURCES,
 };
 use super::policy::is_trustworthy_modified;
 use super::*;
@@ -14,7 +15,12 @@ const ID: &str = "e3a92b35-4931-427b-9adf-1baa29318ca6";
 #[test]
 fn an_indexed_session_store_loses_its_directory_and_its_index_row() {
     let store = tempfile::tempdir().unwrap();
-    let sessions = store.path().join("sessions").join("2026").join("10").join("25");
+    let sessions = store
+        .path()
+        .join("sessions")
+        .join("2026")
+        .join("10")
+        .join("25");
     let session_dir = sessions.join("session-under-test");
     fs::create_dir_all(&session_dir).unwrap();
     let transcript = session_dir.join("messages.jsonl");
@@ -298,8 +304,7 @@ fn every_source_variant_is_classified() {
     ];
     for source in all {
         assert!(
-            DELETE_ADAPTER_SOURCES.contains(&source)
-                || NO_DELETE_ADAPTER_SOURCES.contains(&source),
+            DELETE_ADAPTER_SOURCES.contains(&source) || NO_DELETE_ADAPTER_SOURCES.contains(&source),
             "{source:?} is neither reclaimable nor explicitly refused"
         );
         assert!(

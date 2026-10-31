@@ -44,7 +44,10 @@ pub(super) fn scan_opencode_sessions(
         if matched {
             if let Some(sid) = row.get("id").and_then(Value::as_str) {
                 if let Ok(id) = sources::validate_id(sid) {
-                    let modified = row.get("modified").and_then(Value::as_str).map(String::from);
+                    let modified = row
+                        .get("modified")
+                        .and_then(Value::as_str)
+                        .map(String::from);
                     let project = if dir.is_empty() {
                         Some("unknown".into())
                     } else {

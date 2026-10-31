@@ -1,6 +1,6 @@
 [package]
 name = "innen"
-version = "0.12.0"
+version = "0.12.1"
 license = "MIT"
 edition = "2021"
 rust-version = "1.90"
@@ -8,7 +8,7 @@ exclude = ["research/**", "benchmarks/**", "scripts/**"]
 
 [workspace]
 members = [".", "crates/innen-core"]
-exclude = ["vendor/tantivy"]
+exclude = ["vendor/tantivy", "vendor/tantivy-sstable"]
 resolver = "2"
 
 [workspace.lints.rust]
@@ -29,7 +29,7 @@ assert_cmd = "2"
 tempfile = "3"
 tiktoken-rs = "=0.12.0"
 yaml-rust2 = "=0.12.0"
-zstd = "0.13"
+zstd = "0.14"
 
 [dependencies]
 innen-core = { path = "crates/innen-core" }
@@ -50,6 +50,7 @@ workspace = true
 
 [patch.crates-io]
 tantivy = { path = "vendor/tantivy" }
+tantivy-sstable = { path = "vendor/tantivy-sstable" }
 
 # One cache, declared where Cargo reads it. sccache (see .cargo/config.toml)
 # already caches every crate including this workspace's own, so incremental

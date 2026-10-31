@@ -168,9 +168,7 @@ fn store_coverage_lines(
     innen_core::conversation::unfinished::store_coverage_report(*filter)
 }
 
-fn print_coverage_summary(
-    filter: &Option<innen_core::conversation::Source>,
-) {
+fn print_coverage_summary(filter: &Option<innen_core::conversation::Source>) {
     let coverage = innen_core::conversation::unfinished::store_coverage_report(*filter);
     let mut scanned: Vec<&str> = Vec::new();
     let mut missing = 0usize;

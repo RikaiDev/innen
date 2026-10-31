@@ -1,6 +1,4 @@
 use super::*;
-
-use super::*;
 use serde_json::json;
 
 fn parse(text: &str) -> Value {

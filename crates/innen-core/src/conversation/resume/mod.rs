@@ -241,7 +241,12 @@ pub fn find_all_candidates(
 ///
 /// Codex rotates older rollouts into `.jsonl.zst`; matching only `jsonl` made
 /// every compressed session invisible to discovery.
-fn collect_files_with_suffixes(root: &Path, suffixes: &[&str], depth: usize, files: &mut Vec<PathBuf>) {
+fn collect_files_with_suffixes(
+    root: &Path,
+    suffixes: &[&str],
+    depth: usize,
+    files: &mut Vec<PathBuf>,
+) {
     let entries = match fs::read_dir(root) {
         Ok(e) => e,
         Err(_) => return,
@@ -283,7 +288,10 @@ fn latest_event_timestamp(path: &Path) -> Option<String> {
     }
     let text = String::from_utf8_lossy(&bytes);
     let mut latest: Option<String> = None;
-    for line in text.lines().skip(usize::from(start > 0 && bytes.len() <= 1024 * 1024)) {
+    for line in text
+        .lines()
+        .skip(usize::from(start > 0 && bytes.len() <= 1024 * 1024))
+    {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
         };

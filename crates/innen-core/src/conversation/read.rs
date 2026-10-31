@@ -338,10 +338,15 @@ mod tests {
     fn collect(source: Source, path: &Path) -> (Vec<Value>, Vec<String>) {
         let mut rows = Vec::new();
         let mut warnings = Vec::new();
-        stream_dialogue(&located(source, path.to_path_buf()), "id", &mut warnings, |line, event| {
-            rows.push(json!({"line": line, "event": event}));
-            Ok(())
-        })
+        stream_dialogue(
+            &located(source, path.to_path_buf()),
+            "id",
+            &mut warnings,
+            |line, event| {
+                rows.push(json!({"line": line, "event": event}));
+                Ok(())
+            },
+        )
         .expect("the transcript is readable");
         (rows, warnings)
     }
@@ -412,7 +417,7 @@ mod tests {
     fn a_compressed_rollout_is_readable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rollout.jsonl.zst");
-        let mut file = std::fs::File::create(&path).unwrap();
+        let file = std::fs::File::create(&path).unwrap();
         let encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
         let mut encoder = encoder.auto_finish();
         writeln!(
@@ -429,7 +434,10 @@ mod tests {
 
         let (rows, warnings) = collect(Source::Codex, &path);
         assert_eq!(rows.len(), 2, "both compressed events are read");
-        assert!(warnings.is_empty(), "a healthy compressed rollout warns nothing");
+        assert!(
+            warnings.is_empty(),
+            "a healthy compressed rollout warns nothing"
+        );
     }
 
     /// A rotated Antigravity conversation database holds no dialogue at all:
