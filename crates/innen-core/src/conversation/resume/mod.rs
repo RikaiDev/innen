@@ -237,7 +237,11 @@ pub fn find_all_candidates(
     Ok(deduplicate_candidates(candidates))
 }
 
-fn collect_files(root: &Path, ext_filter: &str, depth: usize, files: &mut Vec<PathBuf>) {
+/// Collect files whose name ends with any of the given suffixes.
+///
+/// Codex rotates older rollouts into `.jsonl.zst`; matching only `jsonl` made
+/// every compressed session invisible to discovery.
+fn collect_files_with_suffixes(root: &Path, suffixes: &[&str], depth: usize, files: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(root) {
         Ok(e) => e,
         Err(_) => return,
@@ -245,8 +249,13 @@ fn collect_files(root: &Path, ext_filter: &str, depth: usize, files: &mut Vec<Pa
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() && depth > 0 {
-            collect_files(&path, ext_filter, depth - 1, files);
-        } else if path.is_file() && path.extension().is_some_and(|e| e == ext_filter) {
+            collect_files_with_suffixes(&path, suffixes, depth - 1, files);
+        } else if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| suffixes.iter().any(|suffix| name.ends_with(suffix)))
+        {
             files.push(path);
         }
     }
@@ -261,12 +270,20 @@ fn latest_event_timestamp(path: &Path) -> Option<String> {
     let size = file.metadata().ok()?.len();
     let start = size.saturating_sub(1024 * 1024);
     let mut file = file;
-    file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    file.take(size - start).read_to_end(&mut bytes).ok()?;
+    if path.extension().is_some_and(|ext| ext == "zst") {
+        // A compressed rollout has no readable tail without decompressing it.
+        let mut decoded = Vec::new();
+        zstd::stream::copy_decode(file, &mut decoded).ok()?;
+        let tail_start = decoded.len().saturating_sub(1024 * 1024);
+        bytes.extend_from_slice(&decoded[tail_start..]);
+    } else {
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.take(size - start).read_to_end(&mut bytes).ok()?;
+    }
     let text = String::from_utf8_lossy(&bytes);
     let mut latest: Option<String> = None;
-    for line in text.lines().skip(usize::from(start > 0)) {
+    for line in text.lines().skip(usize::from(start > 0 && bytes.len() <= 1024 * 1024)) {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
         };

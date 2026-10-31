@@ -128,18 +128,29 @@ pub(super) fn delete_candidate(
     Ok(assessment.targets.clone())
 }
 
-fn delete_antigravity(candidate: &Candidate, assessment: &Assessment) -> Result<(), Error> {
-    let store_root = assessment
-        .targets
+/// The Antigravity store that owns a session's native bytes.
+///
+/// Antigravity ships three store layouts on one machine — `antigravity-cli`,
+/// `antigravity` and `antigravity-ide` — and a session belongs to whichever
+/// one holds it.
+pub(super) fn antigravity_store_root(targets: &[PathBuf]) -> Option<PathBuf> {
+    targets
         .iter()
         .find_map(|target| {
             target.ancestors().find(|ancestor| {
                 ancestor
                     .file_name()
-                    .is_some_and(|name| name == "antigravity-cli")
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        matches!(name, "antigravity-cli" | "antigravity" | "antigravity-ide")
+                    })
             })
         })
         .map(Path::to_path_buf)
+}
+
+fn delete_antigravity(candidate: &Candidate, assessment: &Assessment) -> Result<(), Error> {
+    let store_root = antigravity_store_root(&assessment.targets)
         .ok_or_else(|| Error::Purge("Antigravity store root is not canonical".into()))?;
     let summary_db = store_root.join("conversation_summaries.db");
     if summary_db.exists() {
@@ -147,8 +158,7 @@ fn delete_antigravity(candidate: &Candidate, assessment: &Assessment) -> Result<
             "SELECT json_object('not_fully_idle',not_fully_idle,'killed',killed) FROM conversation_summaries WHERE conversation_id='{}'",
             candidate.id
         );
-        let rows = sources::sqlite(&summary_db, &state_sql)
-            .map_err(|error| Error::Purge(error.to_string()))?;
+        let rows = read_shared_store(&summary_db, &state_sql)?;
         if rows.iter().any(|row| {
             row.get("not_fully_idle")
                 .and_then(Value::as_i64)
@@ -178,6 +188,39 @@ fn delete_antigravity(candidate: &Candidate, assessment: &Assessment) -> Result<
         ));
     }
     Ok(())
+}
+
+/// Read from a SQLite database that another process may own.
+///
+/// A hot WAL database cannot always be opened read-only: recovering the WAL
+/// needs write access to the shared index, and SQLite reports that as
+/// `unable to open database file`. The same repair that clears a blocked
+/// mutation clears a blocked read, so the read retries after rebuilding the
+/// WAL-index instead of failing the whole session.
+fn read_shared_store(path: &Path, sql: &str) -> Result<Vec<Value>, Error> {
+    let mut last = String::new();
+    for attempt in 0..SQLITE_MUTATION_ATTEMPTS {
+        match sources::sqlite(path, sql) {
+            Ok(rows) => return Ok(rows),
+            Err(error) => {
+                last = error.to_string();
+            }
+        }
+        // Rebuild the WAL-index so the next attempt can open the database.
+        let _ = Command::new("sqlite3")
+            .arg(path)
+            .arg("PRAGMA wal_checkpoint(TRUNCATE);")
+            .output();
+        if attempt + 1 < SQLITE_MUTATION_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(
+                SQLITE_MUTATION_BACKOFF_MS * (attempt as u64 + 1),
+            ));
+        }
+    }
+    Err(Error::Purge(format!(
+        "sqlite3 read failed after {} attempts: {last}",
+        SQLITE_MUTATION_ATTEMPTS
+    )))
 }
 
 /// Run a mutation against a SQLite database that another process may own.

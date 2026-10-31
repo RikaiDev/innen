@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::super::sources::{self, Source};
 use super::super::ReadError;
-use super::{collect_files, latest_event_timestamp, system_time_to_rfc3339, Candidate};
+use super::{collect_files_with_suffixes, latest_event_timestamp, system_time_to_rfc3339, Candidate};
 
 pub(super) fn scan_codex_sessions(
     root: &Path,
@@ -23,14 +23,23 @@ pub(super) fn scan_codex_sessions(
         .collect();
 
     let mut files = Vec::new();
-    collect_files(root, "jsonl", 6, &mut files);
+    collect_files_with_suffixes(root, &[".jsonl", ".jsonl.zst"], 6, &mut files);
 
     for path in files {
         let file = match File::open(&path) {
             Ok(f) => f,
             Err(_) => continue,
         };
-        let mut reader = BufReader::new(file);
+        let reader: Box<dyn std::io::Read> =
+            if path.extension().is_some_and(|ext| ext == "zst") {
+                match zstd::stream::read::Decoder::new(file) {
+                    Ok(decoder) => Box::new(decoder),
+                    Err(_) => continue,
+                }
+            } else {
+                Box::new(file)
+            };
+        let mut reader = BufReader::new(reader);
         let mut line0 = String::new();
         if reader.read_line(&mut line0).is_err() || line0.is_empty() {
             continue;

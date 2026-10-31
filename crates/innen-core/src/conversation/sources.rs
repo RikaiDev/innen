@@ -8,6 +8,18 @@ pub(crate) use super::opencode_db::{
     database_child_sessions, load_database_session, session_table, sqlite,
 };
 
+/// Whether an Antigravity conversation database still holds dialogue.
+///
+/// Antigravity rotates a trajectory out of its database once the dialogue is no
+/// longer needed, leaving a metadata-only stub. Such a session has no dialogue
+/// anywhere, which is different from a transcript that cannot be read: the
+/// first is extractable (with nothing to extract), the second is not.
+pub(crate) fn antigravity_dialogue_is_absent(path: &Path) -> Option<bool> {
+    let rows = sqlite(path, "SELECT json_object('n', count(*)) FROM steps").ok()?;
+    let count = rows.first()?.get("n")?.as_i64()?;
+    Some(count == 0)
+}
+
 fn err(path: &Path, e: impl std::fmt::Display) -> ReadError {
     ReadError(format!("read {}: {e}", path.display()))
 }
@@ -322,8 +334,15 @@ fn walk(
         }
         let stem = path.file_stem().and_then(|v| v.to_str()).unwrap_or("");
         let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("");
+        // Codex rotates older rollouts into `<id>.jsonl.zst`; the stem of such a
+        // file still ends with the session id, so the match must look past the
+        // extra compression suffix.
+        let codex_stem = stem.strip_suffix(".jsonl").unwrap_or(stem);
         let matched = match source {
-            Source::Codex => ext == "jsonl" && (stem == id || stem.ends_with(&format!("-{id}"))),
+            Source::Codex => {
+                (ext == "jsonl" || ext == "zst")
+                    && (codex_stem == id || codex_stem.ends_with(&format!("-{id}")))
+            }
             Source::Claude | Source::Cursor | Source::Qwen => ext == "jsonl" && stem == id,
             Source::Mcode => {
                 ext == "jsonl"

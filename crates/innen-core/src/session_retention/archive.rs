@@ -129,10 +129,16 @@ pub(super) fn hash_targets(targets: &[PathBuf]) -> Result<Bundle, Error> {
 fn collect(base: &Path, path: &Path, files: &mut Vec<(String, PathBuf)>) -> Result<(), Error> {
     let metadata = fs::symlink_metadata(path).map_err(|error| io(path, error))?;
     if metadata.file_type().is_symlink() {
-        return Err(Error::Proof(format!(
-            "symlink inside purge bundle is unsupported: {}",
-            path.display()
-        )));
+        // A symlink that points inside the bundle (a `node_modules/.bin` entry,
+        // for example) is part of the session's own bytes and is removed with
+        // it. One that points outside could delete data the session never
+        // owned, so it stays refused.
+        if !points_inside(base, path) {
+            return Err(Error::Proof(format!(
+                "symlink inside purge bundle is unsupported: {}",
+                path.display()
+            )));
+        }
     }
     if metadata.is_file() {
         let name = path
@@ -152,6 +158,24 @@ fn collect(base: &Path, path: &Path, files: &mut Vec<(String, PathBuf)>) -> Resu
         }
     }
     Ok(())
+}
+
+/// Whether a symlink's target resolves inside the bundle it belongs to.
+fn points_inside(base: &Path, link: &Path) -> bool {
+    let Ok(target) = fs::read_link(link) else {
+        return false;
+    };
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        match link.parent() {
+            Some(parent) => parent.join(target),
+            None => return false,
+        }
+    };
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let resolved = resolved.canonicalize().unwrap_or(resolved);
+    resolved.starts_with(&base)
 }
 
 fn hash_file(path: &Path) -> Result<(String, u64), Error> {
@@ -177,4 +201,47 @@ fn hash_reader(mut reader: impl Read, path: &Path) -> Result<(String, u64), Erro
 
 fn hex_digest(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    /// A `node_modules/.bin` entry points inside the session's own scratch
+    /// directory; it is part of the session's bytes and goes with it.
+    #[test]
+    fn a_symlink_that_stays_inside_the_bundle_is_part_of_the_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path().join("session");
+        let scratch = session.join("scratch").join("node_modules");
+        fs::create_dir_all(scratch.join(".bin")).unwrap();
+        fs::write(scratch.join("core.js"), b"module.exports = 1;").unwrap();
+        symlink(
+            scratch.join("core.js"),
+            scratch.join(".bin").join("core"),
+        )
+        .unwrap();
+
+        let bundle = hash_targets(&[session.clone()]).expect("the bundle hashes");
+        assert!(bundle.bytes > 0);
+    }
+
+    /// A symlink that points outside the bundle could delete data the session
+    /// never owned, so it stays refused.
+    #[test]
+    fn a_symlink_that_leaves_the_bundle_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.txt");
+        fs::write(&outside, b"not the session's bytes").unwrap();
+        let session = dir.path().join("session");
+        fs::create_dir_all(&session).unwrap();
+        symlink(&outside, session.join("escape")).unwrap();
+
+        let error = match hash_targets(&[session.clone()]) {
+            Ok(_) => panic!("an escaping symlink must be refused"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("symlink inside purge bundle"));
+    }
 }

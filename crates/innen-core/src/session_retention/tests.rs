@@ -1,7 +1,7 @@
 use super::archive::{antigravity_targets, hash_targets};
 use super::delete_adapter::{
-    delete_candidate, opencode_delete_args, run_delete, run_sqlite_mutation,
-    DELETE_ADAPTER_SOURCES, NO_DELETE_ADAPTER_SOURCES,
+    antigravity_store_root, delete_candidate, opencode_delete_args, run_delete,
+    run_sqlite_mutation, DELETE_ADAPTER_SOURCES, NO_DELETE_ADAPTER_SOURCES,
 };
 use super::policy::is_trustworthy_modified;
 use super::*;
@@ -256,6 +256,25 @@ fn antigravity_bundle_includes_conversation_database_and_brain() {
 #[test]
 fn delete_adapter_captures_success_output() {
     run_delete("/bin/sh", &["-c", "printf adapter-noise"]).unwrap();
+}
+
+/// Antigravity ships three store layouts; a session belongs to whichever one
+/// holds it, and refusing the other two strands those sessions forever.
+#[test]
+fn every_antigravity_store_layout_is_recognised() {
+    for store in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+        let target = PathBuf::from(format!("/home/u/.gemini/{store}/brain/session"));
+        assert_eq!(
+            antigravity_store_root(&[target]).map(|root| root.display().to_string()),
+            Some(format!("/home/u/.gemini/{store}")),
+            "{store} must be a canonical Antigravity store root"
+        );
+    }
+    assert_eq!(
+        antigravity_store_root(&[PathBuf::from("/home/u/other/brain/session")]),
+        None,
+        "an unrelated directory is not an Antigravity store"
+    );
 }
 
 /// Every source variant is either reclaimable or explicitly refused.

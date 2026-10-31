@@ -68,16 +68,22 @@ pub fn read_lines(
 
 /// Stream every dialogue projection of one located session in a single pass,
 /// without holding the session in memory. Used by retention compaction.
+///
+/// A transcript that lost one line to a partial write must not cost the whole
+/// session: unparseable lines are skipped and reported through `warnings`, and
+/// only a transcript that yields no event at all stays unreadable.
 pub(crate) fn stream_dialogue(
     located: &Located,
     id: &str,
+    warnings: &mut Vec<String>,
     mut sink: impl FnMut(usize, Value) -> Result<(), ReadError>,
 ) -> Result<(), ReadError> {
+    let path = &located.path;
     let mut emit = |index: usize, event: Value| -> Result<(), ReadError> {
         if !event.is_object() {
             return Err(ReadError(format!(
                 "unsupported transcript event at {}:{}: expected object",
-                located.path.display(),
+                path.display(),
                 index + 1
             )));
         }
@@ -100,29 +106,77 @@ pub(crate) fn stream_dialogue(
             cursor += count;
         }
     }
-    let path = &located.path;
     if path.extension().is_some_and(|s| s == "json") {
         for (index, event) in sources::load_document(located)?.into_iter().enumerate() {
             emit(index, event)?;
         }
         return Ok(());
     }
-    let file = File::open(path).map_err(|e| io_error(path, e))?;
-    for (index, line) in BufReader::new(file).lines().enumerate() {
+    if located.source == Source::Antigravity
+        && path.extension().is_some_and(|ext| ext == "db")
+        && sources::antigravity_dialogue_is_absent(path) == Some(true)
+    {
+        // The trajectory was rotated out of the database, so no dialogue
+        // exists to extract. That is an empty extraction, not a read failure.
+        warnings.push(format!(
+            "antigravity conversation database {} holds no dialogue",
+            path.display()
+        ));
+        return Ok(());
+    }
+    let reader = open_transcript(path)?;
+    let mut parsed = 0usize;
+    let mut first_error: Option<(usize, String)> = None;
+    for (line_number, line) in BufReader::new(reader).lines().enumerate() {
         let line = line.map_err(|e| io_error(path, e))?;
         if line.trim().is_empty() {
             continue;
         }
-        let event: Value = serde_json::from_str(&line).map_err(|e| {
-            ReadError(format!(
-                "invalid transcript JSON at {}:{}: {e}",
-                path.display(),
-                index + 1
-            ))
-        })?;
-        emit(index, event)?;
+        match serde_json::from_str::<Value>(&line) {
+            Ok(event) => {
+                parsed += 1;
+                emit(line_number, event)?;
+            }
+            Err(error) => {
+                let message = format!(
+                    "invalid transcript JSON at {}:{}: {error}",
+                    path.display(),
+                    line_number + 1
+                );
+                if first_error.is_none() {
+                    first_error = Some((line_number + 1, message));
+                }
+                warnings.push(format!(
+                    "skipped unreadable transcript line {}:{}: {error}",
+                    path.display(),
+                    line_number + 1
+                ));
+            }
+        }
+    }
+    if parsed == 0 {
+        // A transcript that yields no event at all stays unreadable, and the
+        // first unreadable line keeps its provenance.
+        return Err(ReadError(match first_error {
+            Some((_, message)) => message,
+            None => format!("no readable transcript event in {}", path.display()),
+        }));
     }
     Ok(())
+}
+
+/// Open a transcript as a byte stream, decompressing zstd-compressed rollouts.
+///
+/// Codex rotates older sessions into `.jsonl.zst`; reading them as plain bytes
+/// would report a binary file where the dialogue actually lives.
+fn open_transcript(path: &Path) -> Result<Box<dyn std::io::Read>, ReadError> {
+    let file = File::open(path).map_err(|e| io_error(path, e))?;
+    if path.extension().is_some_and(|ext| ext == "zst") {
+        let decoder = zstd::stream::read::Decoder::new(file)
+            .map_err(|e| ReadError(format!("read {}: {e}", path.display())))?;
+        return Ok(Box::new(decoder));
+    }
+    Ok(Box::new(file))
 }
 
 fn read_located(
@@ -172,8 +226,10 @@ fn read_located(
         }
         return Ok(page);
     }
-    let file = File::open(&path).map_err(|e| io_error(&path, e))?;
-    for (index, line) in BufReader::new(file).lines().enumerate() {
+    let reader = open_transcript(&path)?;
+    let mut parsed = 0usize;
+    let mut first_error: Option<(usize, String)> = None;
+    for (index, line) in BufReader::new(reader).lines().enumerate() {
         let line = line.map_err(|e| io_error(&path, e))?;
         if selected.is_some_and(|s| index + 1 > *s.last().unwrap()) {
             break;
@@ -184,15 +240,33 @@ fn read_located(
         {
             continue;
         }
-        let event: Value = serde_json::from_str(&line).map_err(|e| {
-            ReadError(format!(
-                "invalid transcript JSON at {}:{}: {e}",
-                path.display(),
-                index + 1
-            ))
-        })?;
+        let event: Value = match serde_json::from_str(&line) {
+            Ok(event) => event,
+            Err(error) => {
+                let message = format!(
+                    "invalid transcript JSON at {}:{}: {error}",
+                    path.display(),
+                    index + 1
+                );
+                if first_error.is_none() {
+                    first_error = Some((index + 1, message));
+                }
+                page.warnings.push(format!(
+                    "skipped unreadable transcript line {}:{}: {error}",
+                    path.display(),
+                    index + 1
+                ));
+                continue;
+            }
+        };
+        parsed += 1;
         if accept(&mut page, event, index, limit, selected)? {
             break;
+        }
+    }
+    if parsed == 0 && page.records.is_empty() {
+        if let Some((_, message)) = first_error {
+            return Err(ReadError(message));
         }
     }
     Ok(page)
@@ -247,4 +321,133 @@ fn accept(
 
 pub(super) fn io_error(path: &Path, error: std::io::Error) -> ReadError {
     ReadError(format!("read {}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    fn located(source: Source, path: PathBuf) -> Located {
+        Located { source, path }
+    }
+
+    fn collect(source: Source, path: &Path) -> (Vec<Value>, Vec<String>) {
+        let mut rows = Vec::new();
+        let mut warnings = Vec::new();
+        stream_dialogue(&located(source, path.to_path_buf()), "id", &mut warnings, |line, event| {
+            rows.push(json!({"line": line, "event": event}));
+            Ok(())
+        })
+        .expect("the transcript is readable");
+        (rows, warnings)
+    }
+
+    /// A transcript that lost one line to a partial write must still yield the
+    /// dialogue around it: the lost line is reported, the session is not lost.
+    #[test]
+    fn one_unreadable_line_does_not_cost_the_whole_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        for index in 0..5 {
+            let kind = if index % 2 == 0 {
+                "USER_INPUT"
+            } else {
+                "PLANNER_RESPONSE"
+            };
+            writeln!(
+                file,
+                "{{\"type\":\"{kind}\",\"created_at\":\"2020-01-01T00:00:0{index}Z\",\"content\":\"line {index}\"}}"
+            )
+            .unwrap();
+            if index == 2 {
+                // A fragment whose head was lost: not parseable as an event.
+                writeln!(file, "ind task\",\"toolSummary\":\"Kill task\"}}]}}").unwrap();
+            }
+        }
+        drop(file);
+
+        let (rows, warnings) = collect(Source::Antigravity, &path);
+        assert_eq!(rows.len(), 5, "every readable line still yields dialogue");
+        assert_eq!(warnings.len(), 1, "the unreadable line is reported");
+        assert!(warnings[0].contains("skipped unreadable transcript line"));
+    }
+
+    /// A transcript that yields no event at all stays unreadable, and the
+    /// failure keeps the line provenance without echoing the corrupt source.
+    #[test]
+    fn a_transcript_without_any_readable_event_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        fs::write(&path, b"not json at all\nstill not json\n").unwrap();
+        let mut warnings = Vec::new();
+        let error = stream_dialogue(
+            &located(Source::Antigravity, path.clone()),
+            "id",
+            &mut warnings,
+            |_, _| Ok(()),
+        )
+        .expect_err("a transcript with no event is unreadable");
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid transcript JSON"),
+            "the failure names the problem: {message}"
+        );
+        assert!(
+            message.contains("transcript.jsonl:1"),
+            "the failure keeps line provenance: {message}"
+        );
+        assert!(
+            !message.contains("not json"),
+            "the failure never echoes the corrupt source: {message}"
+        );
+    }
+
+    /// Codex rotates older rollouts into `.jsonl.zst`; they must stay readable.
+    #[test]
+    fn a_compressed_rollout_is_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl.zst");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
+        let mut encoder = encoder.auto_finish();
+        writeln!(
+            encoder,
+            "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"compressed question\"}}]}}}}"
+        )
+        .unwrap();
+        writeln!(
+            encoder,
+            "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"compressed answer\"}}]}}}}"
+        )
+        .unwrap();
+        drop(encoder);
+
+        let (rows, warnings) = collect(Source::Codex, &path);
+        assert_eq!(rows.len(), 2, "both compressed events are read");
+        assert!(warnings.is_empty(), "a healthy compressed rollout warns nothing");
+    }
+
+    /// A rotated Antigravity conversation database holds no dialogue at all:
+    /// that is an empty extraction, not a read failure.
+    #[test]
+    fn a_rotated_antigravity_database_yields_no_dialogue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.db");
+        let output = std::process::Command::new("sqlite3")
+            .arg(&path)
+            .arg("CREATE TABLE steps (idx INTEGER); CREATE TABLE gen_metadata (idx INTEGER);")
+            .output()
+            .expect("sqlite3");
+        assert!(output.status.success());
+
+        let (rows, warnings) = collect(Source::Antigravity, &path);
+        assert!(rows.is_empty(), "a rotated database holds no dialogue");
+        assert_eq!(warnings.len(), 1, "the empty extraction is reported");
+        assert!(warnings[0].contains("holds no dialogue"));
+    }
 }

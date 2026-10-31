@@ -743,6 +743,7 @@ dependencies = [
  "thiserror",
  "tiktoken-rs",
  "yaml-rust2",
+ "zstd",
 ]
 
 [[package]]

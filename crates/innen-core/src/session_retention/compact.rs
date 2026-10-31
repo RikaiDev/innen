@@ -75,13 +75,14 @@ pub(super) fn compact_and_attest(
         path: candidate.path.clone(),
     };
 
+    let mut warnings: Vec<String> = Vec::new();
     let result = (|| -> Result<(u64, usize, String), Error> {
         let mut file = File::create(&partial).map_err(|error| io(&partial, error))?;
         let mut hasher = Sha256::new();
         let mut bytes = 0u64;
         let mut messages = 0usize;
         let mut rows = Vec::new();
-        crate::conversation::stream_dialogue(&located, &candidate.id, |line, event| {
+        crate::conversation::stream_dialogue(&located, &candidate.id, &mut warnings, |line, event| {
             rows.clear();
             dialogue_lines(line, &event, &mut rows);
             for row in &rows {
@@ -149,6 +150,7 @@ pub(super) fn compact_and_attest(
             "path": relative, "sha256": sha256, "bytes": bytes, "messages": messages,
             "source_sha256": before.sha256, "source_bytes": before.bytes,
             "observed_utc": observed_utc_now(),
+            "warnings": warnings,
         }),
     )?;
     append(
