@@ -8,6 +8,11 @@
       "exempt": "384 lines of production code; the overage is 346 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
+      "file": "crates/innen-core/src/session_retention/tests.rs",
+      "lines": 723,
+      "exempt": "Pure test module: it contains no production code, so there is no responsibility to separate. Splitting tests to satisfy a line count changes no design and only makes the suite harder to navigate."
+    },
+    {
       "file": "crates/innen-core/src/index.rs",
       "lines": 678,
       "exempt": "341 lines of production code; the overage is 337 lines of inline tests. We do not split test modules to hit a line number."
@@ -23,11 +28,6 @@
       "exempt": "Inline test module moved out of doctor.rs during the single-responsibility split. It holds no production code, so there is no responsibility to separate; splitting it further would only make the suite harder to navigate."
     },
     {
-      "file": "crates/innen-core/src/session_retention/tests.rs",
-      "lines": 521,
-      "exempt": "Pure test module: it contains no production code, so there is no responsibility to separate. Splitting tests to satisfy a line count changes no design and only makes the suite harder to navigate."
-    },
-    {
       "file": "crates/innen-core/src/query.rs",
       "lines": 498,
       "exempt": "398 lines of production code; the overage is 100 lines of inline tests. We do not split test modules to hit a line number."
@@ -36,6 +36,11 @@
       "file": "crates/innen-core/src/credentials.rs",
       "lines": 489,
       "exempt": "394 lines of production code; the overage is 95 lines of inline tests. We do not split test modules to hit a line number."
+    },
+    {
+      "file": "crates/innen-core/src/conversation/read.rs",
+      "lines": 461,
+      "exempt": "325 lines of production code; the overage is 136 lines of inline tests. We do not split test modules to hit a line number."
     },
     {
       "file": "crates/innen-core/src/context_selection.rs",
