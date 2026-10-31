@@ -1,6 +1,7 @@
 use super::archive::{antigravity_targets, hash_targets};
 use super::delete_adapter::{
     delete_candidate, opencode_delete_args, run_delete, run_sqlite_mutation,
+    DELETE_ADAPTER_SOURCES, NO_DELETE_ADAPTER_SOURCES,
 };
 use super::policy::is_trustworthy_modified;
 use super::*;
@@ -255,6 +256,66 @@ fn antigravity_bundle_includes_conversation_database_and_brain() {
 #[test]
 fn delete_adapter_captures_success_output() {
     run_delete("/bin/sh", &["-c", "printf adapter-noise"]).unwrap();
+}
+
+/// Every source variant is either reclaimable or explicitly refused.
+///
+/// A new source variant that nobody classified would leave the pipeline
+/// silently unable to reclaim it, so the two sets must stay exhaustive.
+#[test]
+fn every_source_variant_is_classified() {
+    let all = [
+        Source::Antigravity,
+        Source::Codex,
+        Source::Claude,
+        Source::Copilot,
+        Source::Cursor,
+        Source::Gemini,
+        Source::Grok,
+        Source::Mcode,
+        Source::Opencode,
+        Source::Qwen,
+        Source::Vscode,
+    ];
+    for source in all {
+        assert!(
+            DELETE_ADAPTER_SOURCES.contains(&source)
+                || NO_DELETE_ADAPTER_SOURCES.contains(&source),
+            "{source:?} is neither reclaimable nor explicitly refused"
+        );
+        assert!(
+            !(DELETE_ADAPTER_SOURCES.contains(&source)
+                && NO_DELETE_ADAPTER_SOURCES.contains(&source)),
+            "{source:?} is classified twice"
+        );
+    }
+    assert_eq!(
+        DELETE_ADAPTER_SOURCES.len() + NO_DELETE_ADAPTER_SOURCES.len(),
+        all.len(),
+        "the classification must cover every source variant exactly once"
+    );
+}
+
+/// The command line accepts every source the pipeline can reclaim.
+///
+/// The CLI derives its `--source` values from this list, so a source with a
+/// delete adapter must never be missing from it.
+#[test]
+fn every_reclaimable_source_is_named_for_the_command_line() {
+    for source in DELETE_ADAPTER_SOURCES {
+        let name = source.as_str();
+        assert!(
+            retention_source_names().contains(&name),
+            "{name} has a delete adapter but the command line does not accept it"
+        );
+    }
+    for name in retention_source_names() {
+        let parsed = Source::parse(name).expect("a listed source name must parse");
+        assert!(
+            DELETE_ADAPTER_SOURCES.contains(&parsed),
+            "{name} is offered by the command line but no adapter can reclaim it"
+        );
+    }
 }
 
 #[test]

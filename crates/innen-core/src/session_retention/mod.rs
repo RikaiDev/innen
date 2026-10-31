@@ -42,6 +42,7 @@ mod types;
 
 pub use attest::attest;
 pub use compact::{CompactRecord, COMPACT_DIR};
+pub use delete_adapter::retention_source_names;
 pub use inventory::{inventory, summarize_inventory};
 pub use purge::purge;
 pub use support::cutoff_utc;

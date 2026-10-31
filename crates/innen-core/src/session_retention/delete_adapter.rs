@@ -3,6 +3,42 @@ use super::activity::{
     Activity,
 };
 use super::*;
+
+/// Sources this module can delete.
+///
+/// The command line derives its `--source` values from this list, so a source
+/// with a working adapter is always reachable from the command line.
+pub(super) const DELETE_ADAPTER_SOURCES: &[Source] = &[
+    Source::Antigravity,
+    Source::Codex,
+    Source::Claude,
+    Source::Copilot,
+    Source::Grok,
+    Source::Mcode,
+    Source::Opencode,
+    Source::Qwen,
+];
+
+/// Sources this module refuses to delete because no adapter exists for them.
+///
+/// Every `Source` variant is either listed here or in `DELETE_ADAPTER_SOURCES`;
+/// `every_source_variant_is_classified` keeps that exhaustive.
+pub(super) const NO_DELETE_ADAPTER_SOURCES: &[Source] = &[Source::Cursor, Source::Gemini, Source::Vscode];
+
+/// Every source name the retention pipeline accepts, aliases included.
+///
+/// The names come from the sources that own a delete adapter, so the command
+/// line never offers a source the pipeline would refuse to reclaim.
+pub fn retention_source_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = DELETE_ADAPTER_SOURCES
+        .iter()
+        .map(|source| source.as_str())
+        .collect();
+    names.push("agy");
+    names.push("minimax");
+    names
+}
+
 pub(super) fn delete_candidate(
     candidate: &Candidate,
     assessment: &Assessment,
@@ -58,10 +94,15 @@ pub(super) fn delete_candidate(
         Source::Mcode | Source::Copilot | Source::Grok => {
             delete_indexed_session(candidate, assessment)?
         }
-        _ => {
-            return Err(Error::Purge(
-                "source has no supported delete adapter".into(),
-            ))
+        source @ (Source::Cursor | Source::Gemini | Source::Vscode) => {
+            debug_assert!(
+                NO_DELETE_ADAPTER_SOURCES.contains(&source),
+                "a source without a delete adapter must stay classified"
+            );
+            return Err(Error::Purge(format!(
+                "source has no supported delete adapter: {}",
+                source.as_str()
+            )))
         }
     }
     // A receipt may only claim what actually happened on disk.

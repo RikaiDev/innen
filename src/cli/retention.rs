@@ -40,12 +40,27 @@ impl RetentionWindow {
     }
 }
 
+/// Source names the retention pipeline accepts.
+///
+/// The list comes from innen-core, which owns the delete adapters, so a source
+/// that can be reclaimed is always selectable here.
+fn retention_source_parser() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(innen_core::session_retention::retention_source_names())
+}
+
+/// Source names the retention pipeline accepts, plus `auto`.
+fn retention_source_or_auto_parser() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        std::iter::once("auto").chain(innen_core::session_retention::retention_source_names()),
+    )
+}
+
 #[derive(clap::Args)]
 struct CommonSessionArgs {
     /// Native session UUID or OpenCode ses_ id.
     id: String,
     /// Coding tool owning the native store.
-    #[arg(long, value_parser = ["agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
+    #[arg(long, value_parser = retention_source_parser())]
     source: String,
     /// Override the native store root.
     #[arg(long)]
@@ -54,7 +69,7 @@ struct CommonSessionArgs {
 
 #[derive(clap::Args)]
 struct PlanArgs {
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
+    #[arg(long, default_value = "auto", value_parser = retention_source_or_auto_parser())]
     source: String,
     #[arg(long)]
     source_root: Option<PathBuf>,
@@ -90,7 +105,7 @@ struct PurgeArgs {
 
 #[derive(clap::Args)]
 struct SweepArgs {
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "codex", "claude", "mcode", "opencode"])]
+    #[arg(long, default_value = "auto", value_parser = retention_source_or_auto_parser())]
     source: String,
     #[arg(long)]
     source_root: Option<PathBuf>,
