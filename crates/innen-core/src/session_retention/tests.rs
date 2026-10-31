@@ -7,9 +7,101 @@ use super::*;
 
 const ID: &str = "e3a92b35-4931-427b-9adf-1baa29318ca6";
 
-/// A shared session database is not a per-session liveness signal: its handle
-/// is held by every client of every session, so the open-handle check blocks
-/// the whole source while the tool runs and proves nothing about one session.
+/// A store that keeps one directory per session next to a shared index
+/// database must lose both: the directory holds the transcript, the index row
+/// is what makes the session visible.
+#[test]
+fn an_indexed_session_store_loses_its_directory_and_its_index_row() {
+    let store = tempfile::tempdir().unwrap();
+    let sessions = store.path().join("sessions").join("2026").join("10").join("25");
+    let session_dir = sessions.join("session-under-test");
+    fs::create_dir_all(&session_dir).unwrap();
+    let transcript = session_dir.join("messages.jsonl");
+    fs::write(
+        &transcript,
+        concat!(
+            "{\"type\":\"user\",\"timestamp\":\"2020-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"question\"}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2020-01-01T00:01:00Z\",\"message\":{\"role\":\"assistant\",\"content\":\"answer\"}}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(session_dir.join("llm-call.json"), "{}").unwrap();
+
+    let sqlite_dir = store.path().join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let index_db = sqlite_dir.join("runtime-state.sqlite");
+    let sql = |statement: &str| {
+        let output = std::process::Command::new("sqlite3")
+            .arg(&index_db)
+            .arg(statement)
+            .output()
+            .expect("sqlite3");
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            statement,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    sql("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY);");
+    sql("CREATE TABLE local_runtime_messages (session_id TEXT);");
+    sql("CREATE TABLE local_runtime_message_rows (session_id TEXT);");
+    sql("INSERT INTO local_runtime_sessions (session_id) VALUES ('mvs_test');");
+    sql("INSERT INTO local_runtime_messages (session_id) VALUES ('mvs_test');");
+
+    let candidate = Candidate {
+        id: "mvs_test".to_string(),
+        source: Source::Mcode,
+        modified: Some("2020-01-01T00:00:00Z".to_string()),
+        path: transcript.clone(),
+        project: None,
+        parent_id: None,
+    };
+    let current = super::archive::bundle(&candidate).unwrap();
+    let assessment = Assessment {
+        session_id: candidate.id.clone(),
+        source: "mcode".to_string(),
+        modified: candidate.modified.clone(),
+        cutoff_utc: "2020-02-01T00:00:00Z".to_string(),
+        source_bytes: current.bytes,
+        source_sha256: current.sha256,
+        eligible: true,
+        blockers: Vec::new(),
+        blocker_codes: Vec::new(),
+        targets: vec![transcript.clone()],
+    };
+    delete_candidate(&candidate, &assessment, None)
+        .unwrap_or_else(|error| panic!("delete failed: {error:?}"));
+
+    assert!(!transcript.exists(), "the session directory is removed");
+    assert!(
+        !session_dir.exists(),
+        "the whole session directory is removed, not only the transcript"
+    );
+    let sql = |statement: &str| {
+        let output = std::process::Command::new("sqlite3")
+            .arg(&index_db)
+            .arg(statement)
+            .output()
+            .expect("sqlite3");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    assert_eq!(
+        sql("SELECT COUNT(*) FROM local_runtime_sessions WHERE session_id='mvs_test';"),
+        "0",
+        "the index row is removed with the session"
+    );
+    assert_eq!(
+        sql("SELECT COUNT(*) FROM local_runtime_messages WHERE session_id='mvs_test';"),
+        "0"
+    );
+}
+
+/// A shared session store must not block its whole source.
+/// The handle is held by every client of every session, so the open-handle
+/// check blocks the whole source while the tool runs and proves nothing about
+/// one session.
 /// The per-session digest carries that signal, and the opencode delete must
 /// stay off the background service that holds the shared database open.
 #[test]
