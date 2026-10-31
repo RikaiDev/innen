@@ -8,6 +8,39 @@ use super::super::sources::{self, Source};
 use super::super::ReadError;
 use super::{latest_event_timestamp, system_time_to_rfc3339, Candidate};
 
+/// A modification time the retention gate may act on.
+///
+/// A timestamp before 1970 is not a real modification time: Antigravity writes
+/// the zero time into `last_modified_time` for conversations it never
+/// timestamped, and a gate that reads that as "very old" would delete a
+/// session whose age nobody established.
+fn is_trustworthy_stamp(stamp: &str) -> bool {
+    stamp
+        .get(..4)
+        .and_then(|year| year.parse::<u16>().ok())
+        .is_some_and(|year| year >= 1970)
+}
+
+/// The age of the native bytes of one Antigravity conversation.
+///
+/// The summary database sometimes leaves `last_modified_time` unset. The bytes
+/// on disk still know how old they are, and the retention gate is about those
+/// bytes, so their own modification time answers the question the missing
+/// field left open. The newest of the two wins: a byte that changed recently
+/// keeps its conversation out of reach.
+fn native_bytes_modified(root: &Path, id: &str) -> Option<String> {
+    let conversation_db = root
+        .parent()
+        .map(|store| store.join("conversations").join(format!("{id}.db")));
+    [Some(root.join(id)), conversation_db]
+        .into_iter()
+        .flatten()
+        .filter_map(|path| fs::metadata(path).ok())
+        .filter_map(|meta| meta.modified().ok())
+        .max()
+        .map(system_time_to_rfc3339)
+}
+
 fn extract_antigravity_project_from_uris(uris: &str) -> Option<String> {
     if uris.trim().is_empty() {
         return None;
@@ -111,7 +144,9 @@ pub(super) fn scan_antigravity_sessions(
                                     let modified = row
                                         .get("modified")
                                         .and_then(Value::as_str)
-                                        .map(String::from);
+                                        .filter(|stamp| is_trustworthy_stamp(stamp))
+                                        .map(String::from)
+                                        .or_else(|| native_bytes_modified(root, &id));
                                     let path =
                                         root.join(&id).join(".system_generated/logs/transcript.jsonl");
                                     let project = extract_antigravity_project_from_uris(uris)
@@ -268,4 +303,69 @@ pub(super) fn scan_antigravity_sessions(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_trustworthy_stamp, native_bytes_modified};
+    use std::fs;
+    use std::path::Path;
+
+    /// Antigravity writes the zero time into `last_modified_time` for
+    /// conversations it never timestamped. That is not a real age, so the gate
+    /// must not read it as one.
+    #[test]
+    fn the_zero_time_is_not_a_trustworthy_age() {
+        assert!(!is_trustworthy_stamp("0001-01-01 00:00:00+00:00"));
+        assert!(is_trustworthy_stamp("2026-08-27 14:38:00+00:00"));
+    }
+
+    /// When the summary row has no usable timestamp, the native bytes answer
+    /// it: their own modification time is the age the gate acts on.
+    #[test]
+    fn native_bytes_supply_the_age_a_missing_timestamp_leaves_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = dir.path().join("antigravity-cli");
+        fs::create_dir_all(store.join("brain").join("session-id")).expect("mkdir brain");
+        fs::create_dir_all(store.join("conversations")).expect("mkdir conversations");
+        fs::write(store.join("conversations").join("session-id.db"), b"bytes").expect("write");
+
+        let modified = native_bytes_modified(&store.join("brain"), "session-id")
+            .expect("the native bytes carry their own age");
+        assert!(
+            is_trustworthy_stamp(&modified),
+            "the fallback must be a real timestamp, got {modified}"
+        );
+    }
+
+    /// The newest native byte wins: a conversation whose database changed
+    /// recently must not look stale because its brain directory did not.
+    #[test]
+    fn the_newest_native_byte_decides_the_age() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = dir.path().join("antigravity-cli");
+        let brain = store.join("brain").join("session-id");
+        fs::create_dir_all(&brain).expect("mkdir brain");
+        fs::create_dir_all(store.join("conversations")).expect("mkdir conversations");
+        fs::write(store.join("conversations").join("session-id.db"), b"bytes").expect("write");
+
+        let stale = native_bytes_modified(&store.join("brain"), "session-id").expect("age");
+        // Touch only the conversation database, then read the age again.
+        let database = store.join("conversations").join("session-id.db");
+        let touched = std::time::SystemTime::now() + std::time::Duration::from_secs(3_600);
+        fs::File::options()
+            .write(true)
+            .open(&database)
+            .expect("open")
+            .set_times(fs::FileTimes::new().set_modified(touched))
+            .expect("set mtime");
+
+        let fresh = native_bytes_modified(&store.join("brain"), "session-id").expect("age");
+        assert_ne!(stale, fresh, "the newest native byte must decide the age");
+        assert!(
+            fresh > stale,
+            "the touched database must produce the newer age: {fresh} vs {stale}"
+        );
+        assert!(Path::new(&database).exists());
+    }
 }

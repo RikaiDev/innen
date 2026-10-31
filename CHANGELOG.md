@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.2] - 2026-10-31
+
+### Fixed
+
+- The Antigravity scanner no longer reports a missing age for conversations the
+  tool never timestamped. Antigravity writes the zero time into
+  `last_modified_time` for some conversations; the retention gate read that as
+  "no trustworthy age" and refused them, while the fallback that scans the
+  brain directories read the very same conversations as stale. Which verdict a
+  session got therefore depended on whether the summary database happened to
+  be readable at that moment, and that database is a WAL file held open by the
+  running tool. The native bytes carry their own age, and the newest of them
+  decides: a byte that changed recently keeps its conversation out of reach.
+
 ## [0.12.1] - 2026-10-31
 
 ### Fixed
