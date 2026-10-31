@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.12.0] - 2026-10-31
+
+### Fixed
+
+- The retention pipeline can now reclaim the Antigravity sessions it used to
+  refuse. The store root was only recognised under `antigravity-cli`, so
+  sessions in the `antigravity` and `antigravity-ide` stores were never
+  deleted; a symlink inside a purge bundle was refused even when it pointed
+  inside the bundle it belongs to; a transcript that lost one line to a
+  partial write failed the whole session instead of the one line; and a
+  rotated conversation database, which holds no dialogue anywhere, was
+  reported as unreadable rather than as an empty extraction.
+- Codex rotates older rollouts into `.jsonl.zst`. Discovery matched `jsonl`
+  only, so compressed sessions were invisible to the pipeline: they are now
+  found, read and reclaimed.
+- A shared store that a live owner is writing refuses a read-only open with
+  `unable to open database file`. The read now retries after rebuilding the
+  WAL-index, the same repair the mutation path already used.
+- The retention command line accepts every source the engine can reclaim.
+  Copilot and Grok had delete adapters but no selectable name, so they were
+  reachable only through a full-source sweep.
+
+### Changed
+
+- A transcript with unreadable lines keeps its readable lines: the unreadable
+  ones are skipped and reported on the compact-transcript node. A transcript
+  that yields no event at all is still refused, with the line provenance and
+  without echoing the corrupt source.
+
 ## [0.11.0] - 2026-10-07
 
 ### Fixed
