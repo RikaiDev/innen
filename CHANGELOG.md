@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.14.0] - 2026-11-04
+
+### Added
+
+- `innen query` no longer answers "nothing" to a long request that matches only
+  in part. When the whole request matches no node, it retries each identity
+  term, ranks nodes by how many terms they cover (best 10), reports the
+  resolution as `partial`, and names the terms that matched nothing. A request
+  that mixed one known project name with unindexed words returned zero
+  candidates and sent the agent to search the filesystem by hand.
+- When the best-scored candidate is a project, the brief lists the other files
+  that belong to it under `Same project` (12 shown, with the total), so one
+  call shows the earlier decks and proposals that already exist for the task.
+  A request that already hit concrete files gets no such list; output for those
+  requests is byte-identical to 0.13.0.
+
+### Fixed
+
+- A candidate that is itself a project is now reported under `Linked Projects`.
+  Only owned files were linked before, so a query that found the project page
+  printed `Linked Projects: none`. In `partial` mode only the projects of the
+  best-covered candidates are claimed, not those reached through one weak term.
+
 ## [0.13.0] - 2026-11-04
 
 ### Added
