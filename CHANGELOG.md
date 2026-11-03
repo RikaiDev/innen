@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.13.0] - 2026-11-04
+
+### Added
+
+- `innen resume --source agy` now returns a handoff digest for Antigravity
+  conversations instead of the start of the dialogue. Antigravity transcripts
+  are mostly assistant prose that the user's own requests make derivable, so
+  the digest keeps what cannot be derived, each entry with its source line for
+  `--lines` expansion: every user request (800 characters each), the files
+  tools wrote or commands and replies named (flagged W, C or A, grouped under
+  one shared root), web searches, error lines, and statements that a third
+  party approved the work. Such statements are unverified by construction. On
+  three real sessions the brief is 11%, 12% and 4.5% of the dialogue view.
+- The brief reports `user_request_unanswered` when no assistant text follows
+  the newest user request, with a count of the tool-only steps, tool results
+  and errors that did follow.
+
+### Fixed
+
+- `innen unfinished` no longer reads an Antigravity planner step that only
+  calls tools as an answer to the user. A conversation whose last request was
+  followed by tool calls alone was ranked as finished.
+- A dialogue page now reports truncated source text and elided event kinds
+  once each, with exact line ranges, instead of one warning per event.
+
+### Known limits
+
+- Source text that Antigravity truncated in `transcript.jsonl` is flagged but
+  not restored; the full text lives in the conversation database.
+- Claims that work was deployed, submitted or closed are not detected: the
+  words are too common in ordinary transcripts to flag without false alarms.
+
 ## [0.12.2] - 2026-10-31
 
 ### Fixed
