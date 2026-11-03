@@ -2,7 +2,7 @@
 //! ranking, baseline/authority resolution, and the JSON payload both views
 //! render from.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -16,13 +16,17 @@ use crate::index::{ensure_tokenizer, schema};
 use crate::journal::{observed_utc_now, Journal};
 
 use super::admission::{has_all_search_terms, has_entity_anchor, literal_candidate_scores};
-use super::node_identity::{node_kind, node_searchable_text, node_text};
+use super::node_identity::{node_identity_text, node_kind, node_searchable_text, node_text};
 use super::query_terms::{
     extract_constraint_cues, extract_operation_cue, extract_query_terms, has_asset_edit_intent,
     sanitize_for_tantivy,
 };
-use super::traversal::traverse_candidates;
+use super::traversal::{project_neighbors, traverse_candidates};
 use super::types::TaskEntryOptions;
+
+/// Per-term fallback keeps only the best-covered candidates: one generic term
+/// can match dozens of nodes, and a long tail is noise, not context.
+const FALLBACK_CANDIDATE_LIMIT: usize = 10;
 
 /// Main entry point for task-context retrieval.
 pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, String> {
@@ -165,9 +169,89 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         .collect();
     ranked_candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
+    // 5b. A request that matches nothing as a whole is not an empty answer:
+    // retry per identity term and say which terms found nothing.
+    let mut unmatched_terms: Vec<String> = Vec::new();
+    let mut fallback_truncated = false;
+    if ranked_candidates.is_empty() && identity_terms.len() >= 2 {
+        let lowered: Vec<String> = identity_terms.iter().map(|t| t.to_lowercase()).collect();
+        let mut covered = vec![false; lowered.len()];
+        for (id, node) in &materialized.nodes {
+            let hay = node_identity_text(node).to_lowercase();
+            let hits: Vec<usize> = (0..lowered.len())
+                .filter(|i| hay.contains(&lowered[*i]))
+                .collect();
+            if hits.is_empty() {
+                continue;
+            }
+            for i in &hits {
+                covered[*i] = true;
+            }
+            ranked_candidates.push((
+                id.clone(),
+                hits.len() as f64 / lowered.len() as f64,
+                format!("term_coverage:{}/{}", hits.len(), lowered.len()),
+            ));
+        }
+        ranked_candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        fallback_truncated = ranked_candidates.len() > FALLBACK_CANDIDATE_LIMIT;
+        ranked_candidates.truncate(FALLBACK_CANDIDATE_LIMIT);
+        if !ranked_candidates.is_empty() {
+            unmatched_terms = identity_terms
+                .iter()
+                .zip(covered)
+                .filter(|(_, hit)| !hit)
+                .map(|(t, _)| (*t).to_string())
+                .collect();
+        }
+    }
+    let partial = !unmatched_terms.is_empty()
+        || ranked_candidates
+            .iter()
+            .any(|c| c.2.starts_with("term_coverage:"));
+
     // 6. Bounded, typed relationship traversal from candidates
     let (linked_projects, connected_decisions, candidate_status_map, approved_candidates) =
         traverse_candidates(&ranked_candidates, &materialized.nodes, &materialized.edges);
+
+    // The neighborhood follows only the best-scored candidates: a project
+    // reached through one weak generic term must not list its files as if
+    // the request were about it.
+    let best_score = ranked_candidates.first().map_or(0.0, |c| c.1);
+    let top_candidates: Vec<(String, f64, String)> = ranked_candidates
+        .iter()
+        .filter(|c| c.1 >= best_score - 1e-9)
+        .cloned()
+        .collect();
+    let (top_projects, ..) =
+        traverse_candidates(&top_candidates, &materialized.nodes, &materialized.edges);
+    // Per-term matches are weak evidence of ownership; claim only the
+    // projects of the best-covered candidates.
+    let linked_projects = if partial {
+        top_projects.clone()
+    } else {
+        linked_projects
+    };
+    let seed_ids: BTreeSet<&str> = ranked_candidates.iter().map(|c| c.0.as_str()).collect();
+    // List siblings only when the request named a project; a request that
+    // already hit concrete files does not need the project's other files.
+    let names_a_project = top_candidates.iter().any(|c| {
+        materialized
+            .nodes
+            .get(&c.0)
+            .is_some_and(|n| node_text(n, "type").eq_ignore_ascii_case("project"))
+    });
+    let neighbor_scope = if names_a_project {
+        top_projects
+    } else {
+        BTreeSet::new()
+    };
+    let (neighborhood, neighborhood_total) = project_neighbors(
+        &neighbor_scope,
+        &materialized.nodes,
+        &materialized.edges,
+        &seed_ids,
+    );
 
     // 7. Baseline & Authority Analysis (Intent-specific)
     let is_asset_edit = has_asset_edit_intent(&options.q);
@@ -188,6 +272,21 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         missing_evidence
             .push("No matching entities or assets found in knowledge base for query".to_string());
         "missing"
+    } else if partial {
+        missing_evidence.push(format!(
+            "The whole request matched nothing; showing per-term matches{}. No match for: {}",
+            if fallback_truncated {
+                format!(" (best {FALLBACK_CANDIDATE_LIMIT} only)")
+            } else {
+                String::new()
+            },
+            if unmatched_terms.is_empty() {
+                "(none)".to_string()
+            } else {
+                unmatched_terms.join(", ")
+            }
+        ));
+        "partial"
     } else if is_asset_edit {
         // Asset-edit intent: require editable vector baseline and authority
         if approved_candidates.len() > 1 {
@@ -273,6 +372,8 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         },
         "baseline": baseline,
         "linked_projects": linked_projects.into_iter().collect::<Vec<_>>(),
+        "neighborhood": neighborhood,
+        "neighborhood_total": neighborhood_total,
         "decisions": connected_decisions,
         "missing_evidence": missing_evidence,
         "total": total,

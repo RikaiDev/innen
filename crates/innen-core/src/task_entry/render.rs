@@ -38,6 +38,24 @@ pub fn render(value: &Value) -> String {
         }
     }
 
+    if let Some(near) = value["neighborhood"].as_array() {
+        if !near.is_empty() {
+            let total = value["neighborhood_total"].as_u64().unwrap_or(0);
+            out.push_str(&format!(
+                "Same project ({} of {total} shown):\n",
+                near.len()
+            ));
+            for n in near {
+                out.push_str(&format!(
+                    "  {} | {} | {}\n",
+                    n["id"].as_str().unwrap_or(""),
+                    n["kind"].as_str().unwrap_or(""),
+                    n["label"].as_str().unwrap_or("")
+                ));
+            }
+        }
+    }
+
     out.push('\n');
     let total = value["total"].as_u64().unwrap_or(0);
     let next_offset = &value["next_offset"];

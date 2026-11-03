@@ -56,6 +56,12 @@ pub(super) fn traverse_candidates(
         };
         candidate_status_map.insert(id.clone(), display_status.clone());
 
+        // A candidate that is itself a project is its own project link; the
+        // BELONGS_TO walk below only finds the owner of a non-project node.
+        if node_text(node, "type").eq_ignore_ascii_case("project") {
+            linked_projects.insert(id.clone());
+        }
+
         // Check explicit approval (status=approved; not just final, and has verified location)
         let has_explicit_approval = display_status.eq_ignore_ascii_case("approved");
         let has_source_location = node
@@ -110,4 +116,46 @@ pub(super) fn traverse_candidates(
         candidate_status_map,
         approved_candidates,
     )
+}
+
+/// Most siblings listed for the linked projects; the total is reported so a
+/// truncated list is never mistaken for the whole project.
+pub(super) const NEIGHBORHOOD_LIMIT: usize = 12;
+
+/// Other nodes owned by the linked projects (decks, proposals, pages), so one
+/// query shows what already exists for the task. Returns the bounded rows and
+/// the full count.
+pub(super) fn project_neighbors(
+    linked_projects: &BTreeSet<String>,
+    nodes: &HashMap<String, Value>,
+    edges: &[StoredEdge],
+    seeds: &BTreeSet<&str>,
+) -> (Vec<Value>, usize) {
+    let mut rows: Vec<(String, Value)> = Vec::new();
+    for edge in edges {
+        if edge.retracted
+            || edge.edge != EdgeType::BelongsTo
+            || !linked_projects.contains(&edge.to)
+            || seeds.contains(edge.from.as_str())
+        {
+            continue;
+        }
+        let Some(node) = nodes.get(&edge.from) else {
+            continue;
+        };
+        let label = node_text(node, "label").to_string();
+        rows.push((
+            label.clone(),
+            json!({"id": edge.from, "kind": super::node_identity::node_kind(node), "label": label, "project": edge.to}),
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.dedup_by(|a, b| a.1["id"] == b.1["id"]);
+    let total = rows.len();
+    let shown = rows
+        .into_iter()
+        .take(NEIGHBORHOOD_LIMIT)
+        .map(|(_, v)| v)
+        .collect();
+    (shown, total)
 }
