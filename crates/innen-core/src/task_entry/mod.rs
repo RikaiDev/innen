@@ -3,6 +3,7 @@
 
 mod admission;
 mod entry;
+mod fallback;
 mod node_identity;
 mod query_terms;
 mod render;

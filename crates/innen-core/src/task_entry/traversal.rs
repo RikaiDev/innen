@@ -159,3 +159,46 @@ pub(super) fn project_neighbors(
         .collect();
     (shown, total)
 }
+
+/// What the best-scored candidates own: their projects, and the project's
+/// other files when the request named a project itself.
+pub(super) struct Focus {
+    pub projects: BTreeSet<String>,
+    pub neighborhood: Vec<Value>,
+    pub neighborhood_total: usize,
+}
+
+/// The neighborhood follows only the best-scored candidates: a project reached
+/// through one weak generic term must not list its files as if the request
+/// were about it. A request that already hit concrete files does not need the
+/// project's other files, so siblings are listed only for a project candidate.
+pub(super) fn best_scored_focus(
+    ranked: &[(String, f64, String)],
+    nodes: &HashMap<String, Value>,
+    edges: &[StoredEdge],
+) -> Focus {
+    let best = ranked.first().map_or(0.0, |c| c.1);
+    let top: Vec<(String, f64, String)> = ranked
+        .iter()
+        .filter(|c| c.1 >= best - 1e-9)
+        .cloned()
+        .collect();
+    let (projects, ..) = traverse_candidates(&top, nodes, edges);
+    let names_a_project = top.iter().any(|c| {
+        nodes
+            .get(&c.0)
+            .is_some_and(|n| node_text(n, "type").eq_ignore_ascii_case("project"))
+    });
+    let scope = if names_a_project {
+        projects.clone()
+    } else {
+        BTreeSet::new()
+    };
+    let seeds: BTreeSet<&str> = ranked.iter().map(|c| c.0.as_str()).collect();
+    let (neighborhood, neighborhood_total) = project_neighbors(&scope, nodes, edges, &seeds);
+    Focus {
+        projects,
+        neighborhood,
+        neighborhood_total,
+    }
+}
