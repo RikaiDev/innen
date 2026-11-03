@@ -142,7 +142,13 @@ pub(super) fn inspect_structural_evidence(
                             }
                             if step_type == "USER_INPUT" {
                                 last_user_idx = Some(i);
-                            } else if step_type == "PLANNER_RESPONSE" {
+                            } else if step_type == "PLANNER_RESPONSE"
+                                && event["content"]
+                                    .as_str()
+                                    .is_some_and(|text| !text.trim().is_empty())
+                            {
+                                // A planner step that only issues tool calls
+                                // carries no text: it does not answer the user.
                                 last_assistant_idx = Some(i);
                             }
                         }

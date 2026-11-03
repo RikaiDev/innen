@@ -5,8 +5,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::bounded::{
-    bounded_event, event_text, is_injected_envelope, read_capped_line, shell_quote,
+    bounded_event, event_text, is_injected_envelope, read_capped_line, shell_quote, LINE_BUDGET,
 };
+use super::handoff;
 use super::read::io_error;
 use super::task_state::{extract_file as extract_task_state, TaskItemStatus, TaskState};
 use super::{checkpoint, sources, ReadError, Source};
@@ -34,6 +35,9 @@ pub struct Brief {
     /// transcript. Present when the transcript carried one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_state: Option<TaskState>,
+    /// Compressed handoff digest; present only for sources briefed by `handoff`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<handoff::Handoff>,
     pub omitted_records: usize,
     pub coverage_incomplete: bool,
     pub warnings: Vec<String>,
@@ -58,7 +62,7 @@ pub fn brief(source_root: Option<&Path>, source: &str, id: &str) -> Result<Brief
         source: located.source,
         source_path: located.path.clone(),
         project: None,
-        supported: located.source == Source::Codex
+        supported: matches!(located.source, Source::Codex | Source::Antigravity)
             && located.path.extension().is_some_and(|ext| ext == "jsonl"),
         latest_user: None,
         latest_assistant: None,
@@ -66,6 +70,7 @@ pub fn brief(source_root: Option<&Path>, source: &str, id: &str) -> Result<Brief
         unresolved: Vec::new(),
         checkpoint: None,
         task_state: None,
+        handoff: None,
         omitted_records: 0,
         coverage_incomplete: false,
         warnings: Vec::new(),
@@ -80,9 +85,11 @@ pub fn brief(source_root: Option<&Path>, source: &str, id: &str) -> Result<Brief
                 .unwrap_or_default()
         ),
     };
-    if out.supported {
+    let mut unanswered = None;
+    if out.supported && located.source == Source::Antigravity {
+        unanswered = handoff::antigravity(&located, &mut out)?;
+    } else if out.supported {
         let file = std::fs::File::open(&located.path).map_err(|e| io_error(&located.path, e))?;
-        const LINE_BUDGET: usize = 512 * 1024;
         let mut reader = BufReader::new(file);
         let mut index = 0usize;
         let mut last_oversized_line = None;
@@ -186,6 +193,7 @@ pub fn brief(source_root: Option<&Path>, source: &str, id: &str) -> Result<Brief
     out.latest_agent_messages.sort_by_key(|r| r.line);
     out.task_state = extract_task_state(&located.path).state;
     collect_latest_signals(&mut out);
+    out.unresolved.extend(unanswered);
     Ok(out)
 }
 

@@ -2,6 +2,28 @@ use std::io::{BufRead, BufReader};
 
 use serde_json::Value;
 
+/// Longest source line a brief reads; longer lines are reported, not parsed.
+pub(super) const LINE_BUDGET: usize = 512 * 1024;
+
+/// Sorted line numbers as exact ranges (`30,32,76-78`). Nothing is dropped.
+pub(super) fn line_ranges(lines: &[usize]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let mut j = i;
+        while j + 1 < lines.len() && lines[j + 1] == lines[j] + 1 {
+            j += 1;
+        }
+        parts.push(if j > i {
+            format!("{}-{}", lines[i], lines[j])
+        } else {
+            lines[i].to_string()
+        });
+        i = j + 1;
+    }
+    parts.join(",")
+}
+
 pub(super) struct CappedLine {
     pub(super) bytes: Vec<u8>,
     pub(super) oversized: bool,

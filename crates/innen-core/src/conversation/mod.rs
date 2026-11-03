@@ -3,6 +3,7 @@
 
 mod bounded;
 mod format;
+mod handoff;
 mod read;
 mod record;
 
@@ -23,6 +24,7 @@ pub mod task_state;
 pub mod unfinished;
 pub use checkpoint::{Checkpoint, CheckpointStatus};
 pub use format::format_page;
+pub use handoff::Handoff;
 pub use pickup::{
     resolve_all_projects_pickup, resolve_pickup, EvidencePointers, PickedUpSession, PickupTarget,
 };

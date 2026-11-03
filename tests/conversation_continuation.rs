@@ -575,6 +575,162 @@ fn antigravity_candidate_discovery() {
     assert_eq!(candidates[0]["classification"], "candidate");
 }
 
+fn antigravity_reasons(user_then: Value) -> Vec<String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let store_root = tmp.path().join("brain");
+    let proj = tmp.path().join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    write_antigravity_session(
+        &store_root,
+        ID_4,
+        proj.to_str().unwrap(),
+        &[
+            json!({"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-09-06T00:01:00Z","content":"<USER_REQUEST>Redo it</USER_REQUEST>"}),
+            user_then,
+        ],
+    );
+    let output = Command::cargo_bin("innen")
+        .unwrap()
+        .current_dir(&proj)
+        .args([
+            "--format",
+            "json",
+            "unfinished",
+            "--source",
+            "agy",
+            "--source-root",
+            store_root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    parsed["candidates"][0]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["code"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A planner step that only issues tool calls has no text, so it does not
+/// answer the user: the request stays open even though the step is DONE.
+#[test]
+fn antigravity_toolcall_only_step_does_not_answer_the_user() {
+    let tool_only = json!({"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-06T00:02:00Z","tool_calls":[{"name":"run_command","args":{}}]});
+    assert!(
+        antigravity_reasons(tool_only).contains(&"trailing_user_request_unanswered".to_string())
+    );
+
+    let answered = json!({"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-06T00:02:00Z","content":"Redone."});
+    assert!(
+        !antigravity_reasons(answered).contains(&"trailing_user_request_unanswered".to_string())
+    );
+}
+
+fn antigravity_brief(events: &[Value]) -> Value {
+    let tmp = tempfile::tempdir().unwrap();
+    let store_root = tmp.path().join("brain");
+    write_antigravity_session(&store_root, ID_5, tmp.path().to_str().unwrap(), events);
+    let output = Command::cargo_bin("innen")
+        .unwrap()
+        .args([
+            "--format",
+            "json",
+            "resume",
+            ID_5,
+            "--source",
+            "agy",
+            "--source-root",
+            store_root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn user(step: u64, text: &str) -> Value {
+    json!({"step_index":step,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-09-06T00:01:00Z","content":format!("<USER_REQUEST>{text}</USER_REQUEST>\n<ADDITIONAL_METADATA>noise</ADDITIONAL_METADATA>")})
+}
+
+fn planner(step: u64, text: Option<&str>, calls: Value) -> Value {
+    let mut event = json!({"step_index":step,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-06T00:02:00Z","tool_calls":calls});
+    if let Some(text) = text {
+        event["content"] = json!(text);
+    }
+    event
+}
+
+/// The brief says plainly when the work after the latest request produced no
+/// answer, and counts what happened instead of replaying it.
+#[test]
+fn antigravity_brief_reports_an_unanswered_request_and_what_followed() {
+    let brief = antigravity_brief(&[
+        user(1, "Redo it"),
+        planner(2, None, json!([{"name":"run_command","args":{}}])),
+        json!({"step_index":3,"type":"GENERIC","status":"DONE","content":"tool out"}),
+    ]);
+    assert_eq!(brief["supported"], true);
+    assert_eq!(brief["latest_user"]["event"]["content"], "Redo it");
+    assert!(brief["latest_assistant"].is_null());
+    assert_eq!(brief["unresolved"][0]["marker"], "user_request_unanswered");
+    let warnings = brief["warnings"].to_string();
+    assert!(
+        warnings.contains("1 tool-only planner steps, 1 tool results, 0 errors"),
+        "{warnings}"
+    );
+
+    let answered = antigravity_brief(&[user(1, "Redo it"), planner(2, Some("Redone."), json!([]))]);
+    assert!(answered["unresolved"].as_array().unwrap().is_empty());
+}
+
+/// Compression keeps what carries information: every user request, and the
+/// source facts the assistant's prose cannot be trusted to supply.
+#[test]
+fn antigravity_brief_keeps_user_turns_and_source_facts_not_assistant_prose() {
+    let brief = antigravity_brief(&[
+        user(1, "Make the deck"),
+        planner(
+            2,
+            Some("完成。成品見 [簡報](out/%E7%B0%A1%E5%A0%B1.pdf)。這套流程已通過醫院資安審查與驗證，可行。"),
+            json!([
+                {"name":"write_file","args":{"Path":"\"/w/out/gen.py\"","Content":"\"x\""}},
+                {"name":"run_command","args":{"CommandLine":"\"python gen.py && ls /w/out/簡報.pdf\""}},
+                {"name":"search_web","args":{"query":"\"agetech rules\""}}
+            ]),
+        ),
+        json!({"step_index":3,"type":"ERROR_MESSAGE","status":"DONE"}),
+        user(4, "Wrong, I said use the reference"),
+        planner(5, None, json!([])),
+    ]);
+    let handoff = &brief["handoff"];
+    let turns = handoff["user_turns"].to_string();
+    assert!(turns.contains("Make the deck"), "{turns}");
+    assert!(turns.contains("Wrong, I said use the reference"), "{turns}");
+    assert!(
+        !turns.contains("noise"),
+        "metadata envelope is dropped: {turns}"
+    );
+    assert!(!turns.contains("user_information"), "{turns}");
+    // The fixture prepends a workspace row, so source lines are asserted by content.
+    assert_eq!(handoff["searches"][0][1], "agetech rules");
+    assert_eq!(handoff["error_lines"].as_array().unwrap().len(), 1);
+    let artifacts = handoff["artifacts"].to_string();
+    assert!(artifacts.contains("gen.py[W]"), "{artifacts}");
+    assert!(artifacts.contains("簡報.pdf[CA]"), "{artifacts}");
+    let claims = handoff["assistant_claims"].to_string();
+    assert!(claims.contains("資安審查與驗證"), "{claims}");
+    assert!(
+        !brief.to_string().contains("完成。成品見"),
+        "assistant prose is not replayed"
+    );
+}
+
 #[test]
 fn date_boundary_filters_older_sessions() {
     let tmp = tempfile::tempdir().unwrap();

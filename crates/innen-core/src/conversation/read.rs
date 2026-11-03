@@ -1,10 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde_json::Value;
 
+use super::bounded::line_ranges;
 use super::{projection, sources, Located, Page, ReadError, Record, Source};
 
 /// Offset counts physical rows in both views. Read one matching event ahead so
@@ -179,6 +180,38 @@ fn open_transcript(path: &Path) -> Result<Box<dyn std::io::Read>, ReadError> {
     Ok(Box::new(file))
 }
 
+/// What one read pass saw but could not show. Reported once per page, because a
+/// per-event warning costs more tokens than the fact it carries.
+#[derive(Default)]
+struct Tally {
+    elided: BTreeMap<String, usize>,
+    truncated: Vec<usize>,
+}
+
+impl Tally {
+    fn report(self, page: &mut Page) {
+        if !self.truncated.is_empty() {
+            page.warnings.push(format!(
+                "source text truncated in {} shown events (lines {}); this reader cannot restore it",
+                self.truncated.len(),
+                line_ranges(&self.truncated)
+            ));
+        }
+        if !self.elided.is_empty() {
+            let kinds: Vec<String> = self
+                .elided
+                .iter()
+                .map(|(k, n)| format!("{k}x{n}"))
+                .collect();
+            page.warnings.push(format!(
+                "not shown in {} view: {}; read them with --view events",
+                page.view,
+                kinds.join(",")
+            ));
+        }
+    }
+}
+
 fn read_located(
     located: Located,
     id: String,
@@ -186,6 +219,21 @@ fn read_located(
     offset: usize,
     limit: usize,
     selected: Option<&BTreeSet<usize>>,
+) -> Result<Page, ReadError> {
+    let mut tally = Tally::default();
+    let mut page = read_pass(located, id, view, offset, limit, selected, &mut tally)?;
+    tally.report(&mut page);
+    Ok(page)
+}
+
+fn read_pass(
+    located: Located,
+    id: String,
+    view: &str,
+    offset: usize,
+    limit: usize,
+    selected: Option<&BTreeSet<usize>>,
+    tally: &mut Tally,
 ) -> Result<Page, ReadError> {
     let path = located.path.clone();
     let mut page = Page {
@@ -210,7 +258,7 @@ fn read_located(
             }
             let count = events.len();
             for (index, event) in events.into_iter().enumerate() {
-                if accept(&mut page, event, cursor + index, limit, selected)? {
+                if accept(&mut page, tally, event, cursor + index, limit, selected)? {
                     return Ok(page);
                 }
             }
@@ -220,7 +268,7 @@ fn read_located(
     if path.extension().is_some_and(|s| s == "json") {
         let events = sources::load_document(&located)?;
         for (index, event) in events.into_iter().enumerate().skip(offset) {
-            if accept(&mut page, event, index, limit, selected)? {
+            if accept(&mut page, tally, event, index, limit, selected)? {
                 break;
             }
         }
@@ -260,7 +308,7 @@ fn read_located(
             }
         };
         parsed += 1;
-        if accept(&mut page, event, index, limit, selected)? {
+        if accept(&mut page, tally, event, index, limit, selected)? {
             break;
         }
     }
@@ -274,6 +322,7 @@ fn read_located(
 
 fn accept(
     page: &mut Page,
+    tally: &mut Tally,
     event: Value,
     index: usize,
     limit: usize,
@@ -291,6 +340,7 @@ fn accept(
             index + 1
         )));
     }
+    let kind = (page.view != "events").then(|| native_kind(&event));
     let event = if page.view == "events" {
         Some(event)
     } else if page.view == "context" {
@@ -300,7 +350,12 @@ fn accept(
     } else {
         projection::dialogue(page.source, event)?
     };
-    let Some(event) = event else { return Ok(false) };
+    let Some(event) = event else {
+        if let Some(kind) = kind {
+            *tally.elided.entry(kind).or_default() += 1;
+        }
+        return Ok(false);
+    };
     if page.records.len() == limit {
         page.next_offset = Some(index);
         return Ok(true);
@@ -310,13 +365,22 @@ fn accept(
         .and_then(Value::as_array)
         .is_some_and(|a| !a.is_empty())
     {
-        page.warnings.push(format!("source event at record {} contains truncated fields; this reader cannot restore omitted source text", index + 1));
+        tally.truncated.push(index + 1);
     }
     page.records.push(Record {
         line: index + 1,
         event,
     });
     Ok(selected.is_some_and(|s| page.records.len() == s.len()))
+}
+
+/// Native event label for the elision summary: `type`, refined by `payload.type`.
+fn native_kind(event: &Value) -> String {
+    let kind = event.get("type").and_then(Value::as_str).unwrap_or("other");
+    match event.pointer("/payload/type").and_then(Value::as_str) {
+        Some(sub) => format!("{kind}:{sub}"),
+        None => kind.into(),
+    }
 }
 
 pub(super) fn io_error(path: &Path, error: std::io::Error) -> ReadError {
@@ -380,6 +444,57 @@ mod tests {
         assert_eq!(rows.len(), 5, "every readable line still yields dialogue");
         assert_eq!(warnings.len(), 1, "the unreadable line is reported");
         assert!(warnings[0].contains("skipped unreadable transcript line"));
+    }
+
+    /// Handoff readers need to know what the dialogue view left out. Tool work
+    /// and truncated text are each reported once per page, not once per event.
+    #[test]
+    fn dialogue_page_reports_elided_events_and_truncation_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let rows = [
+            r#"{"type":"USER_INPUT","content":"go"}"#,
+            r#"{"type":"GENERIC","content":"tool out"}"#,
+            r#"{"type":"GENERIC","content":"tool out"}"#,
+            r#"{"type":"ERROR_MESSAGE","content":"boom"}"#,
+            r#"{"type":"PLANNER_RESPONSE","content":"a","truncated_fields":["content"]}"#,
+            r#"{"type":"PLANNER_RESPONSE","content":"b","truncated_fields":["content"]}"#,
+        ];
+        fs::write(&path, rows.join("\n") + "\n").unwrap();
+
+        let page = read_located(
+            located(Source::Antigravity, path.clone()),
+            "id".into(),
+            "dialogue",
+            0,
+            20,
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.records.len(), 3);
+        assert_eq!(
+            page.warnings.len(),
+            2,
+            "one line per fact: {:?}",
+            page.warnings
+        );
+        assert!(page.warnings[0].contains("truncated in 2 shown events (lines 5-6)"));
+        assert!(page.warnings[1].contains("ERROR_MESSAGEx1,GENERICx2"));
+        assert!(page.warnings[1].contains("--view events"));
+
+        let events = read_located(
+            located(Source::Antigravity, path),
+            "id".into(),
+            "events",
+            0,
+            20,
+            None,
+        )
+        .unwrap();
+        assert!(
+            events.warnings.iter().all(|w| !w.contains("not shown")),
+            "the events view hides nothing, so it claims nothing"
+        );
     }
 
     /// A transcript that yields no event at all stays unreadable, and the
