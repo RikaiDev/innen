@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.1] - 2026-11-04
+
+### Fixed
+
+- `innen query` no longer reports a term as `No match` when a constraint it
+  lists contains that term. The per-term retry compared terms with node labels
+  only, so a request naming words that appear in the user's recorded
+  constraints still told the agent they were missing. Agents then searched
+  other stores for facts the brief already held. When every term is accounted
+  for, the `No match for` clause is omitted.
+
 ## [0.16.0] - 2026-11-04
 
 ### Added

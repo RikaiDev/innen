@@ -202,3 +202,12 @@ fn a_budget_drops_detail_in_order_and_says_so() {
     .unwrap();
     assert!(roomy.get("budget").is_none());
 }
+
+#[test]
+fn a_term_found_in_a_recorded_constraint_is_not_reported_missing() {
+    let dir = many_constraints();
+    let out = run(dir.path(), "台大雲林專案 台大自己 從未出現過的詞");
+    let missing = out["missing_evidence"].to_string();
+    assert!(missing.contains("從未出現過的詞"), "{missing}");
+    assert!(!missing.contains("台大自己"), "{missing}");
+}

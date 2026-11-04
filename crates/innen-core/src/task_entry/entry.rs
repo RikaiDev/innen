@@ -193,6 +193,15 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         &materialized.edges,
         &terms,
     );
+    // A term the user's recorded words contain is not missing evidence.
+    unmatched_terms.retain(|t| {
+        let t = t.to_lowercase();
+        !focus.constraints.iter().any(|c| {
+            c["text"]
+                .as_str()
+                .is_some_and(|x| x.to_lowercase().contains(&t))
+        })
+    });
     // Per-term matches are weak evidence of ownership; claim only the
     // projects of the best-covered candidates.
     let linked_projects = if partial {
@@ -222,16 +231,16 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         "missing"
     } else if partial {
         missing_evidence.push(format!(
-            "The whole request matched nothing; showing per-term matches{}. No match for: {}",
+            "The whole request matched nothing; showing per-term matches{}{}",
             if fallback_truncated {
                 format!(" (best {FALLBACK_CANDIDATE_LIMIT} only)")
             } else {
                 String::new()
             },
             if unmatched_terms.is_empty() {
-                "(none)".to_string()
+                String::new()
             } else {
-                unmatched_terms.join(", ")
+                format!(". No match for: {}", unmatched_terms.join(", "))
             }
         ));
         "partial"
