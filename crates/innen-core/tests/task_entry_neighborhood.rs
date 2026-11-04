@@ -125,3 +125,80 @@ fn project_constraints_are_listed_with_their_source_and_not_as_siblings() {
     assert!(!out["neighborhood"].to_string().contains("constraint:1"));
     assert!(innen_core::task_entry::render(&out).contains("Binding constraints"));
 }
+
+fn many_constraints() -> tempfile::TempDir {
+    let ev: Vec<(&str, Value)> = vec![(
+        "node.upsert",
+        json!({"id": "project:ntuh", "type": "Project", "label": "台大雲林專案"}),
+    )];
+    let mut owned: Vec<(String, Value)> = Vec::new();
+    for i in 0..8 {
+        let body = if i == 7 {
+            "只談台大自己的據點".to_string()
+        } else {
+            format!("無關的要求 {i} {}", "長".repeat(300))
+        };
+        owned.push((
+            "node.upsert".into(),
+            json!({"id": format!("constraint:{i}"), "type": "Constraint", "label": format!("c{i}"),
+                   "body": body, "provenance": format!("s#L{i}")}),
+        ));
+        owned.push((
+            "edge.assert".into(),
+            json!({"from": format!("constraint:{i}"), "type": "BELONGS_TO", "to": "project:ntuh", "provenance": "s"}),
+        ));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let journal = innen_core::journal::Journal::open(dir.path()).unwrap();
+    for (op, p) in &ev {
+        journal.append(op, p).unwrap();
+    }
+    for (op, p) in &owned {
+        journal.append(op, p).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn constraints_matching_the_query_come_first() {
+    let dir = many_constraints();
+    let out = run(dir.path(), "台大雲林專案 台大自己");
+    assert_eq!(out["constraints"][0]["id"], "constraint:7");
+}
+
+#[test]
+fn a_budget_drops_detail_in_order_and_says_so() {
+    let dir = many_constraints();
+    let big = run(dir.path(), "台大雲林專案");
+    let size = |v: &Value| v.to_string().chars().count();
+    let budget = size(&big) / 3;
+    let out = task_entry(
+        dir.path(),
+        &TaskEntryOptions {
+            q: "台大雲林專案".into(),
+            budget: Some(budget),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        out["budget"]["cut"].as_array().unwrap().len() >= 2,
+        "{}",
+        out["budget"]
+    );
+    assert!(out["constraints"].as_array().unwrap().len() <= 4);
+    assert_eq!(out["resolution"], big["resolution"]);
+    assert_eq!(out["evidence_expansion"], big["evidence_expansion"]);
+    assert!(size(&out) < size(&big));
+    // a request that already fits is returned untouched
+    let roomy = task_entry(
+        dir.path(),
+        &TaskEntryOptions {
+            q: "台大雲林專案".into(),
+            budget: Some(size(&big) + 10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(roomy.get("budget").is_none());
+}

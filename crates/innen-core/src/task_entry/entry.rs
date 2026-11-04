@@ -16,6 +16,8 @@ use crate::index::{ensure_tokenizer, schema};
 use crate::journal::{observed_utc_now, Journal};
 
 use super::admission::{has_all_search_terms, has_entity_anchor, literal_candidate_scores};
+use super::budget::fit_to_budget;
+use super::expansion::evidence_argv;
 use super::fallback::{per_term_candidates, FALLBACK_CANDIDATE_LIMIT};
 use super::node_identity::{node_kind, node_searchable_text, node_text};
 use super::query_terms::{
@@ -185,7 +187,12 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
     let (linked_projects, connected_decisions, candidate_status_map, approved_candidates) =
         traverse_candidates(&ranked_candidates, &materialized.nodes, &materialized.edges);
 
-    let focus = best_scored_focus(&ranked_candidates, &materialized.nodes, &materialized.edges);
+    let focus = best_scored_focus(
+        &ranked_candidates,
+        &materialized.nodes,
+        &materialized.edges,
+        &terms,
+    );
     // Per-term matches are weak evidence of ownership; claim only the
     // projects of the best-covered candidates.
     let linked_projects = if partial {
@@ -193,8 +200,6 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
     } else {
         linked_projects
     };
-    let (neighborhood, neighborhood_total) = (focus.neighborhood, focus.neighborhood_total);
-    let (constraints, constraints_total) = (focus.constraints, focus.constraints_total);
 
     // 7. Baseline & Authority Analysis (Intent-specific)
     let is_asset_edit = has_asset_edit_intent(&options.q);
@@ -276,32 +281,7 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
 
     let is_evidence_view = options.view == "evidence";
 
-    // Structured argv for evidence expansion
-    let mut argv = vec![
-        "innen".to_string(),
-        "query".to_string(),
-        "--root".to_string(),
-        root.to_string_lossy().into_owned(),
-        "--q".to_string(),
-        options.q.clone(),
-        "--view".to_string(),
-        "evidence".to_string(),
-    ];
-    if let Some(as_of_val) = &options.as_of {
-        argv.push("--as-of".to_string());
-        argv.push(as_of_val.clone());
-    }
-    if options.limit != 20 {
-        argv.push("--limit".to_string());
-        argv.push(options.limit.to_string());
-    }
-    if options.offset != 0 {
-        argv.push("--offset".to_string());
-        argv.push(options.offset.to_string());
-    }
-    if options.include_expired {
-        argv.push("--include-expired".to_string());
-    }
+    let argv = evidence_argv(root, options);
 
     let mut out = json!({
         "scope": "task_context_entry",
@@ -315,10 +295,10 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         },
         "baseline": baseline,
         "linked_projects": linked_projects.into_iter().collect::<Vec<_>>(),
-        "neighborhood": neighborhood,
-        "neighborhood_total": neighborhood_total,
-        "constraints": constraints,
-        "constraints_total": constraints_total,
+        "neighborhood": focus.neighborhood,
+        "neighborhood_total": focus.neighborhood_total,
+        "constraints": focus.constraints,
+        "constraints_total": focus.constraints_total,
         "decisions": connected_decisions,
         "missing_evidence": missing_evidence,
         "total": total,
@@ -392,5 +372,8 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         out["rows"] = Value::Array(rows);
     }
 
+    if let Some(budget) = options.budget {
+        fit_to_budget(&mut out, budget, options.offset);
+    }
     Ok(out)
 }

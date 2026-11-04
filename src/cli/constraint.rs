@@ -10,6 +10,26 @@ pub(super) enum ConstraintOp {
     /// (zsh: `print -r -- 'text' | innen constraint add ... --text-file -`), so
     /// `!` `?` `*` `(` need no quoting on the command line.
     Add(ConstraintAddArgs),
+    /// List the user's own turns of a conversation, with source lines, to choose requirements from.
+    Extract(ConstraintExtractArgs),
+}
+
+#[derive(clap::Args)]
+pub(super) struct ConstraintExtractArgs {
+    /// Conversation UUID or native session id.
+    session: String,
+    /// Tool to read; auto searches the standard local stores.
+    #[arg(long, default_value = "auto")]
+    tool: String,
+    /// Keep only turns that contain an instruction, correction or complaint cue.
+    #[arg(long)]
+    directives: bool,
+    /// Source store directory; requires --tool.
+    #[arg(long)]
+    source_root: Option<PathBuf>,
+    /// Longest text shown per turn, in characters; the full text stays in the source.
+    #[arg(long, default_value_t = 600)]
+    max_chars: usize,
 }
 
 #[derive(clap::Args)]
@@ -18,17 +38,28 @@ pub(super) struct ConstraintAddArgs {
     #[arg(long)]
     project: String,
     /// Where the words can be checked, for example `agy:<session>#user-turn-30`.
-    #[arg(long)]
-    source: String,
+    #[arg(long, required_unless_present = "session", conflicts_with = "session")]
+    source: Option<String>,
+    /// Record turns of this conversation verbatim; the source is derived and the text checked.
+    #[arg(long, requires = "line")]
+    session: Option<String>,
+    /// One-based source lines of the user turns to record (comma-separated).
+    #[arg(long, value_delimiter = ',', requires = "session")]
+    line: Vec<usize>,
+    /// Tool to read with --session; auto searches the standard local stores.
+    #[arg(long, default_value = "auto", requires = "session")]
+    tool: String,
+    /// Source store directory for --session; requires --tool.
+    #[arg(long, requires = "session")]
+    source_root: Option<PathBuf>,
+    /// Record only this passage; it must occur word for word in the one --line.
+    #[arg(long, requires = "session")]
+    quote: Option<String>,
     /// The user's words, verbatim.
-    #[arg(
-        long,
-        required_unless_present = "text_file",
-        conflicts_with = "text_file"
-    )]
+    #[arg(long, conflicts_with_all = ["text_file", "session"])]
     text: Option<String>,
     /// Read the words from this file; `-` reads standard input.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "session")]
     text_file: Option<PathBuf>,
     /// Node id; derived from the text when omitted.
     #[arg(long)]
@@ -53,30 +84,97 @@ fn read_text(args: &ConstraintAddArgs) -> Result<String, String> {
     }
 }
 
-pub(super) fn cmd_constraint(root: &std::path::Path, format: &str, op: &ConstraintOp) -> i32 {
-    let ConstraintOp::Add(args) = op;
-    let result = read_text(args).and_then(|text| {
-        innen_core::constraint::add_constraint(
+fn print_ids(format: &str, ids: &[String]) {
+    if is_human(format) {
+        for id in ids {
+            println!("created\t{}", escape_tsv_field(id));
+        }
+    } else {
+        println!("{}", serde_json::json!({"id": ids.first(), "ids": ids}));
+    }
+}
+
+fn fail(e: &str) -> i32 {
+    eprintln!("error: {e}");
+    1
+}
+
+pub(super) fn cmd_constraint_add(
+    root: &std::path::Path,
+    format: &str,
+    args: &ConstraintAddArgs,
+) -> i32 {
+    let result = if let Some(session) = &args.session {
+        innen_core::constraint::add_from_session(
             root,
+            args.source_root.as_deref(),
+            &args.tool,
             &args.project,
-            &args.source,
-            &text,
-            args.id.as_deref(),
-            args.label.as_deref(),
+            session,
+            &args.line,
+            args.quote.as_deref(),
         )
-    });
+    } else {
+        read_text(args).and_then(|text| {
+            innen_core::constraint::add_constraint(
+                root,
+                &args.project,
+                args.source.as_deref().unwrap_or_default(),
+                &text,
+                args.id.as_deref(),
+                args.label.as_deref(),
+            )
+            .map(|id| vec![id])
+        })
+    };
     match result {
-        Ok(id) => {
-            if is_human(format) {
-                println!("created\t{}", escape_tsv_field(&id));
-            } else {
-                println!("{}", serde_json::json!({"id": id}));
-            }
+        Ok(ids) => {
+            print_ids(format, &ids);
             0
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
-        }
+        Err(e) => fail(&e),
     }
+}
+
+pub(super) fn cmd_constraint_extract(format: &str, args: &ConstraintExtractArgs) -> i32 {
+    let found = match innen_core::constraint_turns::user_turns(
+        args.source_root.as_deref(),
+        &args.tool,
+        &args.session,
+    ) {
+        Ok(f) => f,
+        Err(e) => return fail(&e),
+    };
+    let total = found.turns.len();
+    let rows: Vec<serde_json::Value> = found
+        .turns
+        .iter()
+        .filter(|t| !args.directives || innen_core::constraint_turns::has_directive_cue(&t.text))
+        .map(|t| {
+            let cut = t.text.chars().count() > args.max_chars;
+            let text: String = t.text.chars().take(args.max_chars).collect();
+            serde_json::json!({"line": t.line, "text": text, "truncated": cut})
+        })
+        .collect();
+    if is_human(format) {
+        for r in &rows {
+            println!(
+                "L{}\t{}",
+                r["line"],
+                escape_tsv_field(r["text"].as_str().unwrap_or(""))
+            );
+        }
+    } else {
+        println!(
+            "{}",
+            serde_json::json!({
+                "tool": found.tool,
+                "session": found.session,
+                "user_turns": total,
+                "shown": rows.len(),
+                "turns": rows,
+            })
+        );
+    }
+    0
 }

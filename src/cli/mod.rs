@@ -64,10 +64,15 @@ pub(crate) fn run() -> i32 {
                 graph::GraphOp::Retract(a) => graph::cmd_graph_retract(&root, &cli.format, a),
             }
         }
-        Commands::Constraint { op } => {
-            let root = resolve_or_exit!(cli.root.clone());
-            constraint::cmd_constraint(&root, &cli.format, op)
-        }
+        Commands::Constraint { op } => match op {
+            constraint::ConstraintOp::Extract(a) => {
+                constraint::cmd_constraint_extract(&cli.format, a)
+            }
+            constraint::ConstraintOp::Add(a) => {
+                let root = resolve_or_exit!(cli.root.clone());
+                constraint::cmd_constraint_add(&root, &cli.format, a)
+            }
+        },
         Commands::Index { op } => {
             let root = resolve_or_exit!(cli.root.clone());
             match op {

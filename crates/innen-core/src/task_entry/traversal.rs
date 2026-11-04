@@ -181,6 +181,7 @@ pub(super) fn best_scored_focus(
     ranked: &[(String, f64, String)],
     nodes: &HashMap<String, Value>,
     edges: &[StoredEdge],
+    terms: &[String],
 ) -> Focus {
     let best = ranked.first().map_or(0.0, |c| c.1);
     let top: Vec<(String, f64, String)> = ranked
@@ -201,7 +202,7 @@ pub(super) fn best_scored_focus(
     };
     let seeds: BTreeSet<&str> = ranked.iter().map(|c| c.0.as_str()).collect();
     let (neighborhood, neighborhood_total) = project_neighbors(&scope, nodes, edges, &seeds);
-    let (constraints, constraints_total) = project_constraints(&projects, nodes, edges);
+    let (constraints, constraints_total) = project_constraints(&projects, nodes, edges, terms);
     Focus {
         projects,
         neighborhood,
@@ -226,8 +227,10 @@ pub(super) fn project_constraints(
     projects: &BTreeSet<String>,
     nodes: &HashMap<String, Value>,
     edges: &[StoredEdge],
+    terms: &[String],
 ) -> (Vec<Value>, usize) {
-    let mut rows: Vec<(String, Value)> = Vec::new();
+    let lowered: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    let mut rows: Vec<(usize, String, Value)> = Vec::new();
     for edge in edges {
         if edge.retracted || edge.edge != EdgeType::BelongsTo || !projects.contains(&edge.to) {
             continue;
@@ -235,7 +238,13 @@ pub(super) fn project_constraints(
         let Some(node) = nodes.get(&edge.from).filter(|n| is_constraint(n)) else {
             continue;
         };
+        // Under a limit, relevance decides what survives: rank by how many
+        // query terms the words contain, then by id for a stable order.
+        let hay =
+            format!("{} {}", node_text(node, "body"), node_text(node, "label")).to_lowercase();
+        let hits = lowered.iter().filter(|t| hay.contains(t.as_str())).count();
         rows.push((
+            hits,
             edge.from.clone(),
             json!({
                 "id": edge.from,
@@ -244,13 +253,13 @@ pub(super) fn project_constraints(
             }),
         ));
     }
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
-    rows.dedup_by(|a, b| a.0 == b.0);
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    rows.dedup_by(|a, b| a.1 == b.1);
     let total = rows.len();
     let shown = rows
         .into_iter()
         .take(CONSTRAINT_LIMIT)
-        .map(|(_, v)| v)
+        .map(|(_, _, v)| v)
         .collect();
     (shown, total)
 }

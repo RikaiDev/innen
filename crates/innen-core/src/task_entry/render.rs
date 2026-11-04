@@ -49,7 +49,7 @@ pub fn render(value: &Value) -> String {
                 out.push_str(&format!(
                     "  [{}] {}\n",
                     c["source"].as_str().unwrap_or(""),
-                    c["text"].as_str().unwrap_or("")
+                    c["text"].as_str().unwrap_or("").replace('\n', " ")
                 ));
             }
         }

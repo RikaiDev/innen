@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.16.0] - 2026-11-04
+
+### Added
+
+- `innen constraint extract <session> [--tool T] [--directives]` lists the
+  user's own turns of a conversation with their source lines. Text the harness
+  injected under the user role (system notices, other sessions' messages, skill
+  text) is left out, and a message typed while the agent was working is shown
+  without the wrapper that carried it. `--directives` keeps only turns with an
+  instruction, correction or complaint cue, so an agent reads a fraction of the
+  session and chooses what to record.
+- `innen constraint add --project <id> --session <s> --tool <T> --line 12,40`
+  records those turns verbatim. The tool re-reads each line, refuses a line that
+  is not a user turn, derives the source (`tool:session#Lline`), and with
+  `--quote` requires the passage to occur word for word in the turn. Nothing is
+  written unless every line checks out. `--source-root` points at a non-default
+  store, as for `conversation`.
+- `innen query --budget <chars>` sets a ceiling on the context brief. Past it
+  the brief gives up detail in a fixed order (constraint wording, sibling files,
+  constraints, candidate rows), reports what it gave up under `budget`, and says
+  whether it fits. The request, resolution, baseline, projects, missing
+  evidence and the expansion command are never cut.
+
+### Changed
+
+- Constraints in the brief are ranked by how many query terms their words
+  contain, so a limit keeps the relevant ones. Line breaks inside a
+  constraint's text are shown as spaces.
+- `constraint add` prints `{"id": ..., "ids": [...]}`.
+
 ## [0.15.0] - 2026-11-04
 
 ### Added

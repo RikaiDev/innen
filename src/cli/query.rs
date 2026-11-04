@@ -40,6 +40,9 @@ pub(super) struct QueryArgs {
     /// Bypass validity filtering (keep expired edges).
     #[arg(long = "include-expired")]
     pub(super) include_expired: bool,
+    /// Soft ceiling on the context brief in characters. Past it, detail is dropped in a fixed order and the brief says what was dropped.
+    #[arg(long)]
+    pub(super) budget: Option<usize>,
     /// View mode: context (default compact task-context brief), hits (legacy FTS+graph hits), or evidence (full payload + physical history).
     #[arg(long, default_value = "context", value_parser = ["context", "hits", "evidence"])]
     pub(super) view: String,
@@ -166,6 +169,7 @@ pub(super) fn cmd_query(root: &std::path::Path, format: &str, args: &QueryArgs) 
             offset: args.offset,
             include_expired: args.include_expired,
             view: args.view.clone(),
+            budget: args.budget,
         };
         match innen_core::task_entry::task_entry(root, &options) {
             Ok(mut out) => {

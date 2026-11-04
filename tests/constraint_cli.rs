@@ -97,3 +97,60 @@ fn missing_source_or_project_is_refused() {
         .assert()
         .failure();
 }
+
+#[test]
+fn session_turns_are_listed_then_recorded_verbatim_from_the_cli() {
+    const ID: &str = "12345678-1234-4567-89ab-123456789abc";
+    let store = tempfile::tempdir().unwrap();
+    let path = store
+        .path()
+        .join(format!("p/agent-transcripts/{ID}/{ID}.jsonl"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let words = "不要用全台數字，只談台大自己的據點";
+    std::fs::write(
+        &path,
+        json!({"type":"user","message":{"role":"user","content":words}}).to_string(),
+    )
+    .unwrap();
+    let listed = innen(store.path())
+        .args([
+            "constraint",
+            "extract",
+            ID,
+            "--tool",
+            "claude",
+            "--directives",
+        ])
+        .arg("--source-root")
+        .arg(store.path())
+        .assert()
+        .success();
+    let list: Value = serde_json::from_slice(&listed.get_output().stdout).unwrap();
+    assert_eq!(list["shown"], 1);
+    let line = list["turns"][0]["line"].to_string();
+
+    let kb = root();
+    innen(kb.path())
+        .args([
+            "constraint",
+            "add",
+            "--project",
+            "project:ntuh",
+            "--tool",
+            "claude",
+        ])
+        .args(["--session", ID, "--line", &line])
+        .arg("--source-root")
+        .arg(store.path())
+        .assert()
+        .success();
+    let q = innen(kb.path())
+        .args(["query", "台大雲林專案", "--format", "human"])
+        .assert()
+        .success();
+    let text = String::from_utf8(q.get_output().stdout.clone()).unwrap();
+    assert!(
+        text.contains(words) && text.contains(&format!("claude:{ID}#L{line}")),
+        "{text}"
+    );
+}

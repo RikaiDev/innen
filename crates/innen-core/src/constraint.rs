@@ -77,3 +77,41 @@ pub fn add_constraint(
     .map_err(|e| e.to_string())?;
     Ok(id)
 }
+
+/// Record user turns of a session verbatim. Every line must be a user turn,
+/// and a quotation must occur word for word in its turn, so the stored text is
+/// what the user wrote; nothing is written unless every line checks out.
+pub fn add_from_session(
+    root: &Path,
+    source_root: Option<&Path>,
+    source: &str,
+    project: &str,
+    session: &str,
+    lines: &[usize],
+    quote: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if quote.is_some() && lines.len() != 1 {
+        return Err("--quote applies to exactly one --line".into());
+    }
+    let found = crate::constraint_turns::user_turns(source_root, source, session)?;
+    let mut picked: Vec<(String, String)> = Vec::new();
+    for line in lines {
+        let turn = found
+            .turns
+            .iter()
+            .find(|t| t.line == *line)
+            .ok_or_else(|| format!("line {line} is not a user turn of {session}"))?;
+        let text = match quote.map(str::trim) {
+            Some(q) if !turn.text.contains(q) => {
+                return Err(format!("quote does not occur word for word in line {line}"))
+            }
+            Some(q) => q.to_string(),
+            None => turn.text.clone(),
+        };
+        picked.push((text, format!("{}:{}#L{}", found.tool, session, line)));
+    }
+    picked
+        .iter()
+        .map(|(text, provenance)| add_constraint(root, project, provenance, text, None, None))
+        .collect()
+}

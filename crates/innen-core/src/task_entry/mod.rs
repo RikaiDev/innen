@@ -2,7 +2,9 @@
 //! and baselines without requiring project IDs or falling back to cwd.
 
 mod admission;
+mod budget;
 mod entry;
+mod expansion;
 mod fallback;
 mod node_identity;
 mod query_terms;

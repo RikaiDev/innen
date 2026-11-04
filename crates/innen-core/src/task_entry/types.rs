@@ -9,6 +9,8 @@ pub struct TaskEntryOptions {
     pub offset: usize,
     pub include_expired: bool,
     pub view: String, // "context" (default compact brief) or "evidence"
+    /// Soft ceiling on the context brief's JSON size in characters; see `budget`.
+    pub budget: Option<usize>,
 }
 
 impl Default for TaskEntryOptions {
@@ -20,6 +22,7 @@ impl Default for TaskEntryOptions {
             offset: 0,
             include_expired: false,
             view: "context".to_string(),
+            budget: None,
         }
     }
 }
