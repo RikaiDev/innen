@@ -2,6 +2,7 @@ mod artifact;
 mod checkpoint;
 mod commands;
 mod config;
+mod constraint;
 mod conversation;
 mod delivery;
 mod graph;
@@ -62,6 +63,10 @@ pub(crate) fn run() -> i32 {
                 graph::GraphOp::Relate(a) => graph::cmd_graph_relate(&root, &cli.format, a),
                 graph::GraphOp::Retract(a) => graph::cmd_graph_retract(&root, &cli.format, a),
             }
+        }
+        Commands::Constraint { op } => {
+            let root = resolve_or_exit!(cli.root.clone());
+            constraint::cmd_constraint(&root, &cli.format, op)
         }
         Commands::Index { op } => {
             let root = resolve_or_exit!(cli.root.clone());

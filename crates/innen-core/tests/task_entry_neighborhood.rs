@@ -89,3 +89,39 @@ fn request_that_already_hit_files_skips_the_sibling_list() {
     assert_eq!(out["linked_projects"], json!(["project:ntuh"]));
     assert_eq!(out["neighborhood"], json!([]));
 }
+
+#[test]
+fn project_constraints_are_listed_with_their_source_and_not_as_siblings() {
+    let dir = root_with(&[
+        (
+            "node.upsert",
+            json!({"id": "project:ntuh", "type": "Project", "label": "台大雲林專案"}),
+        ),
+        (
+            "node.upsert",
+            json!({"id": "artifact:deck1", "type": "Artifact", "label": "第一版簡報.pptx"}),
+        ),
+        (
+            "node.upsert",
+            json!({"id": "constraint:1", "type": "Constraint", "label": "只談台大自己的據點",
+            "body": "資委會是針對台大報告", "provenance": "agy:ee6438d3:L510"}),
+        ),
+        (
+            "edge.assert",
+            json!({"from": "artifact:deck1", "type": "BELONGS_TO", "to": "project:ntuh"}),
+        ),
+        (
+            "edge.assert",
+            json!({"from": "constraint:1", "type": "BELONGS_TO", "to": "project:ntuh"}),
+        ),
+    ]);
+    let out = run(dir.path(), "台大雲林專案");
+    assert_eq!(out["constraints_total"], 1);
+    let c = out["constraints"].to_string();
+    assert!(
+        c.contains("資委會是針對台大報告") && c.contains("agy:ee6438d3:L510"),
+        "{c}"
+    );
+    assert!(!out["neighborhood"].to_string().contains("constraint:1"));
+    assert!(innen_core::task_entry::render(&out).contains("Binding constraints"));
+}

@@ -143,6 +143,9 @@ pub(super) fn project_neighbors(
         let Some(node) = nodes.get(&edge.from) else {
             continue;
         };
+        if is_constraint(node) {
+            continue;
+        }
         let label = node_text(node, "label").to_string();
         rows.push((
             label.clone(),
@@ -166,6 +169,8 @@ pub(super) struct Focus {
     pub projects: BTreeSet<String>,
     pub neighborhood: Vec<Value>,
     pub neighborhood_total: usize,
+    pub constraints: Vec<Value>,
+    pub constraints_total: usize,
 }
 
 /// The neighborhood follows only the best-scored candidates: a project reached
@@ -196,9 +201,56 @@ pub(super) fn best_scored_focus(
     };
     let seeds: BTreeSet<&str> = ranked.iter().map(|c| c.0.as_str()).collect();
     let (neighborhood, neighborhood_total) = project_neighbors(&scope, nodes, edges, &seeds);
+    let (constraints, constraints_total) = project_constraints(&projects, nodes, edges);
     Focus {
         projects,
         neighborhood,
         neighborhood_total,
+        constraints,
+        constraints_total,
     }
+}
+
+/// Most constraints listed per request; the total is reported alongside.
+pub(super) const CONSTRAINT_LIMIT: usize = 12;
+
+fn is_constraint(node: &Value) -> bool {
+    node_text(node, "type").eq_ignore_ascii_case("constraint")
+}
+
+/// The user's recorded binding requirements for the given projects: the
+/// verbatim `body` and the `provenance` that locates it in its source. The
+/// text is what an agent recorded, so it is reported with its source and never
+/// as verified.
+pub(super) fn project_constraints(
+    projects: &BTreeSet<String>,
+    nodes: &HashMap<String, Value>,
+    edges: &[StoredEdge],
+) -> (Vec<Value>, usize) {
+    let mut rows: Vec<(String, Value)> = Vec::new();
+    for edge in edges {
+        if edge.retracted || edge.edge != EdgeType::BelongsTo || !projects.contains(&edge.to) {
+            continue;
+        }
+        let Some(node) = nodes.get(&edge.from).filter(|n| is_constraint(n)) else {
+            continue;
+        };
+        rows.push((
+            edge.from.clone(),
+            json!({
+                "id": edge.from,
+                "text": node_text(node, "body"),
+                "source": node_text(node, "provenance"),
+            }),
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.dedup_by(|a, b| a.0 == b.0);
+    let total = rows.len();
+    let shown = rows
+        .into_iter()
+        .take(CONSTRAINT_LIMIT)
+        .map(|(_, v)| v)
+        .collect();
+    (shown, total)
 }

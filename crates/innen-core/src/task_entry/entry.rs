@@ -194,6 +194,7 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         linked_projects
     };
     let (neighborhood, neighborhood_total) = (focus.neighborhood, focus.neighborhood_total);
+    let (constraints, constraints_total) = (focus.constraints, focus.constraints_total);
 
     // 7. Baseline & Authority Analysis (Intent-specific)
     let is_asset_edit = has_asset_edit_intent(&options.q);
@@ -316,6 +317,8 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         "linked_projects": linked_projects.into_iter().collect::<Vec<_>>(),
         "neighborhood": neighborhood,
         "neighborhood_total": neighborhood_total,
+        "constraints": constraints,
+        "constraints_total": constraints_total,
         "decisions": connected_decisions,
         "missing_evidence": missing_evidence,
         "total": total,

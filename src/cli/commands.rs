@@ -2,6 +2,7 @@ use super::{
     artifact::ArtifactOp,
     checkpoint::CheckpointArgs,
     config::ConfigOp,
+    constraint::ConstraintOp,
     conversation::ConversationArgs,
     graph::GraphOp,
     harvest::HarvestArgs,
@@ -36,6 +37,11 @@ pub(super) enum Commands {
     Graph {
         #[command(subcommand)]
         op: GraphOp,
+    },
+    /// Record the user's binding requirements so a later task sees them.
+    Constraint {
+        #[command(subcommand)]
+        op: ConstraintOp,
     },
     /// Derived index maintenance.
     Index {

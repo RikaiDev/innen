@@ -38,6 +38,23 @@ pub fn render(value: &Value) -> String {
         }
     }
 
+    if let Some(rules) = value["constraints"].as_array() {
+        if !rules.is_empty() {
+            let total = value["constraints_total"].as_u64().unwrap_or(0);
+            out.push_str(&format!(
+                "Binding constraints ({} of {total}; recorded text, check the source):\n",
+                rules.len()
+            ));
+            for c in rules {
+                out.push_str(&format!(
+                    "  [{}] {}\n",
+                    c["source"].as_str().unwrap_or(""),
+                    c["text"].as_str().unwrap_or("")
+                ));
+            }
+        }
+    }
+
     if let Some(near) = value["neighborhood"].as_array() {
         if !near.is_empty() {
             let total = value["neighborhood_total"].as_u64().unwrap_or(0);
