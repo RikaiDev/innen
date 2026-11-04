@@ -2,6 +2,15 @@
 
 use serde_json::Value;
 
+/// A status of `unknown` is the default and carries no information.
+fn known_status(status: &str) -> String {
+    if status.is_empty() || status == "unknown" {
+        String::new()
+    } else {
+        format!(" | {status}")
+    }
+}
+
 /// Render human-readable output for the task-context entry.
 pub fn render(value: &Value) -> String {
     let mut out = String::new();
@@ -19,9 +28,7 @@ pub fn render(value: &Value) -> String {
         out.push_str(&format!("Operation Cue: {op} (heuristic hypothesis)\n"));
     }
 
-    if value["baseline"].is_null() {
-        out.push_str("Baseline: none (no approved editable baseline recorded)\n");
-    } else {
+    if !value["baseline"].is_null() {
         out.push_str(&format!(
             "Baseline: {} ({})\n",
             value["baseline"]["label"].as_str().unwrap_or(""),
@@ -33,8 +40,6 @@ pub fn render(value: &Value) -> String {
         if !projects.is_empty() {
             let p_str: Vec<&str> = projects.iter().filter_map(|v| v.as_str()).collect();
             out.push_str(&format!("Linked Projects: {}\n", p_str.join(", ")));
-        } else {
-            out.push_str("Linked Projects: none\n");
         }
     }
 
@@ -75,31 +80,32 @@ pub fn render(value: &Value) -> String {
 
     out.push('\n');
     let total = value["total"].as_u64().unwrap_or(0);
-    let next_offset = &value["next_offset"];
-    out.push_str(&format!(
-        "Candidate Assets: {total} (next_offset={next_offset})\n"
-    ));
+    out.push_str(&format!("Candidates: {total}"));
+    if let Some(next) = value["next_offset"].as_u64() {
+        out.push_str(&format!(" (more from --offset {next})"));
+    }
+    out.push_str("  [id | kind | label | score | status if known]\n");
 
     if let Some(rows) = value["rows"].as_array() {
         for row in rows {
             out.push_str(&format!(
-                "  {} | {} | {} | score: {:.2} | status: {}\n",
+                "  {} | {} | {} | {:.2}{}\n",
                 row[0].as_str().unwrap_or(""),
                 row[1].as_str().unwrap_or(""),
                 row[2].as_str().unwrap_or(""),
                 row[3].as_f64().unwrap_or(0.0),
-                row[4].as_str().unwrap_or("")
+                known_status(row[4].as_str().unwrap_or(""))
             ));
         }
     } else if let Some(candidates) = value["candidates"].as_array() {
         for c in candidates {
             out.push_str(&format!(
-                "  {} | {} | {} | score: {:.2} | status: {}\n",
+                "  {} | {} | {} | {:.2}{}\n",
                 c["id"].as_str().unwrap_or(""),
                 c["kind"].as_str().unwrap_or(""),
                 c["label"].as_str().unwrap_or(""),
                 c["score"].as_f64().unwrap_or(0.0),
-                c["status"].as_str().unwrap_or("")
+                known_status(c["status"].as_str().unwrap_or(""))
             ));
             if let Some(history) = c["history"].as_array() {
                 out.push_str(&format!("    History ({} events):\n", history.len()));
@@ -125,9 +131,8 @@ pub fn render(value: &Value) -> String {
         }
     }
 
-    if let Some(exp) = value["evidence_expansion"]["argv"].as_array() {
-        let argv_str: Vec<&str> = exp.iter().filter_map(|v| v.as_str()).collect();
-        out.push_str(&format!("\nEvidence Expansion: {}\n", argv_str.join(" ")));
+    if value["evidence_expansion"]["argv"].is_array() && !value["rows"].is_null() {
+        out.push_str("\nExpand: same request with --view evidence\n");
     }
 
     out

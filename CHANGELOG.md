@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.0] - 2026-11-04
+
+### Changed
+
+- `innen query` brief is compressed by information value. Term weight is
+  inverse document frequency, so a rare term outranks a common one. Near
+  duplicate constraints merge, and nodes that carry one document in several
+  formats show as one entry (`x.{pdf,docx}`; the folded ids are in `folded`).
+- A candidate already listed under Binding constraints is not listed again, and
+  a per-term match scoring under half the best score is dropped (at least three
+  stay). Labels over 80 characters are clipped; `--view evidence` keeps them.
+- `--budget` keeps entries by value per character instead of a fixed ladder.
+- Lines that never vary (`status: unknown`, empty Linked Projects, the Baseline
+  placeholder) are no longer printed.
+
 ## [0.16.1] - 2026-11-04
 
 ### Fixed

@@ -17,6 +17,9 @@ use crate::journal::{observed_utc_now, Journal};
 
 use super::admission::{has_all_search_terms, has_entity_anchor, literal_candidate_scores};
 use super::budget::fit_to_budget;
+use super::compress::{
+    clip_label, constraint_ids, drop_accounted_terms, fold_ranked, prune_candidates,
+};
 use super::expansion::evidence_argv;
 use super::fallback::{per_term_candidates, FALLBACK_CANDIDATE_LIMIT};
 use super::node_identity::{node_kind, node_searchable_text, node_text};
@@ -178,6 +181,8 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         unmatched_terms = found.unmatched;
         fallback_truncated = found.truncated;
     }
+    let (ranked_candidates, shown_label, folded_ids) =
+        fold_ranked(ranked_candidates, &materialized.nodes);
     let partial = !unmatched_terms.is_empty()
         || ranked_candidates
             .iter()
@@ -193,15 +198,7 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         &materialized.edges,
         &terms,
     );
-    // A term the user's recorded words contain is not missing evidence.
-    unmatched_terms.retain(|t| {
-        let t = t.to_lowercase();
-        !focus.constraints.iter().any(|c| {
-            c["text"]
-                .as_str()
-                .is_some_and(|x| x.to_lowercase().contains(&t))
-        })
-    });
+    drop_accounted_terms(&mut unmatched_terms, &focus.constraints);
     // Per-term matches are weak evidence of ownership; claim only the
     // projects of the best-covered candidates.
     let linked_projects = if partial {
@@ -278,6 +275,8 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
     let operation = extract_operation_cue(&options.q);
     let constraints_cues = extract_constraint_cues(&options.q);
 
+    let shown_ids = constraint_ids(&focus.constraints);
+    let ranked_candidates = prune_candidates(ranked_candidates, &shown_ids, partial);
     let total = ranked_candidates.len();
     let selected: Vec<(String, f64, String)> = ranked_candidates
         .into_iter()
@@ -318,12 +317,19 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
         },
     });
 
+    if !folded_ids.is_empty() {
+        out["folded"] = json!(folded_ids);
+    }
+
     if is_evidence_view {
         let items: Vec<Value> = selected
             .into_iter()
             .map(|(id, score, why)| {
                 let node = &materialized.nodes[&id];
-                let label = node_text(node, "label");
+                let label = shown_label
+                    .get(&id)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| node_text(node, "label"));
                 let kind = node_kind(node);
                 let status = candidate_status_map
                     .get(&id)
@@ -369,13 +375,16 @@ pub fn task_entry(root: &Path, options: &TaskEntryOptions) -> Result<Value, Stri
             .into_iter()
             .map(|(id, score, why)| {
                 let node = &materialized.nodes[&id];
-                let label = node_text(node, "label");
+                let label = shown_label
+                    .get(&id)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| node_text(node, "label"));
                 let kind = node_kind(node);
                 let status = candidate_status_map
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());
-                json!([id, kind, label, score, status, why])
+                json!([id, kind, clip_label(label), score, status, why])
             })
             .collect();
         out["rows"] = Value::Array(rows);

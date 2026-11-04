@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::graph::{EdgeType, StoredEdge};
 
+use super::compress::{fold_documents, near_duplicate, term_weights};
 use super::node_identity::node_text;
 
 /// Check if a filename is an editable vector/code baseline.
@@ -154,11 +155,26 @@ pub(super) fn project_neighbors(
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     rows.dedup_by(|a, b| a.1["id"] == b.1["id"]);
-    let total = rows.len();
-    let shown = rows
+    let items: Vec<(String, String, String)> = rows
+        .iter()
+        .map(|(l, v)| {
+            (
+                v["id"].as_str().unwrap_or("").to_string(),
+                v["kind"].as_str().unwrap_or("").to_string(),
+                l.clone(),
+            )
+        })
+        .collect();
+    let kinds: HashMap<String, String> = items
+        .iter()
+        .map(|(i, k, _)| (i.clone(), k.clone()))
+        .collect();
+    let folded = fold_documents(&items);
+    let total = folded.len();
+    let shown = folded
         .into_iter()
         .take(NEIGHBORHOOD_LIMIT)
-        .map(|(_, v)| v)
+        .map(|f| json!({"id": f.id, "kind": kinds[&f.id], "label": f.label, "also": f.also.len()}))
         .collect();
     (shown, total)
 }
@@ -230,7 +246,8 @@ pub(super) fn project_constraints(
     terms: &[String],
 ) -> (Vec<Value>, usize) {
     let lowered: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
-    let mut rows: Vec<(usize, String, Value)> = Vec::new();
+    let weights = term_weights(nodes, terms);
+    let mut rows: Vec<(f64, String, Value)> = Vec::new();
     for edge in edges {
         if edge.retracted || edge.edge != EdgeType::BelongsTo || !projects.contains(&edge.to) {
             continue;
@@ -242,7 +259,10 @@ pub(super) fn project_constraints(
         // query terms the words contain, then by id for a stable order.
         let hay =
             format!("{} {}", node_text(node, "body"), node_text(node, "label")).to_lowercase();
-        let hits = lowered.iter().filter(|t| hay.contains(t.as_str())).count();
+        let hits: f64 = (0..lowered.len())
+            .filter(|i| hay.contains(lowered[*i].as_str()))
+            .map(|i| weights[i])
+            .sum();
         rows.push((
             hits,
             edge.from.clone(),
@@ -253,8 +273,19 @@ pub(super) fn project_constraints(
             }),
         ));
     }
-    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     rows.dedup_by(|a, b| a.1 == b.1);
+    let mut kept: Vec<(f64, String, Value)> = Vec::new();
+    for row in rows {
+        let text = row.2["text"].as_str().unwrap_or("");
+        if !kept
+            .iter()
+            .any(|k| near_duplicate(k.2["text"].as_str().unwrap_or(""), text))
+        {
+            kept.push(row);
+        }
+    }
+    let rows = kept;
     let total = rows.len();
     let shown = rows
         .into_iter()

@@ -3,6 +3,7 @@
 
 mod admission;
 mod budget;
+mod compress;
 mod entry;
 mod expansion;
 mod fallback;

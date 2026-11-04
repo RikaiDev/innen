@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use super::compress::term_weights;
 use super::node_identity::node_identity_text;
 
 /// Per-term fallback keeps only the best-covered candidates: one generic term
@@ -24,6 +25,9 @@ pub(super) fn per_term_candidates(
     identity_terms: &[&str],
 ) -> TermFallback {
     let lowered: Vec<String> = identity_terms.iter().map(|t| t.to_lowercase()).collect();
+    let owned: Vec<String> = identity_terms.iter().map(|t| (*t).to_string()).collect();
+    let weights = term_weights(nodes, &owned);
+    let total_weight: f64 = weights.iter().sum();
     let mut covered = vec![false; lowered.len()];
     let mut candidates: Vec<(String, f64, String)> = Vec::new();
     for (id, node) in nodes {
@@ -37,7 +41,7 @@ pub(super) fn per_term_candidates(
         if !hits.is_empty() {
             candidates.push((
                 id.clone(),
-                hits.len() as f64 / lowered.len() as f64,
+                hits.iter().map(|i| weights[*i]).sum::<f64>() / total_weight,
                 format!("term_coverage:{}/{}", hits.len(), lowered.len()),
             ));
         }
