@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.0] - 2026-11-04
+
+### Added
+
+- `innen constraint add --project <id> --source <ref> --text <words>` records a
+  requirement the user stated, as a `Constraint` node owned by the project, in
+  one write. The source is mandatory: words nobody can trace back cannot be
+  checked. The id derives from the text, so recording the same words twice
+  keeps one constraint.
+- `--text-file <path>` and `--text-file -` read the words from a file or
+  standard input, so `!` `?` `*` `(` `#` `$` never pass through shell quoting.
+  zsh: `print -r -- 'words' | innen constraint add ... --text-file -`.
+  `innen completions zsh` includes the command.
+- `innen query` lists a project's constraints first, under `Binding
+  constraints`, each with its source and marked as recorded text to check.
+  Constraints are not repeated in the `Same project` file list.
+
 ## [0.14.0] - 2026-11-04
 
 ### Added
