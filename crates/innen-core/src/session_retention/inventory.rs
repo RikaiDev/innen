@@ -61,6 +61,7 @@ pub fn summarize_inventory(assessments: &[Assessment]) -> InventorySummary {
             .entry(assessment.source.clone())
             .or_default();
         source.total += 1;
+        source.bytes = source.bytes.saturating_add(assessment.source_bytes);
         if assessment.eligible {
             source.eligible += 1;
             summary.eligible += 1;

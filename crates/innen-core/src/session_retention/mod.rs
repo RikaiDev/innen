@@ -62,7 +62,7 @@ use types::{
 };
 
 use activity::{liveness_targets, session_activity, Activity};
-use archive::{bundle, candidate_targets, find_candidate};
+use archive::{bundle, candidate_targets, find_candidate, measured_bytes};
 use compact::compact_and_attest;
 use delete_adapter::delete_candidate;
 use policy::{assess_candidate, assess_candidate_with_graph};

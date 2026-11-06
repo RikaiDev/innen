@@ -7,6 +7,32 @@ pub(super) fn candidate_targets(candidate: &Candidate) -> Vec<PathBuf> {
     }
 }
 
+/// Bytes a session occupies on disk, summed from file metadata alone. A row that
+/// a gate stops before hashing still reports its size, so a plan can say how
+/// much a sweep would free. Nothing is read or hashed, a symlink counts as the
+/// link itself, and an unreadable entry counts as zero: this is a size estimate,
+/// never a proof. OpenCode keeps every session in one shared database, whose
+/// size belongs to no single session, so it reports zero.
+pub(super) fn measured_bytes(candidate: &Candidate) -> u64 {
+    if candidate.source == Source::Opencode {
+        return 0;
+    }
+    fn walk(path: &Path) -> u64 {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return 0;
+        };
+        if metadata.is_dir() {
+            let Ok(entries) = fs::read_dir(path) else {
+                return 0;
+            };
+            entries.flatten().map(|entry| walk(&entry.path())).sum()
+        } else {
+            metadata.len()
+        }
+    }
+    candidate_targets(candidate).iter().map(|t| walk(t)).sum()
+}
+
 pub(super) fn find_candidate(
     source: Source,
     session_id: &str,

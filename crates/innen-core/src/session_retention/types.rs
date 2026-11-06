@@ -40,6 +40,9 @@ pub struct Assessment {
 pub struct InventorySourceSummary {
     pub total: usize,
     pub eligible: usize,
+    /// Size on disk of every session of this source that still has files,
+    /// measured from metadata, whether or not a gate blocks it.
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -259,6 +259,34 @@ fn antigravity_bundle_includes_conversation_database_and_brain() {
     assert_eq!(hashed.bytes, 19);
 }
 
+/// A session a gate stops before hashing still reports its size, summed from
+/// metadata, so a plan can say how much a sweep would free.
+#[test]
+fn a_blocked_session_still_reports_its_size() {
+    let store = tempfile::tempdir().unwrap();
+    let brain = store.path().join("brain").join(ID);
+    let conversations = store.path().join("conversations");
+    fs::create_dir_all(&brain).unwrap();
+    fs::create_dir_all(&conversations).unwrap();
+    fs::write(brain.join("note.md"), b"knowledge").unwrap();
+    let db = conversations.join(format!("{ID}.db"));
+    fs::write(&db, b"trajectory").unwrap();
+    let candidate = Candidate {
+        id: ID.into(),
+        source: Source::Antigravity,
+        modified: None,
+        path: db,
+        project: None,
+        parent_id: None,
+    };
+    assert_eq!(measured_bytes(&candidate), 19);
+    let opencode = Candidate {
+        source: Source::Opencode,
+        ..candidate
+    };
+    assert_eq!(measured_bytes(&opencode), 0);
+}
+
 #[test]
 fn delete_adapter_captures_success_output() {
     run_delete("/bin/sh", &["-c", "printf adapter-noise"]).unwrap();

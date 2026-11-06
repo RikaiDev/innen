@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.1] - 2026-11-07
+
+### Fixed
+
+- `innen harvest --coding-sessions --coding-session-details` and
+  `innen retention plan` report a session's size even when a gate (retention
+  window, missing attestation) stops it before hashing. Those rows showed
+  `source_bytes: 0`, which read as "unreadable" and made it impossible to see
+  how much space a sweep would free. The size is summed from file metadata
+  only; nothing is read or hashed. OpenCode keeps all sessions in one shared
+  database, so its rows still report 0.
+
+### Added
+
+- The JSON summary carries `bytes` per source: the on-disk size of every
+  session that still has files. `eligible_bytes` is unchanged.
+
 ## [0.17.0] - 2026-11-04
 
 ### Changed
