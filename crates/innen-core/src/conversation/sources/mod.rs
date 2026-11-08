@@ -4,6 +4,8 @@
 //! reader lives in [`super::opencode_db`] and is re-exported here so callers
 //! reach session storage through one module.
 pub use super::opencode_db::load_database;
+pub mod kilo_db;
+pub mod kiro;
 pub(crate) use super::opencode_db::{
     database_child_sessions, load_database_session, session_table, sqlite,
 };
@@ -36,6 +38,8 @@ pub enum Source {
     Gemini,
     Mcode,
     Opencode,
+    Kilo,
+    Kiro,
     Grok,
     Copilot,
     Cursor,
@@ -56,6 +60,8 @@ impl Source {
             Self::Gemini => "gemini",
             Self::Mcode => "mcode",
             Self::Opencode => "opencode",
+            Self::Kilo => "kilo",
+            Self::Kiro => "kiro",
             Self::Grok => "grok",
             Self::Copilot => "copilot",
             Self::Cursor => "cursor",
@@ -72,6 +78,8 @@ impl Source {
             "gemini" => Ok(Self::Gemini),
             "mcode" | "minimax" => Ok(Self::Mcode),
             "opencode" => Ok(Self::Opencode),
+            "kilo" => Ok(Self::Kilo),
+            "kiro" | "kiro-cli" | "kiro_desktop" => Ok(Self::Kiro),
             "grok" => Ok(Self::Grok),
             "copilot" => Ok(Self::Copilot),
             "cursor" => Ok(Self::Cursor),
@@ -99,14 +107,16 @@ pub fn validate_id(id: &str) -> Result<String, ReadError> {
     if uuid {
         return Ok(id.to_ascii_lowercase());
     }
-    if (id.starts_with("ses_") || id.starts_with("mvs_"))
+    if (id.starts_with("ses_") || id.starts_with("sess_") || id.starts_with("mvs_"))
         && (5..=128).contains(&id.len())
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
         return Ok(id.into());
     }
     Err(ReadError(
-        "invalid UUID or native session ID: expected a full UUID or a native session ID (opencode ses_..., mcode mvs_...)".into(),
+        "invalid UUID or native session ID: expected a full UUID or a native session ID (opencode/kilo ses_..., kiro sess_..., mcode mvs_...)".into(),
     ))
 }
 
@@ -168,6 +178,11 @@ pub(crate) fn default_stores() -> Result<Vec<(Source, PathBuf)>, ReadError> {
             Source::Opencode,
             home.join(".local/share/opencode/opencode.db"),
         ),
+        (
+            Source::Kilo,
+            home.join(".local/share/kilo/kilo.db"),
+        ),
+        (Source::Kiro, home.join(".kiro/sessions")),
         (
             Source::Mcode,
             home.join(".minimax/v2/sqlite/runtime-state.sqlite"),

@@ -66,6 +66,30 @@ pub fn locate(root: Option<&Path>, source: &str, id: &str) -> Result<Located, Re
             } else {
                 Vec::new()
             }
+        } else if kind == Source::Kilo {
+            let path = if root.is_dir() {
+                root.join("kilo.db")
+            } else {
+                root
+            };
+            if path.try_exists().map_err(|e| err(&path, e))?
+                && !sqlite(
+                    &path,
+                    &format!(
+                        "SELECT json_object('id',id) FROM session WHERE id='{}' LIMIT 1",
+                        id
+                    ),
+                )?
+                .is_empty()
+            {
+                vec![path]
+            } else {
+                Vec::new()
+            }
+        } else if kind == Source::Kiro {
+            let mut candidates = Vec::new();
+            walk(&root, kind, id, 5, &mut candidates)?;
+            candidates
         } else if kind == Source::Mcode {
             let db = mcode_runtime_db(&root);
             let sessions_root = if root.is_dir() && root.join("sessions").is_dir() {
@@ -116,6 +140,13 @@ pub fn locate(root: Option<&Path>, source: &str, id: &str) -> Result<Located, Re
             }
         }
     }
+    if found.len() > 1 && found.iter().all(|f| f.source == Source::Kiro) {
+        if let Some(pos) = found.iter().position(|f| {
+            f.path.file_name().is_some_and(|n| n == "messages.jsonl")
+        }) {
+            return Ok(found.remove(pos));
+        }
+    }
     match found.len() {
         0 => Err(ReadError(format!("conversation not found: {id} (source {source}); use --source <tool> --source-root <store> for relocated data; no ingest required"))),
         1 => Ok(found.remove(0)),
@@ -159,6 +190,21 @@ fn walk(
                     && (codex_stem == id || codex_stem.ends_with(&format!("-{id}")))
             }
             Source::Claude | Source::Cursor | Source::Qwen => ext == "jsonl" && stem == id,
+            Source::Kiro => {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                (name == "messages.jsonl"
+                    && path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n == id))
+                    || (name == "session.json"
+                        && path
+                            .parent()
+                            .and_then(Path::file_name)
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n == id))
+            }
             Source::Mcode => {
                 ext == "jsonl"
                     && stem == "messages"

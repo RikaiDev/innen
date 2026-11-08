@@ -325,6 +325,8 @@ fn every_source_variant_is_classified() {
         Source::Cursor,
         Source::Gemini,
         Source::Grok,
+        Source::Kilo,
+        Source::Kiro,
         Source::Mcode,
         Source::Opencode,
         Source::Qwen,

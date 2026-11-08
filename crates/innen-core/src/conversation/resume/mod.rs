@@ -17,6 +17,8 @@ mod codex;
 mod copilot;
 mod dash;
 mod grok;
+mod kilo;
+mod kiro;
 mod mcode;
 mod opencode;
 mod time;
@@ -26,6 +28,8 @@ use codex::scan_codex_sessions;
 use copilot::scan_copilot_sessions;
 use dash::scan_dash_named_projects;
 use grok::scan_grok_sessions;
+use kilo::scan_kilo_sessions;
+use kiro::scan_kiro_sessions;
 use mcode::scan_mcode_sessions;
 use opencode::scan_opencode_sessions;
 
@@ -182,6 +186,12 @@ pub fn find_project_candidates(
             Source::Grok => {
                 scan_grok_sessions(&root, &candidate_paths, &mut candidates)?;
             }
+            Source::Kilo => {
+                scan_kilo_sessions(&root, &candidate_paths, &mut candidates)?;
+            }
+            Source::Kiro => {
+                scan_kiro_sessions(&root, &candidate_paths, &mut candidates)?;
+            }
             _ => {}
         }
     }
@@ -229,6 +239,12 @@ pub fn find_all_candidates(
             }
             Source::Grok => {
                 scan_grok_sessions(&root, &empty_targets, &mut candidates)?;
+            }
+            Source::Kilo => {
+                scan_kilo_sessions(&root, &empty_targets, &mut candidates)?;
+            }
+            Source::Kiro => {
+                scan_kiro_sessions(&root, &empty_targets, &mut candidates)?;
             }
             _ => {}
         }
@@ -334,6 +350,8 @@ pub(crate) fn scanner_wired(source: Source) -> bool {
             | Source::Codex
             | Source::Antigravity
             | Source::Opencode
+            | Source::Kilo
+            | Source::Kiro
             | Source::Mcode
             | Source::Copilot
             | Source::Grok

@@ -374,7 +374,7 @@ Evidence-ID proposal draft: prepare with `query --q QUESTION --evidence-contract
 Run `innen wiki sync` after wiki edits to project source references into the
 graph, then `innen trace --q 'your clue'` to retrieve bounded source passages.
 Use each result's hash-checked `expand_argv` to recover its exact record.
-See [source tracing](docs/trace.md) and [v0.4.0 release notes](docs/release-v0.4.0.md)
+See [source tracing](docs/trace.md) and [CHANGELOG.md](CHANGELOG.md)
 for supported sources, cache behavior, and coverage limits.
 
 Executors can prepare a token-budgeted input packet before sending a new model

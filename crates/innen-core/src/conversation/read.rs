@@ -107,6 +107,26 @@ pub(crate) fn stream_dialogue(
             cursor += count;
         }
     }
+    if located.source == Source::Kilo {
+        let mut cursor = 0;
+        loop {
+            let events = sources::kilo_db::load_database(located, id, cursor)?;
+            if events.is_empty() {
+                return Ok(());
+            }
+            let count = events.len();
+            for (index, event) in events.into_iter().enumerate() {
+                emit(cursor + index, event)?;
+            }
+            cursor += count;
+        }
+    }
+    if located.source == Source::Kiro {
+        for (index, event) in sources::kiro::load_messages(path)?.into_iter().enumerate() {
+            emit(index, event)?;
+        }
+        return Ok(());
+    }
     if path.extension().is_some_and(|s| s == "json") {
         for (index, event) in sources::load_document(located)?.into_iter().enumerate() {
             emit(index, event)?;
@@ -249,6 +269,12 @@ fn read_pass(
     if located.source == Source::Cursor {
         page.warnings.push("Cursor exported transcripts may omit tool outputs; events cannot restore data absent from the export".into());
     }
+    if matches!(located.source, Source::Kilo | Source::Kiro) {
+        page.warnings.push(format!(
+            "{} transcript adapter is read-only in this build; extraction fidelity may vary by client version",
+            located.source.as_str()
+        ));
+    }
     if located.source == Source::Opencode {
         let mut cursor = offset;
         loop {
@@ -264,6 +290,37 @@ fn read_pass(
             }
             cursor += count;
         }
+    }
+    if located.source == Source::Kilo {
+        let mut cursor = offset;
+        loop {
+            let events = sources::kilo_db::load_database(&located, &id, cursor)?;
+            if events.is_empty() {
+                return Ok(page);
+            }
+            let count = events.len();
+            for (index, event) in events.into_iter().enumerate() {
+                if accept(&mut page, tally, event, cursor + index, limit, selected)? {
+                    return Ok(page);
+                }
+            }
+            cursor += count;
+        }
+    }
+    if located.source == Source::Kiro {
+        let events = sources::kiro::load_messages(&path)?;
+        for (index, event) in events.into_iter().enumerate().skip(offset) {
+            if selected.is_some_and(|s| index + 1 > *s.last().unwrap()) {
+                break;
+            }
+            if selected.is_some_and(|s| !s.contains(&(index + 1))) {
+                continue;
+            }
+            if accept(&mut page, tally, event, index, limit, selected)? {
+                break;
+            }
+        }
+        return Ok(page);
     }
     if path.extension().is_some_and(|s| s == "json") {
         let events = sources::load_document(&located)?;

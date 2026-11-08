@@ -71,9 +71,15 @@ fn scan_located(
     };
     let mut hasher = Sha256::new();
 
-    if source == Source::Opencode {
+    if matches!(source, Source::Opencode | Source::Kilo) {
+        return Err(ReadError(format!(
+            "bounded conversation scan unsupported for {}: database byte reads cannot be measured",
+            source.as_str()
+        )));
+    }
+    if source == Source::Kiro {
         return Err(ReadError(
-            "bounded conversation scan unsupported for OpenCode: database byte reads cannot be measured"
+            "bounded conversation scan unsupported for Kiro: read the transcript via conversation read"
                 .into(),
         ));
     }

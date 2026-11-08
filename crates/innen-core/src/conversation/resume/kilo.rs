@@ -1,0 +1,61 @@
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use super::super::sources::{self, Source};
+use super::super::ReadError;
+use super::Candidate;
+
+pub(super) fn scan_kilo_sessions(
+    root: &Path,
+    target_paths: &[PathBuf],
+    candidates: &mut Vec<Candidate>,
+) -> Result<(), ReadError> {
+    let db_path = if root.is_dir() {
+        root.join("kilo.db")
+    } else {
+        root.to_path_buf()
+    };
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let all_projects = target_paths.is_empty();
+    let target_strings: Vec<String> = target_paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let sql = "SELECT json_object('id',id,'directory',directory,'modified',datetime(time_updated/1000,'unixepoch')) FROM session".to_string();
+    let Some(rows) = super::store_query_with_retry(&db_path, &sql) else {
+        return Ok(());
+    };
+    for row in rows {
+        let dir = row.get("directory").and_then(Value::as_str).unwrap_or("");
+        let matched = all_projects || target_strings.iter().any(|ts| ts == dir);
+        if !matched {
+            continue;
+        }
+        if let Some(sid) = row.get("id").and_then(Value::as_str) {
+            if let Ok(id) = sources::validate_id(sid) {
+                let modified = row
+                    .get("modified")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                let project = if dir.is_empty() {
+                    Some("unknown".into())
+                } else {
+                    Some(dir.to_string())
+                };
+                candidates.push(Candidate {
+                    id,
+                    source: Source::Kilo,
+                    modified,
+                    path: db_path.clone(),
+                    project,
+                    parent_id: None,
+                });
+            }
+        }
+    }
+    Ok(())
+}

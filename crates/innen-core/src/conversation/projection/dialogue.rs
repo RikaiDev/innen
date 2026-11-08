@@ -162,10 +162,19 @@ pub fn dialogue(source: Source, event: Value) -> Result<Option<Value>, ReadError
             };
             (role, text(&event["content"]))
         }
-        Source::Opencode => (
+        Source::Opencode | Source::Kilo => (
             event["message"]["role"].as_str().unwrap_or(""),
             text(&event["parts"]),
         ),
+        Source::Kiro => {
+            let payload = event.get("payload").unwrap_or(&event);
+            let role = match payload.get("type").and_then(Value::as_str).unwrap_or("") {
+                "user" => "user",
+                "assistant" => "assistant",
+                _ => return Ok(None),
+            };
+            (role, text(payload.get("content").unwrap_or(&Value::Null)))
+        }
         Source::Vscode => unreachable!("handled above"),
     };
     if !matches!(role, "user" | "assistant") || content.is_empty() {

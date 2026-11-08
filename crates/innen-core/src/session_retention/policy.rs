@@ -92,12 +92,16 @@ pub(super) fn assess_candidate_with_graph(
     let bundle = bundle(candidate)?;
     let mut blockers = Vec::new();
     let mut blocker_codes = Vec::new();
-    if candidate.source == Source::Opencode {
-        let children = sources::database_child_sessions(&candidate.path, &candidate.id)
-            .map_err(|error| Error::Conversation(error.to_string()))?;
+    if matches!(candidate.source, Source::Opencode | Source::Kilo) {
+        let children = match candidate.source {
+            Source::Kilo => sources::kilo_db::database_child_sessions(&candidate.path, &candidate.id),
+            _ => sources::database_child_sessions(&candidate.path, &candidate.id),
+        }
+        .map_err(|error| Error::Conversation(error.to_string()))?;
         if !children.is_empty() {
             blockers.push(format!(
-                "OpenCode delete would also remove child sessions; attest and purge children first: {}",
+                "{} delete would also remove child sessions; attest and purge children first: {}",
+                candidate.source.as_str(),
                 children.join(",")
             ));
             blocker_codes.push(BLOCKER_CHILD_SESSIONS.into());

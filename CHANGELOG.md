@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.18.0] - 2026-11-08
+
+### Added
+
+- Conversation adapters for Kilo (`~/.local/share/kilo/kilo.db`, OpenCode-derived
+  `session`/`message`/`part`, `ses_*`) and Kiro CLI/Desktop agent sessions
+  (`~/.kiro/sessions/**/sess_*/{session.json,messages.jsonl}`, `sess_*`):
+  `conversation --source kilo|kiro`, `resume`, `unfinished`, `pickup`,
+  `checkpoint`, and `harvest --coding-sessions` discovery/coverage. Kiro
+  locates `messages.jsonl` when a session directory also contains
+  `session.json`. Database/Kiro bounded `scan` remains fail-closed (use
+  `conversation read`), consistent with OpenCode.
+- Native id validation accepts `sess_*` (Kiro) and `-` in OpenCode/Kiro/Mcode
+  native ids.
+- Session retention: Kilo participates in extraction-proof bundling and
+  child-session checks (OpenCode-shaped DB export) for attestation policy;
+  Kilo/Kiro remain without destructive delete adapters (fail-closed).
+
+### Changed
+
+- CLI source parsers accept `kilo`, `kiro` (`kiro-cli`, `kiro_desktop`),
+  `grok`, and `copilot` across conversation commands and harvest coding-session
+  inventory; `unfinished` coverage reports these stores as `scanned` when a
+  wired scanner and on-disk root exist.
+- Release/documentation harness: removed split per-version `docs/release-v*.md`
+  files (authoritative record is `CHANGELOG.md` + git tags/GitHub Releases) and
+  added `scripts/check-release.py` to fail closed on Cargo/CHANGELOG version
+  drift, missing tagged-version entries (optional strict mode), and
+  `docs/release-v*.md`/README link regressions.
+
 ## [0.17.1] - 2026-11-07
 
 ### Fixed

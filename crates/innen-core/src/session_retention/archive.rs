@@ -53,9 +53,12 @@ pub(super) struct Bundle {
 }
 
 pub(super) fn bundle(candidate: &Candidate) -> Result<Bundle, Error> {
-    if candidate.source == Source::Opencode {
-        let rows = sources::load_database_session(&candidate.path, &candidate.id)
-            .map_err(|error| Error::Conversation(error.to_string()))?;
+    if matches!(candidate.source, Source::Opencode | Source::Kilo) {
+        let rows = match candidate.source {
+            Source::Kilo => sources::kilo_db::load_database_session(&candidate.path, &candidate.id),
+            _ => sources::load_database_session(&candidate.path, &candidate.id),
+        }
+        .map_err(|error| Error::Conversation(error.to_string()))?;
         let bytes = serde_json::to_vec(&rows).expect("database export serializes");
         return Ok(Bundle {
             sha256: sha256_hex(&bytes),
