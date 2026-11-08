@@ -1,6 +1,7 @@
 #[derive(clap::Subcommand)]
 pub(super) enum IndexOp {
     /// Drop derived files and rebuild from the journal.
+    #[command(alias = "build")]
     Rebuild,
 }
 

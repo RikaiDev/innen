@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1] - 2026-11-08
+
+### Fixed
+
+- `innen index build` is accepted as an alias of `innen index rebuild`
+  (derived index drop+rebuild from journal), avoiding an unrecognized
+  subcommand on the common `build` name.
+
 ## [0.18.0] - 2026-11-08
 
 ### Added
