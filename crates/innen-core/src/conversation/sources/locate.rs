@@ -141,9 +141,10 @@ pub fn locate(root: Option<&Path>, source: &str, id: &str) -> Result<Located, Re
         }
     }
     if found.len() > 1 && found.iter().all(|f| f.source == Source::Kiro) {
-        if let Some(pos) = found.iter().position(|f| {
-            f.path.file_name().is_some_and(|n| n == "messages.jsonl")
-        }) {
+        if let Some(pos) = found
+            .iter()
+            .position(|f| f.path.file_name().is_some_and(|n| n == "messages.jsonl"))
+        {
             return Ok(found.remove(pos));
         }
     }

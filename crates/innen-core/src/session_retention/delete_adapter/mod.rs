@@ -23,8 +23,13 @@ pub(super) const DELETE_ADAPTER_SOURCES: &[Source] = &[
 ///
 /// Every `Source` variant is either listed here or in `DELETE_ADAPTER_SOURCES`;
 /// `every_source_variant_is_classified` keeps that exhaustive.
-pub(super) const NO_DELETE_ADAPTER_SOURCES: &[Source] =
-    &[Source::Cursor, Source::Gemini, Source::Kilo, Source::Kiro, Source::Vscode];
+pub(super) const NO_DELETE_ADAPTER_SOURCES: &[Source] = &[
+    Source::Cursor,
+    Source::Gemini,
+    Source::Kilo,
+    Source::Kiro,
+    Source::Vscode,
+];
 
 /// Every source name the retention pipeline accepts, aliases included.
 ///
@@ -95,12 +100,11 @@ pub(super) fn delete_candidate(
         Source::Mcode | Source::Copilot | Source::Grok => {
             delete_indexed_session(candidate, assessment)?
         }
-        source
-            @ (Source::Cursor
-            | Source::Gemini
-            | Source::Kilo
-            | Source::Kiro
-            | Source::Vscode) => {
+        source @ (Source::Cursor
+        | Source::Gemini
+        | Source::Kilo
+        | Source::Kiro
+        | Source::Vscode) => {
             debug_assert!(
                 NO_DELETE_ADAPTER_SOURCES.contains(&source),
                 "a source without a delete adapter must stay classified"

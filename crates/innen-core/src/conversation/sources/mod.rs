@@ -178,10 +178,7 @@ pub(crate) fn default_stores() -> Result<Vec<(Source, PathBuf)>, ReadError> {
             Source::Opencode,
             home.join(".local/share/opencode/opencode.db"),
         ),
-        (
-            Source::Kilo,
-            home.join(".local/share/kilo/kilo.db"),
-        ),
+        (Source::Kilo, home.join(".local/share/kilo/kilo.db")),
         (Source::Kiro, home.join(".kiro/sessions")),
         (
             Source::Mcode,

@@ -30,9 +30,7 @@ pub(crate) fn database_child_sessions(path: &Path, id: &str) -> Result<Vec<Strin
     let path = database_path(path);
     super::sqlite(
         &path,
-        &format!(
-            "SELECT json_object('id',id) FROM session WHERE parent_id='{id}' ORDER BY id"
-        ),
+        &format!("SELECT json_object('id',id) FROM session WHERE parent_id='{id}' ORDER BY id"),
     )
     .map(|rows| {
         rows.into_iter()

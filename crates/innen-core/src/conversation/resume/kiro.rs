@@ -27,10 +27,7 @@ pub(super) fn scan_kiro_sessions(
         if !messages.exists() && !session_json.exists() {
             continue;
         }
-        let sid = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let sid = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let Ok(id) = sources::validate_id(sid) else {
             continue;
         };
@@ -50,7 +47,10 @@ pub(super) fn scan_kiro_sessions(
             })
             .map(str::to_string)
             .unwrap_or_else(|| "unknown".into());
-        let matched = all_projects || target_strings.iter().any(|ts| project.contains(ts) || ts.contains(&project));
+        let matched = all_projects
+            || target_strings
+                .iter()
+                .any(|ts| project.contains(ts) || ts.contains(&project));
         if !matched {
             continue;
         }
@@ -59,16 +59,24 @@ pub(super) fn scan_kiro_sessions(
             .and_then(|m| m.get("lastModifiedAt").and_then(|v| v.as_str()))
             .map(str::to_string)
             .or_else(|| {
-                fs::metadata(if messages.exists() { &messages } else { &session_json })
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(system_time_to_rfc3339)
+                fs::metadata(if messages.exists() {
+                    &messages
+                } else {
+                    &session_json
+                })
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(system_time_to_rfc3339)
             });
         candidates.push(Candidate {
             id,
             source: Source::Kiro,
             modified,
-            path: if messages.exists() { messages } else { session_json },
+            path: if messages.exists() {
+                messages
+            } else {
+                session_json
+            },
             project: Some(project),
             parent_id: None,
         });

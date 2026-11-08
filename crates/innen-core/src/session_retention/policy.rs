@@ -94,7 +94,9 @@ pub(super) fn assess_candidate_with_graph(
     let mut blocker_codes = Vec::new();
     if matches!(candidate.source, Source::Opencode | Source::Kilo) {
         let children = match candidate.source {
-            Source::Kilo => sources::kilo_db::database_child_sessions(&candidate.path, &candidate.id),
+            Source::Kilo => {
+                sources::kilo_db::database_child_sessions(&candidate.path, &candidate.id)
+            }
             _ => sources::database_child_sessions(&candidate.path, &candidate.id),
         }
         .map_err(|error| Error::Conversation(error.to_string()))?;
