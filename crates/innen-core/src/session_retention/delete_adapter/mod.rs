@@ -29,6 +29,7 @@ pub(super) const NO_DELETE_ADAPTER_SOURCES: &[Source] = &[
     Source::Kilo,
     Source::Kiro,
     Source::Vscode,
+    Source::Freebuff,
 ];
 
 /// Every source name the retention pipeline accepts, aliases included.
@@ -104,7 +105,8 @@ pub(super) fn delete_candidate(
         | Source::Gemini
         | Source::Kilo
         | Source::Kiro
-        | Source::Vscode) => {
+        | Source::Vscode
+        | Source::Freebuff) => {
             debug_assert!(
                 NO_DELETE_ADAPTER_SOURCES.contains(&source),
                 "a source without a delete adapter must stay classified"

@@ -13,7 +13,7 @@ pub(super) struct HarvestArgs {
     #[command(flatten)]
     pub(super) window: super::retention::RetentionWindow,
     /// Restrict native session inventory to one source.
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "claude", "codex", "copilot", "grok", "kilo", "kiro", "mcode", "opencode", "qwen"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "claude", "codex", "copilot", "freebuff", "grok", "kilo", "kiro", "mcode", "opencode", "qwen"])]
     pub(super) source: String,
     /// Override the native store root; requires a concrete --source.
     #[arg(long, requires = "source")]
@@ -57,7 +57,12 @@ pub(super) fn cmd_ingest(root: &std::path::Path, format: &str, cli: &CliOverride
     0
 }
 
-pub(super) fn cmd_harvest(root: &std::path::Path, format: &str, args: &HarvestArgs, cli: &CliOverrides) -> i32 {
+pub(super) fn cmd_harvest(
+    root: &std::path::Path,
+    format: &str,
+    args: &HarvestArgs,
+    cli: &CliOverrides,
+) -> i32 {
     if let Some(session) = &args.session {
         if args.source == "auto" {
             eprintln!("error: --session requires a concrete --source");

@@ -104,7 +104,10 @@ pub fn set_global_value_with_env(
     value: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Result<String, ConfigSetError> {
-    if !matches!(key, "root" | "format" | "inbox_path" | "harvest_patterns" | "rebuild_on_open") {
+    if !matches!(
+        key,
+        "root" | "format" | "inbox_path" | "harvest_patterns" | "rebuild_on_open"
+    ) {
         return Err(ConfigSetError::UnknownKey(key.to_string()));
     }
     let normalized = value.trim();
@@ -129,7 +132,10 @@ pub fn set_global_value_with_env(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        (serde_json::to_value(patterns).unwrap(), normalized.to_string())
+        (
+            serde_json::to_value(patterns).unwrap(),
+            normalized.to_string(),
+        )
     } else {
         (
             serde_json::Value::String(normalized.to_string()),
@@ -225,16 +231,18 @@ pub fn get_global_value_with_env(
             .get("inbox_path")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())),
-        "harvest_patterns" => Ok(obj
-            .get("harvest_patterns")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })),
+        "harvest_patterns" => {
+            Ok(obj
+                .get("harvest_patterns")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                }))
+        }
         "rebuild_on_open" => Ok(obj
             .get("rebuild_on_open")
             .and_then(|v| v.as_bool())

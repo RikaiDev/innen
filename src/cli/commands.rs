@@ -1,6 +1,7 @@
 use super::{
     artifact::ArtifactOp,
     checkpoint::CheckpointArgs,
+    compress::CompressArgs,
     config::ConfigOp,
     constraint::ConstraintOp,
     conversation::ConversationArgs,
@@ -27,6 +28,8 @@ pub(super) enum Commands {
     Resume(ResumeArgs),
     /// Record, show, or list progress checkpoints in append-only storage outside Git.
     Checkpoint(CheckpointArgs),
+    /// Compress a conversation transcript into semantic representation for RAG and handoff.
+    Compress(CompressArgs),
     /// Discover recent unfinished candidate conversations across coding agents.
     Unfinished(UnfinishedArgs),
     /// Pick up an unambiguous unfinished conversation with exact continuation instructions.

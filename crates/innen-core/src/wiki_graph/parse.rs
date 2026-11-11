@@ -106,19 +106,11 @@ pub(super) fn parse_page(
     let tags = required_string_list(doc, "tags", path)?;
     let sources = required_string_list(doc, "sources", path)?;
     let related = required_string_list(doc, "related", path)?;
-    let node_id = optional_scalar(doc, "node_id", path)?;
-    let legacy_id = optional_scalar(doc, "id", path)?;
-    if node_id.is_some() && legacy_id.is_some() && node_id != legacy_id {
-        return Err(WikiGraphError::Frontmatter {
-            path: path.to_path_buf(),
-            message: "`node_id` and `id` disagree".to_string(),
-        });
-    }
-    let explicit_id = node_id.or(legacy_id);
+    let explicit_id = optional_scalar(doc, "node_id", path)?;
     if explicit_id.as_deref().is_some_and(|id| !safe_node_id(id)) {
         return Err(WikiGraphError::Frontmatter {
             path: path.to_path_buf(),
-            message: "explicit `node_id`/`id` contains unsafe characters".to_string(),
+            message: "explicit `node_id` contains unsafe characters".to_string(),
         });
     }
     let relative = path.strip_prefix(wiki_root).map_err(|_| {

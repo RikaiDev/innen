@@ -6,6 +6,7 @@ use super::delete_adapter::{
 };
 use super::policy::is_trustworthy_modified;
 use super::*;
+use crate::session_retention::types::BLOCKER_NEEDS_COMPRESSION;
 
 const ID: &str = "e3a92b35-4931-427b-9adf-1baa29318ca6";
 
@@ -171,10 +172,10 @@ fn age_and_harvest_are_not_enough_but_exact_attestation_is() {
     let before = inventory(kb.path(), Some(Source::Claude), Some(store.path()), 45).unwrap();
     assert_eq!(before.len(), 1);
     assert!(!before[0].eligible);
-    assert!(before[0].blockers[0].contains("attestation"));
+    assert!(before[0].blockers[0].contains("compression"));
     assert!(before[0]
         .blocker_codes
-        .contains(&BLOCKER_ATTESTATION_MISSING.to_string()));
+        .contains(&BLOCKER_NEEDS_COMPRESSION.to_string()));
 
     attest(
         kb.path(),
@@ -323,6 +324,7 @@ fn every_source_variant_is_classified() {
         Source::Claude,
         Source::Copilot,
         Source::Cursor,
+        Source::Freebuff,
         Source::Gemini,
         Source::Grok,
         Source::Kilo,

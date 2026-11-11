@@ -1,9 +1,9 @@
 use super::identity::{assign_ids, changed_fields, wiki_node};
-use super::parse::{collect_markdown, parse_page, split_frontmatter, field_error};
+use super::parse::{collect_markdown, field_error, parse_page, split_frontmatter};
 use super::projection::{
     insert_edge, live_foreign_keys, live_owned_edges, resolve_source, Resolution, WikiResolver,
 };
-use super::types::{DesiredEdge, EdgeKey, SyncReport, WikiGraphError, MANAGED_BY, WikiPage};
+use super::types::{DesiredEdge, EdgeKey, SyncReport, WikiGraphError, WikiPage, MANAGED_BY};
 use crate::graph::materialize;
 use crate::journal::Journal;
 use serde_json::{json, Value};
@@ -49,7 +49,13 @@ pub fn sync(root: &Path, include_outputs: bool) -> Result<SyncReport, WikiGraphE
         let output_root = canonical_root.join("03-output/projects");
         if output_root.exists() {
             let mut output_paths = Vec::new();
-            collect_markdown(&output_root, &output_root, 0, &mut output_paths, &mut warnings)?;
+            collect_markdown(
+                &output_root,
+                &output_root,
+                0,
+                &mut output_paths,
+                &mut warnings,
+            )?;
             for path in output_paths {
                 match parse_output_page(&canonical_root, &output_root, &path) {
                     Ok(page) => output_pages.push(page),
@@ -59,7 +65,9 @@ pub fn sync(root: &Path, include_outputs: bool) -> Result<SyncReport, WikiGraphE
                             .unwrap_or(&path)
                             .to_string_lossy()
                             .into_owned();
-                        warnings.push(format!("skipped unreadable output page {rel_path}: {error}"));
+                        warnings.push(format!(
+                            "skipped unreadable output page {rel_path}: {error}"
+                        ));
                     }
                 }
             }
@@ -351,8 +359,7 @@ fn parse_output_page(
     let tags = required_string_list(doc, "tags", path)?;
     let sources = required_string_list(doc, "sources", path)?;
     let related = required_string_list(doc, "related", path)?;
-    let node_id = optional_scalar(doc, "node_id", path)?;
-    let legacy_id = optional_scalar(doc, "id", path)?;
+    let explicit_id = optional_scalar(doc, "node_id")?;
 
     let relative = path.strip_prefix(output_root).map_err(|_| {
         WikiGraphError::Identity(format!("output page escaped 03-output: {}", path.display()))
@@ -367,7 +374,7 @@ fn parse_output_page(
         tags,
         sources,
         related,
-        explicit_id: node_id.or(legacy_id),
+        explicit_id,
         body: body.to_string(),
         sha256: crate::ids::sha256_hex(&bytes),
         id: String::new(),
@@ -385,7 +392,7 @@ fn required_scalar(doc: &Yaml, key: &str, path: &Path) -> Result<String, WikiGra
     }
 }
 
-fn optional_scalar(doc: &Yaml, key: &str, path: &Path) -> Result<Option<String>, WikiGraphError> {
+fn optional_scalar(doc: &Yaml, key: &str) -> Result<Option<String>, WikiGraphError> {
     match &doc[key] {
         Yaml::BadValue | Yaml::Null => Ok(None),
         value => {

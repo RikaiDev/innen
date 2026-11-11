@@ -10,6 +10,7 @@ mod record;
 pub mod attachments;
 pub mod checkpoint;
 pub mod compact;
+pub mod compress;
 pub mod deltas;
 pub mod grammar;
 pub mod opencode_db;
@@ -30,7 +31,9 @@ pub use pickup::{
 };
 pub use prune::{prune_page, PruneOptions, PruneReceipt};
 pub(crate) use read::stream_dialogue;
-pub use read::{read, read_lines};
+pub use read::{
+    read, read_all_dialogue, read_all_dialogue_by_id, read_all_dialogue_with_source, read_lines,
+};
 pub use record::{brief, Brief, EvidencePointer, Record};
 pub use resume::{find_all_candidates, find_project_candidates, Candidate, ResumeTarget};
 pub use scan::{ScanLimits, ScanResult};

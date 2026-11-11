@@ -175,6 +175,72 @@ pub fn dialogue(source: Source, event: Value) -> Result<Option<Value>, ReadError
             };
             (role, text(payload.get("content").unwrap_or(&Value::Null)))
         }
+        Source::Freebuff => {
+            // Desktop format: role + parts_json
+            if let Some(role) = event.get("role").and_then(Value::as_str) {
+                let role = match role {
+                    "user" => "user",
+                    "assistant" => "assistant",
+                    _ => return Ok(None),
+                };
+                let content = if let Some(parts) = event.get("parts_json").and_then(Value::as_array)
+                {
+                    parts
+                        .iter()
+                        .filter_map(|part| {
+                            let kind = part.get("kind").and_then(Value::as_str).unwrap_or("");
+                            if kind == "text" {
+                                part.get("text").and_then(Value::as_str).map(str::to_string)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    String::new()
+                };
+                (role, content)
+            } else {
+                // CLI format: variant + blocks/content
+                let variant = event.get("variant").and_then(Value::as_str).unwrap_or("");
+                let role = match variant {
+                    "user" => "user",
+                    "ai" => "assistant",
+                    _ => return Ok(None),
+                };
+                let content = if role == "user" {
+                    event
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                } else if let Some(blocks) = event.get("blocks").and_then(Value::as_array) {
+                    blocks
+                        .iter()
+                        .filter_map(|block| {
+                            let btype = block.get("type").and_then(Value::as_str).unwrap_or("");
+                            if btype == "text" {
+                                block
+                                    .get("content")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    event
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                (role, content)
+            }
+        }
         Source::Vscode => unreachable!("handled above"),
     };
     if !matches!(role, "user" | "assistant") || content.is_empty() {

@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.21.0] - 2026-11-11
+
+### Added
+
+- Semantic conversation compression for RAG retrieval and cross-tool handoff:
+  extracts decisions, code changes, blockers, handoff instructions, narrative
+  arc, requirements, deliverables, task state, unfinished score, and handoff
+  priority; writes `Conversation`/`Knowledge` nodes with `DERIVED_FROM` and
+  `DISCUSSED_IN` edges.
+- `innen compress <session>` CLI command (JSON or `--output human`) to read and
+  compress a conversation by ID.
+- Freebuff (CLI and Desktop) conversation source: `--source freebuff`
+  (`codebuff` alias) for `conversation`, `resume`, `unfinished`, `pickup`,
+  `checkpoint`, `harvest`, and `compress`. CLI reads
+  `~/.config/manicode/projects/<project>/chats/<timestamp>/chat-messages.json`;
+  Desktop reads `~/.config/freebuff-desktop/projects/<project-dir>/desktop-v2.db`
+  (`threads`/`messages` with `parts_json`). Session retention refuses
+  destructive delete for Freebuff.
+
+### Changed
+
+- Session retention: checkpoint-only gate removed; unattested sessions get
+  `BLOCKER_NEEDS_COMPRESSION` and require exact attestation for eligibility.
+  Sweep treats `[BLOCKER_ATTESTATION_MISSING]` and `[BLOCKER_NEEDS_COMPRESSION]`
+  as compactable for missing extraction.
+- Transcript readers expose `read_all_dialogue`, `read_all_dialogue_by_id`,
+  and `read_all_dialogue_with_source` for compression/CLI use.
+
+### Fixed
+
+- Wiki graph: explicit frontmatter IDs accept only `node_id` (legacy `id`
+  compatibility removed); output verification/sync and source resolution
+  cleaned up.
+- UTF-8-safe truncation in conversation compression extractors.
+- Harvest/session retention test and warning cleanups.
+
 ## [0.18.1] - 2026-11-08
 
 ### Fixed

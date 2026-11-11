@@ -5,8 +5,14 @@
 //! which are almost all of a native session's bytes and are never needed to
 //! continue work. The compact transcript becomes the knowledge node that
 //! authorizes purging the native bundle.
+//!
+//! Additionally creates a compressed Conversation node with semantic extraction
+//! (decisions, code changes, blockers, handoffs, requirements) for RAG retrieval.
 
 use super::*;
+use crate::conversation::compress::{
+    compress_conversation, graph_write::write_compressed_conversation as write_compressed,
+};
 use crate::conversation::sources::Located;
 use std::io::Write;
 
@@ -121,7 +127,24 @@ pub(super) fn compact_and_attest(
     }
     fs::rename(&partial, &path).map_err(|error| io(&path, error))?;
 
+    // Create compressed conversation with semantic extraction
     let conversation_id = format!("conversation:{source}:{}", candidate.id);
+    let records = crate::conversation::read_all_dialogue(&located, &candidate.id)?;
+    let latest_checkpoint =
+        crate::conversation::checkpoint::latest_checkpoint_for_session(root, &candidate.id)?;
+    let compressed = compress_conversation(
+        &candidate.id,
+        candidate.source,
+        candidate.project.as_deref().unwrap_or("unknown"),
+        &records,
+        &before.sha256,
+        before.bytes,
+        true,
+        latest_checkpoint.as_ref(),
+    )?;
+    let mut graph = load_graph(root)?;
+    write_compressed(&mut graph, &compressed)?;
+
     let node_id = format!(
         "compact-transcript:{source}:{}:{}",
         candidate.id,
@@ -134,7 +157,6 @@ pub(super) fn compact_and_attest(
             .append(op, &payload)
             .map_err(|error| Error::Journal(error.to_string()))
     };
-    let graph = load_graph(root)?;
     if !graph.nodes.contains_key(&conversation_id) {
         append(
             "node.upsert",

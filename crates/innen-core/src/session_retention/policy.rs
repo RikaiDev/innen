@@ -1,5 +1,7 @@
 use super::activity::Activity;
 use super::*;
+use crate::session_retention::types::BLOCKER_NEEDS_COMPRESSION;
+
 pub(super) fn assess_candidate(
     root: &Path,
     candidate: &Candidate,
@@ -15,12 +17,6 @@ pub(super) fn assess_candidate_with_graph(
     retention_days: u64,
 ) -> Result<Assessment, Error> {
     let cutoff = cutoff_utc(retention_days);
-    // A store can keep a session row after its files are gone. That is the
-    // desired end state, so it is decided before every gate: an absent bundle
-    // has no bytes to protect, no attestation to prove, and nothing to purge.
-    // Checking later left these rows to fail on `assessment_error` inside
-    // `hash_targets`, which made every plan and sweep fail forever on sessions
-    // that were already clean.
     let targets = candidate_targets(candidate);
     if !targets.iter().any(|target| target.exists()) {
         return Ok(Assessment {
@@ -63,35 +59,11 @@ pub(super) fn assess_candidate_with_graph(
             targets: candidate_targets(candidate),
         });
     }
-    let proof_candidates = graph
-        .nodes
-        .values()
-        .filter(|node| {
-            node.get("schema").and_then(Value::as_str) == Some(SCHEMA)
-                && node.get("session_id").and_then(Value::as_str) == Some(candidate.id.as_str())
-                && node.get("source").and_then(Value::as_str) == Some(candidate.source.as_str())
-                && node.get("extraction_complete").and_then(Value::as_bool) == Some(true)
-                && node.get("session_closed").and_then(Value::as_bool) == Some(true)
-        })
-        .collect::<Vec<_>>();
-    if proof_candidates.is_empty() {
-        return Ok(Assessment {
-            session_id: candidate.id.clone(),
-            source: candidate.source.as_str().into(),
-            modified: candidate.modified.clone(),
-            cutoff_utc: cutoff,
-            source_bytes: measured_bytes(candidate),
-            source_sha256: String::new(),
-            eligible: false,
-            blockers: vec!["no complete extraction attestation exists for this session".into()],
-            blocker_codes: vec![BLOCKER_ATTESTATION_MISSING.into()],
-            targets: candidate_targets(candidate),
-        });
-    }
 
     let bundle = bundle(candidate)?;
     let mut blockers = Vec::new();
     let mut blocker_codes = Vec::new();
+
     if matches!(candidate.source, Source::Opencode | Source::Kilo) {
         let children = match candidate.source {
             Source::Kilo => {
@@ -109,57 +81,78 @@ pub(super) fn assess_candidate_with_graph(
             blocker_codes.push(BLOCKER_CHILD_SESSIONS.into());
         }
     }
-    let proof = proof_candidates.into_iter().find(|node| {
-        node.get("source_sha256").and_then(Value::as_str) == Some(bundle.sha256.as_str())
-    });
-    match proof {
-        None => {
-            blockers
-                .push("no exact, complete extraction attestation for current source bytes".into());
-            blocker_codes.push(BLOCKER_ATTESTATION_MISSING.into());
-        }
-        Some(proof) => {
-            let conversation_id = format!(
-                "conversation:{}:{}",
-                candidate.source.as_str(),
-                candidate.id
-            );
-            let knowledge = proof
-                .get("knowledge_node_ids")
-                .and_then(Value::as_array)
-                .map(|ids| {
-                    ids.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if knowledge.is_empty() {
-                blockers.push("attestation has no knowledge nodes".into());
-                blocker_codes.push(BLOCKER_KNOWLEDGE_MISSING.into());
+
+    let proof_candidates = graph
+        .nodes
+        .values()
+        .filter(|node| {
+            node.get("schema").and_then(Value::as_str) == Some(SCHEMA)
+                && node.get("session_id").and_then(Value::as_str) == Some(candidate.id.as_str())
+                && node.get("source").and_then(Value::as_str) == Some(candidate.source.as_str())
+                && node.get("extraction_complete").and_then(Value::as_bool) == Some(true)
+                && node.get("session_closed").and_then(Value::as_bool) == Some(true)
+        })
+        .collect::<Vec<_>>();
+
+    let already_compressed = !proof_candidates.is_empty();
+    if already_compressed {
+        let proof = proof_candidates.into_iter().find(|node| {
+            node.get("source_sha256").and_then(Value::as_str) == Some(bundle.sha256.as_str())
+        });
+        match proof {
+            None => {
+                blockers.push(
+                    "no exact, complete extraction attestation for current source bytes".into(),
+                );
+                blocker_codes.push(BLOCKER_ATTESTATION_MISSING.into());
             }
-            for id in &knowledge {
-                if !graph.nodes.contains_key(id) {
-                    blockers.push(format!("knowledge node disappeared: {id}"));
-                    blocker_codes.push(BLOCKER_KNOWLEDGE_MISSING.into());
-                    continue;
-                }
-                let linked = graph.edges.iter().any(|edge| {
-                    !edge.retracted
-                        && edge.from == *id
-                        && edge.to == conversation_id
-                        && matches!(
-                            edge.edge.to_string().as_str(),
-                            "DERIVED_FROM" | "DISCUSSED_IN"
-                        )
-                });
-                if !linked {
-                    blockers.push(format!("knowledge provenance edge disappeared: {id}"));
+            Some(proof) => {
+                let conversation_id = format!(
+                    "conversation:{}:{}",
+                    candidate.source.as_str(),
+                    candidate.id
+                );
+                let knowledge = proof
+                    .get("knowledge_node_ids")
+                    .and_then(Value::as_array)
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if knowledge.is_empty() {
+                    blockers.push("attestation has no knowledge nodes".into());
                     blocker_codes.push(BLOCKER_KNOWLEDGE_MISSING.into());
                 }
+                for id in &knowledge {
+                    if !graph.nodes.contains_key(id) {
+                        blockers.push(format!("knowledge node disappeared: {id}"));
+                        blocker_codes.push(BLOCKER_KNOWLEDGE_MISSING.into());
+                        continue;
+                    }
+                    let linked = graph.edges.iter().any(|edge| {
+                        !edge.retracted
+                            && edge.from == *id
+                            && edge.to == conversation_id
+                            && matches!(
+                                edge.edge.to_string().as_str(),
+                                "DERIVED_FROM" | "DISCUSSED_IN"
+                            )
+                    });
+                    if !linked {
+                        blockers.push(format!("knowledge provenance edge disappeared: {id}"));
+                        blocker_codes.push(BLOCKER_KNOWLEDGE_MISSING.into());
+                    }
+                }
             }
         }
+    } else {
+        blockers.push("session needs compression before purge eligibility".into());
+        blocker_codes.push(BLOCKER_NEEDS_COMPRESSION.into());
     }
+
     if blockers.is_empty() {
         match session_activity(&liveness_targets(candidate.source, &bundle.targets)) {
             Activity::Idle => {}
@@ -175,6 +168,7 @@ pub(super) fn assess_candidate_with_graph(
             }
         }
     }
+
     Ok(Assessment {
         session_id: candidate.id.clone(),
         source: candidate.source.as_str().into(),

@@ -1,6 +1,7 @@
 mod artifact;
 mod checkpoint;
 mod commands;
+mod compress;
 mod config;
 mod constraint;
 mod conversation;
@@ -51,6 +52,7 @@ pub(crate) fn run() -> i32 {
         Commands::Conversation(args) => conversation::cmd_conversation(&cli.format, args),
         Commands::Resume(args) => resume::cmd_resume(&cli.format, args),
         Commands::Checkpoint(args) => checkpoint::cmd_checkpoint(&cli.format, args),
+        Commands::Compress(args) => compress::cmd_compress(&cli.format, args),
         Commands::Unfinished(args) => unfinished::cmd_unfinished(&cli.format, args),
         Commands::Pickup(args) => pickup::cmd_pickup(&cli.format, args),
         Commands::Query(args) => {
@@ -196,7 +198,9 @@ pub(crate) fn run() -> i32 {
             let root = resolve_or_exit!(cli.root.clone());
             trace::cmd_trace(&root, args)
         }
-        Commands::Wiki { op: WikiOp::Sync { include_outputs } } => {
+        Commands::Wiki {
+            op: WikiOp::Sync { include_outputs },
+        } => {
             let root = resolve_or_exit!(cli.root.clone());
             match innen_core::wiki_graph::sync(&root, *include_outputs) {
                 Ok(report) => {
@@ -223,7 +227,13 @@ pub(crate) fn run() -> i32 {
                 }
             }
         }
-        Commands::Wiki { op: WikiOp::Verify { include_outputs, check_drift } } => {
+        Commands::Wiki {
+            op:
+                WikiOp::Verify {
+                    include_outputs,
+                    check_drift,
+                },
+        } => {
             let root = resolve_or_exit!(cli.root.clone());
             match innen_core::wiki_graph::verify(&root, *include_outputs, *check_drift) {
                 Ok(report) => {

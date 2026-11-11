@@ -13,7 +13,7 @@ pub(super) struct UnfinishedArgs {
     #[arg(long)]
     source_root: Option<PathBuf>,
     /// Tool to filter (auto, agy, codex, ...).
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "claude", "codex", "copilot", "cursor", "gemini", "grok", "kilo", "kiro", "mcode", "opencode", "qwen", "vscode"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "claude", "codex", "copilot", "cursor", "freebuff", "gemini", "grok", "kilo", "kiro", "mcode", "opencode", "qwen", "vscode"])]
     source: String,
     /// Time cutoff (default yesterday+today; YYYY-MM-DD, RFC3339, 2d, 48h, today, yesterday).
     #[arg(long)]

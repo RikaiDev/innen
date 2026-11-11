@@ -5,6 +5,7 @@
 //! JSON reports, so they are a contract with persisted data, not free text.
 
 use super::*;
+use crate::conversation::ReadError;
 
 pub(super) const SCHEMA: &str = "innen.session-retention.v1";
 
@@ -20,6 +21,12 @@ pub enum Error {
     Proof(String),
     #[error("purge failed: {0}")]
     Purge(String),
+}
+
+impl From<ReadError> for Error {
+    fn from(e: ReadError) -> Self {
+        Error::Conversation(e.0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +105,9 @@ pub(super) const BLOCKER_ASSESSMENT_ERROR: &str = "assessment_error";
 /// reporting that as an error made every later plan and sweep fail forever on
 /// rows that had nothing left to clean.
 pub(super) const BLOCKER_ALREADY_CLEANED: &str = "already_cleaned";
+/// Session is past retention window but has not been compressed yet.
+/// Compression must run before purge eligibility is granted.
+pub(super) const BLOCKER_NEEDS_COMPRESSION: &str = "needs_compression";
 
 /// Hot-session window, in days, kept before an attested session may be purged.
 pub const DEFAULT_RETENTION_DAYS: u64 = 7;

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::layers::{parse_env_bool, read_machine_layer, read_toml_layer, Layer};
 use super::{CliOverrides, Config};
-use crate::config::global::{get_global_value_with_env, global_config_path_with_env};
+use crate::config::global::global_config_path_with_env;
 
 /// Default harvest patterns following llm-wiki "File over app" principle.
 const DEFAULT_HARVEST_PATTERNS: &[&str] = &["**/*.md", "**/*.json", "**/*.jsonl", "**/*.txt"];
@@ -94,7 +94,10 @@ fn merge(
         root: root_arg.to_path_buf(),
         format: "human".to_string(),
         inbox_path: PathBuf::from("00-inbox/harvest"),
-        harvest_patterns: DEFAULT_HARVEST_PATTERNS.iter().map(|s| s.to_string()).collect(),
+        harvest_patterns: DEFAULT_HARVEST_PATTERNS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         rebuild_on_open: false,
     };
     if let Some(v) = &toml.root {

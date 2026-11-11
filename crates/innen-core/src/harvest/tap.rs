@@ -21,7 +21,7 @@ impl DirectoryTap {
     fn inbox_dir(&self) -> PathBuf {
         self.dir.join("00-inbox/harvest")
     }
-    
+
     fn config(&self) -> crate::config::Config {
         load(&self.dir, &CliOverrides::default()).0
     }

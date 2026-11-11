@@ -29,7 +29,7 @@ pub(super) struct CheckpointRecordArgs {
     #[arg(long)]
     session: Option<String>,
     /// Tool source (auto, agy, codex, ...).
-    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "claude", "codex", "copilot", "cursor", "gemini", "grok", "kilo", "kiro", "mcode", "opencode", "qwen", "vscode"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "agy", "antigravity", "claude", "codex", "copilot", "cursor", "freebuff", "gemini", "grok", "kilo", "kiro", "mcode", "opencode", "qwen", "vscode"])]
     source: String,
     /// Project root directory. Defaults to current working directory.
     #[arg(long)]

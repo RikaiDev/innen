@@ -15,24 +15,24 @@ use super::tap::TAP_ID;
 pub(super) fn list_inbox_files(root: &Path, config: &Config) -> Vec<String> {
     let inbox = root.join(&config.inbox_path);
     let mut names = Vec::new();
-    
+
     // Walk the inbox directory recursively
     if !inbox.exists() {
         return Vec::new();
     }
-    
+
     let walker = walkdir::WalkDir::new(&inbox).into_iter();
-    
+
     for entry in walker.flatten() {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
-        
+
         // Check if file matches any harvest pattern
         let rel = path.strip_prefix(&inbox).unwrap_or(path);
         let rel_str = rel.to_string_lossy();
-        
+
         let matches = config.harvest_patterns.iter().any(|pattern| {
             // Simple glob matching: **/*.ext -> ends with .ext
             if pattern.starts_with("**/") {
@@ -56,12 +56,12 @@ pub(super) fn list_inbox_files(root: &Path, config: &Config) -> Vec<String> {
                 rel_str == *pattern
             }
         });
-        
+
         if matches {
             names.push(rel_str.into_owned());
         }
     }
-    
+
     names.sort();
     names
 }

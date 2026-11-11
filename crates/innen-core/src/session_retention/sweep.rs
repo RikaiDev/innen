@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_retention::types::BLOCKER_NEEDS_COMPRESSION;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SweepItem {
@@ -33,7 +34,15 @@ pub struct SweepReceipt {
 }
 
 fn only_missing_extraction(assessment: &Assessment) -> bool {
-    assessment.blocker_codes == [BLOCKER_ATTESTATION_MISSING]
+    let blockers: BTreeSet<_> = assessment.blocker_codes.iter().cloned().collect();
+    blockers
+        == [BLOCKER_ATTESTATION_MISSING.to_string()]
+            .into_iter()
+            .collect()
+        || blockers
+            == [BLOCKER_NEEDS_COMPRESSION.to_string()]
+                .into_iter()
+                .collect()
 }
 
 pub fn sweep(

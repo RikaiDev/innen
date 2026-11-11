@@ -8,4 +8,4 @@ mod verify;
 
 pub use sync::sync;
 pub use types::{SyncReport, WikiGraphError, MANAGED_BY};
-pub use verify::{VerifyReport, verify};
+pub use verify::{verify, VerifyReport};

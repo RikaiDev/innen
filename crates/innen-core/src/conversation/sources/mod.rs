@@ -4,6 +4,7 @@
 //! reader lives in [`super::opencode_db`] and is re-exported here so callers
 //! reach session storage through one module.
 pub use super::opencode_db::load_database;
+pub mod freebuff;
 pub mod kilo_db;
 pub mod kiro;
 pub(crate) use super::opencode_db::{
@@ -45,6 +46,7 @@ pub enum Source {
     Cursor,
     Vscode,
     Qwen,
+    Freebuff,
 }
 
 impl Source {
@@ -67,6 +69,7 @@ impl Source {
             Self::Cursor => "cursor",
             Self::Vscode => "vscode",
             Self::Qwen => "qwen",
+            Self::Freebuff => "freebuff",
         }
     }
 
@@ -85,6 +88,7 @@ impl Source {
             "cursor" => Ok(Self::Cursor),
             "vscode" => Ok(Self::Vscode),
             "qwen" => Ok(Self::Qwen),
+            "freebuff" | "codebuff" => Ok(Self::Freebuff),
             _ => Err(ReadError(format!("unknown source: {name}"))),
         }
     }
@@ -115,9 +119,29 @@ pub fn validate_id(id: &str) -> Result<String, ReadError> {
     {
         return Ok(id.into());
     }
+    // Freebuff CLI chat IDs are timestamp directory names like 2026-10-27T14-44-34.231Z
+    if is_freebuff_chat_id(id) {
+        return Ok(id.into());
+    }
     Err(ReadError(
-        "invalid UUID or native session ID: expected a full UUID or a native session ID (opencode/kilo ses_..., kiro sess_..., mcode mvs_...)".into(),
+        "invalid UUID or native session ID: expected a full UUID or a native session ID (opencode/kilo ses_..., kiro sess_..., mcode mvs_..., freebuff chat timestamp)".into(),
     ))
+}
+
+fn is_freebuff_chat_id(id: &str) -> bool {
+    // 2026-10-27T14-44-34.231Z
+    if id.len() != 24 || !id.ends_with('Z') {
+        return false;
+    }
+    let b = id.as_bytes();
+    let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 22];
+    digits.iter().all(|&i| b[i].is_ascii_digit())
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && b[13] == b'-'
+        && b[16] == b'-'
+        && b[19] == b'.'
 }
 
 /// Resolves the Mcode runtime-state database under a store root: the file
@@ -183,6 +207,11 @@ pub(crate) fn default_stores() -> Result<Vec<(Source, PathBuf)>, ReadError> {
         (
             Source::Mcode,
             home.join(".minimax/v2/sqlite/runtime-state.sqlite"),
+        ),
+        (Source::Freebuff, home.join(".config/manicode/projects")),
+        (
+            Source::Freebuff,
+            home.join(".config/freebuff-desktop/projects"),
         ),
     ];
     for name in ["antigravity-cli", "antigravity", "antigravity-ide"] {

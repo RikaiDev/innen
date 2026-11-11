@@ -2,14 +2,14 @@
 
 use crate::graph::materialize;
 use crate::journal::Journal;
-use crate::wiki_graph::parse::{collect_markdown, parse_page, split_frontmatter, field_error};
-use crate::wiki_graph::projection::{absolute_local_path, resolve_source, unwrapped_ref};
-use crate::wiki_graph::types::{WikiGraphError, MANAGED_BY, WikiPage};
+use crate::wiki_graph::parse::{collect_markdown, field_error, parse_page, split_frontmatter};
+use crate::wiki_graph::projection::{absolute_local_path, unwrapped_ref};
+use crate::wiki_graph::types::{WikiGraphError, WikiPage};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct VerifyReport {
@@ -60,7 +60,7 @@ pub fn verify(
         paths.sort();
         for path in paths {
             match parse_page(&canonical_root, &wiki_root, &path) {
-                Ok(page) => all_pages.push((page, "wiki")),
+                Ok(page) => all_pages.push(page),
                 Err(error) => {
                     let wiki_path = path
                         .strip_prefix(&wiki_root)
@@ -82,14 +82,16 @@ pub fn verify(
             paths.sort();
             for path in paths {
                 match parse_output_page(&canonical_root, &output_root, &path) {
-                    Ok(page) => all_pages.push((page, "output")),
+                    Ok(page) => all_pages.push(page),
                     Err(error) => {
                         let rel_path = path
                             .strip_prefix(&output_root)
                             .unwrap_or(&path)
                             .to_string_lossy()
                             .into_owned();
-                        warnings.push(format!("skipped unreadable output page {rel_path}: {error}"));
+                        warnings.push(format!(
+                            "skipped unreadable output page {rel_path}: {error}"
+                        ));
                     }
                 }
             }
@@ -118,24 +120,36 @@ pub fn verify(
 
     // Build artifact index by path for drift checking
     let mut artifact_by_path: BTreeMap<String, &Value> = BTreeMap::new();
-    for (id, node) in &graph.nodes {
+    for node in graph.nodes.values() {
         if node.get("type").and_then(Value::as_str) == Some("Artifact") {
-            if let Some(path) = node.get("provenance").and_then(|v| v.get("path")).and_then(Value::as_str) {
+            if let Some(path) = node
+                .get("provenance")
+                .and_then(|v| v.get("path"))
+                .and_then(Value::as_str)
+            {
                 artifact_by_path.insert(path.to_string(), node);
             }
-            if let Some(locator_path) = node.get("locator").and_then(|v| v.get("path")).and_then(Value::as_str) {
+            if let Some(locator_path) = node
+                .get("locator")
+                .and_then(|v| v.get("path"))
+                .and_then(Value::as_str)
+            {
                 artifact_by_path.insert(locator_path.to_string(), node);
             }
         }
     }
 
-    for (page, page_type) in all_pages {
+    for page in all_pages {
         for source_ref in &page.sources {
             report.sources_checked += 1;
             let raw = source_ref.trim();
 
             // Skip graph: and conversation: and URL sources
-            if raw.starts_with("graph:") || raw.starts_with("conversation:") || raw.starts_with("http://") || raw.starts_with("https://") {
+            if raw.starts_with("graph:")
+                || raw.starts_with("conversation:")
+                || raw.starts_with("http://")
+                || raw.starts_with("https://")
+            {
                 continue;
             }
 
@@ -242,9 +256,11 @@ fn parse_output_page(
         message: "expected opening and closing `---` delimiters".to_string(),
     })?;
 
-    let docs = yaml_rust2::YamlLoader::load_from_str(yaml).map_err(|error| WikiGraphError::Frontmatter {
-        path: path.to_path_buf(),
-        message: error.to_string(),
+    let docs = yaml_rust2::YamlLoader::load_from_str(yaml).map_err(|error| {
+        WikiGraphError::Frontmatter {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
     })?;
     if docs.len() != 1 || !matches!(docs.first(), Some(yaml_rust2::Yaml::Hash(_))) {
         return Err(WikiGraphError::Frontmatter {
@@ -258,8 +274,7 @@ fn parse_output_page(
     let tags = required_string_list(doc, "tags", path)?;
     let sources = required_string_list(doc, "sources", path)?;
     let related = required_string_list(doc, "related", path)?;
-    let node_id = optional_scalar(doc, "node_id", path)?;
-    let legacy_id = optional_scalar(doc, "id", path)?;
+    let explicit_id = optional_scalar(doc, "node_id")?;
 
     let relative = path.strip_prefix(output_root).map_err(|_| {
         WikiGraphError::Identity(format!("output page escaped 03-output: {}", path.display()))
@@ -274,14 +289,18 @@ fn parse_output_page(
         tags,
         sources,
         related,
-        explicit_id: node_id.or(legacy_id),
+        explicit_id,
         body: body.to_string(),
         sha256: crate::ids::sha256_hex(&bytes),
         id: String::new(),
     })
 }
 
-fn required_scalar(doc: &yaml_rust2::Yaml, key: &str, path: &Path) -> Result<String, WikiGraphError> {
+fn required_scalar(
+    doc: &yaml_rust2::Yaml,
+    key: &str,
+    path: &Path,
+) -> Result<String, WikiGraphError> {
     match &doc[key] {
         yaml_rust2::Yaml::String(value) => Ok(value.clone()),
         yaml_rust2::Yaml::Integer(value) => Ok(value.to_string()),
@@ -292,7 +311,7 @@ fn required_scalar(doc: &yaml_rust2::Yaml, key: &str, path: &Path) -> Result<Str
     }
 }
 
-fn optional_scalar(doc: &yaml_rust2::Yaml, key: &str, path: &Path) -> Result<Option<String>, WikiGraphError> {
+fn optional_scalar(doc: &yaml_rust2::Yaml, key: &str) -> Result<Option<String>, WikiGraphError> {
     match &doc[key] {
         yaml_rust2::Yaml::BadValue | yaml_rust2::Yaml::Null => Ok(None),
         value => {
@@ -308,7 +327,11 @@ fn optional_scalar(doc: &yaml_rust2::Yaml, key: &str, path: &Path) -> Result<Opt
     }
 }
 
-fn required_string_list(doc: &yaml_rust2::Yaml, key: &str, path: &Path) -> Result<Vec<String>, WikiGraphError> {
+fn required_string_list(
+    doc: &yaml_rust2::Yaml,
+    key: &str,
+    path: &Path,
+) -> Result<Vec<String>, WikiGraphError> {
     match &doc[key] {
         yaml_rust2::Yaml::BadValue => Err(field_error(path, key, "is missing")),
         yaml_rust2::Yaml::Null => Ok(Vec::new()),

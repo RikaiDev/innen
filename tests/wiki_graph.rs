@@ -47,7 +47,7 @@ fn credential_like_wiki_content_is_not_projected() {
     let text = std::fs::read_to_string(&path).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
     std::fs::write(&path, text).unwrap();
     // The offending page is skipped, not fatal, and never reaches the journal.
-    let report = wiki_graph::sync(root.path()).expect("sync reports rather than aborting");
+    let report = wiki_graph::sync(root.path(), false).expect("sync reports rather than aborting");
     assert_eq!(report.pages_skipped, 1);
     assert_eq!(report.pages_scanned, 0);
     assert!(
@@ -71,7 +71,7 @@ fn one_unreadable_page_does_not_hold_the_rest_of_the_graph_out() {
     let text = std::fs::read_to_string(&bad).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
     std::fs::write(&bad, text).unwrap();
 
-    let report = wiki_graph::sync(root.path()).expect("sync completes");
+    let report = wiki_graph::sync(root.path(), false).expect("sync completes");
     assert_eq!(report.pages_skipped, 1);
     assert_eq!(report.pages_scanned, 2);
     assert_eq!(
@@ -98,7 +98,7 @@ fn a_page_that_becomes_unreadable_keeps_its_node_and_edges() {
     let root = tempfile::tempdir().expect("temp root");
     write_page(root.path(), "ai/target.md", "[]", "[]");
     write_page(root.path(), "ai/holder.md", "[\"[[target]]\"]", "[]");
-    let first = wiki_graph::sync(root.path()).expect("first sync");
+    let first = wiki_graph::sync(root.path(), false).expect("first sync");
     assert_eq!(first.wiki_nodes_created, 2);
     assert!(first.edges_asserted >= 1);
 
@@ -107,7 +107,7 @@ fn a_page_that_becomes_unreadable_keeps_its_node_and_edges() {
         std::fs::read_to_string(&holder).unwrap() + "\n-----BEGIN PRIVATE KEY-----\nfixture\n";
     std::fs::write(&holder, broken).unwrap();
 
-    let second = wiki_graph::sync(root.path()).expect("second sync completes");
+    let second = wiki_graph::sync(root.path(), false).expect("second sync completes");
     assert_eq!(second.pages_skipped, 1);
     assert_eq!(
         second.wiki_nodes_marked_missing, 0,
@@ -143,7 +143,7 @@ fn projects_wiki_sources_related_and_is_idempotent() {
         "target",
     );
 
-    let first = wiki_graph::sync(root.path()).expect("first sync");
+    let first = wiki_graph::sync(root.path(), false).expect("first sync");
     assert_eq!(first.pages_scanned, 2);
     assert_eq!(first.wiki_nodes_created, 2);
     assert_eq!(first.source_nodes_created, 2);
@@ -171,7 +171,7 @@ fn projects_wiki_sources_related_and_is_idempotent() {
     }));
 
     let before = journal_lines(root.path());
-    let second = wiki_graph::sync(root.path()).expect("idempotent sync");
+    let second = wiki_graph::sync(root.path(), false).expect("idempotent sync");
     assert_eq!(journal_lines(root.path()), before);
     assert_eq!(second.wiki_nodes_created + second.wiki_nodes_updated, 0);
     assert_eq!(second.source_nodes_created + second.source_nodes_updated, 0);
@@ -182,7 +182,7 @@ fn projects_wiki_sources_related_and_is_idempotent() {
 fn changed_sources_retract_owned_edge_and_preserve_foreign_edge() {
     let root = tempfile::tempdir().expect("temp root");
     write_page(root.path(), "page.md", "old-source.txt", "[]");
-    wiki_graph::sync(root.path()).expect("initial sync");
+    wiki_graph::sync(root.path(), false).expect("initial sync");
     let before = graph(root.path());
     let wiki_id = before
         .nodes
@@ -207,7 +207,7 @@ fn changed_sources_retract_owned_edge_and_preserve_foreign_edge() {
     drop(journal);
 
     write_page(root.path(), "page.md", "new-source.txt", "[]");
-    let report = wiki_graph::sync(root.path()).expect("changed sync");
+    let report = wiki_graph::sync(root.path(), false).expect("changed sync");
     assert_eq!(report.edges_retracted, 1);
     assert_eq!(report.edges_asserted, 1);
 
@@ -243,7 +243,7 @@ fn malformed_yaml_writes_nothing() {
 
     // Malformed frontmatter is a per-page fault: it is skipped and named, and
     // it reaches neither the graph nor the journal.
-    let report = wiki_graph::sync(root.path()).expect("sync reports rather than aborting");
+    let report = wiki_graph::sync(root.path(), false).expect("sync reports rather than aborting");
     assert_eq!(report.pages_skipped, 1);
     assert_eq!(report.pages_scanned, 0);
     assert!(
@@ -266,7 +266,7 @@ fn source_targets_are_never_read_and_relative_escape_is_skipped() {
         "[\"missing/private/source.bin\", \"../../escape.txt\"]",
         "[]",
     );
-    let report = wiki_graph::sync(root.path()).expect("reference-only sync");
+    let report = wiki_graph::sync(root.path(), false).expect("reference-only sync");
     assert!(report
         .warnings
         .iter()
@@ -285,7 +285,7 @@ fn source_targets_are_never_read_and_relative_escape_is_skipped() {
 fn deleted_page_is_marked_missing_without_deleting_its_node() {
     let root = tempfile::tempdir().expect("temp root");
     write_page(root.path(), "page.md", "evidence.txt", "[]");
-    wiki_graph::sync(root.path()).expect("initial sync");
+    wiki_graph::sync(root.path(), false).expect("initial sync");
     let before = graph(root.path());
     let wiki_id = before
         .nodes
@@ -295,7 +295,7 @@ fn deleted_page_is_marked_missing_without_deleting_its_node() {
         .expect("wiki id");
     std::fs::remove_file(root.path().join("02-wiki/page.md")).expect("remove page fixture");
 
-    let report = wiki_graph::sync(root.path()).expect("missing-page sync");
+    let report = wiki_graph::sync(root.path(), false).expect("missing-page sync");
     assert_eq!(report.wiki_nodes_marked_missing, 1);
     assert_eq!(report.edges_retracted, 1);
     let after = graph(root.path());
@@ -321,7 +321,7 @@ fn traversal_skips_symlink_that_escapes_wiki_root() {
     )
     .expect("symlink");
 
-    let report = wiki_graph::sync(root.path()).expect("skip symlink");
+    let report = wiki_graph::sync(root.path(), false).expect("skip symlink");
     assert_eq!(report.pages_scanned, 0);
     assert!(report
         .warnings

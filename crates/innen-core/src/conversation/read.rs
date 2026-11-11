@@ -121,6 +121,22 @@ pub(crate) fn stream_dialogue(
             cursor += count;
         }
     }
+    if located.source == Source::Freebuff && sources::freebuff::is_desktop_db(path) {
+        for (index, event) in sources::freebuff::load_messages(located, id)?
+            .into_iter()
+            .enumerate()
+        {
+            emit(index, event)?;
+        }
+        return Ok(());
+    }
+    if located.source == Source::Freebuff {
+        let events = sources::freebuff::load_messages(located, id)?;
+        for (index, event) in events.into_iter().enumerate() {
+            emit(index, event)?;
+        }
+        return Ok(());
+    }
     if located.source == Source::Kiro {
         for (index, event) in sources::kiro::load_messages(path)?.into_iter().enumerate() {
             emit(index, event)?;
@@ -184,6 +200,40 @@ pub(crate) fn stream_dialogue(
         }));
     }
     Ok(())
+}
+
+/// Read all dialogue from a session as Records (for compression).
+pub fn read_all_dialogue(located: &Located, id: &str) -> Result<Vec<Record>, ReadError> {
+    let mut records = Vec::new();
+    stream_dialogue(located, id, &mut Vec::new(), |line, event| {
+        records.push(Record { line, event });
+        Ok(())
+    })?;
+    Ok(records)
+}
+
+/// Read all dialogue from a session by ID, resolving the location automatically.
+pub fn read_all_dialogue_by_id(
+    source_root: Option<&Path>,
+    source: &str,
+    id: &str,
+) -> Result<Vec<Record>, ReadError> {
+    let id = sources::validate_id(id)?;
+    let located = sources::locate(source_root, source, &id)?;
+    read_all_dialogue(&located, &id)
+}
+
+/// Read all dialogue from a session by ID, returning the source and records.
+pub fn read_all_dialogue_with_source(
+    source_root: Option<&Path>,
+    source: &str,
+    id: &str,
+) -> Result<(Source, Vec<Record>), ReadError> {
+    let id = sources::validate_id(id)?;
+    let located = sources::locate(source_root, source, &id)?;
+    let source = located.source;
+    let records = read_all_dialogue(&located, &id)?;
+    Ok((source, records))
 }
 
 /// Open a transcript as a byte stream, decompressing zstd-compressed rollouts.
@@ -269,7 +319,10 @@ fn read_pass(
     if located.source == Source::Cursor {
         page.warnings.push("Cursor exported transcripts may omit tool outputs; events cannot restore data absent from the export".into());
     }
-    if matches!(located.source, Source::Kilo | Source::Kiro) {
+    if matches!(
+        located.source,
+        Source::Kilo | Source::Kiro | Source::Freebuff
+    ) {
         page.warnings.push(format!(
             "{} transcript adapter is read-only in this build; extraction fidelity may vary by client version",
             located.source.as_str()
@@ -306,6 +359,36 @@ fn read_pass(
             }
             cursor += count;
         }
+    }
+    if located.source == Source::Freebuff && sources::freebuff::is_desktop_db(&path) {
+        let events = sources::freebuff::load_messages(&located, &id)?;
+        for (index, event) in events.into_iter().enumerate().skip(offset) {
+            if selected.is_some_and(|s| index + 1 > *s.last().unwrap()) {
+                break;
+            }
+            if selected.is_some_and(|s| !s.contains(&(index + 1))) {
+                continue;
+            }
+            if accept(&mut page, tally, event, index, limit, selected)? {
+                break;
+            }
+        }
+        return Ok(page);
+    }
+    if located.source == Source::Freebuff {
+        let events = sources::freebuff::load_messages(&located, &id)?;
+        for (index, event) in events.into_iter().enumerate().skip(offset) {
+            if selected.is_some_and(|s| index + 1 > *s.last().unwrap()) {
+                break;
+            }
+            if selected.is_some_and(|s| !s.contains(&(index + 1))) {
+                continue;
+            }
+            if accept(&mut page, tally, event, index, limit, selected)? {
+                break;
+            }
+        }
+        return Ok(page);
     }
     if located.source == Source::Kiro {
         let events = sources::kiro::load_messages(&path)?;

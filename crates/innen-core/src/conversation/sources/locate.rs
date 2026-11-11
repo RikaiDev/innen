@@ -123,6 +123,70 @@ pub fn locate(root: Option<&Path>, source: &str, id: &str) -> Result<Located, Re
                 let _ = walk(&sessions_root, kind, id, 4, &mut list);
             }
             list
+        } else if kind == Source::Freebuff {
+            let mut list = Vec::new();
+            // Freebuff Desktop: <projects>/<project-dir>/desktop-v2.db with thread id
+            if root.is_dir() {
+                // If root itself is a project dir with desktop-v2.db
+                let direct_db = if root.file_name().is_some_and(|n| n == "desktop-v2.db") {
+                    root.clone()
+                } else {
+                    root.join("desktop-v2.db")
+                };
+                if direct_db.try_exists().unwrap_or(false)
+                    && !sqlite(
+                        &direct_db,
+                        &format!(
+                            "SELECT json_object('id',id) FROM threads WHERE id='{}' LIMIT 1",
+                            id
+                        ),
+                    )
+                    .unwrap_or_default()
+                    .is_empty()
+                {
+                    list.push(direct_db);
+                }
+                if list.is_empty() {
+                    // Search project directories for desktop-v2.db
+                    if let Ok(entries) = fs::read_dir(&root) {
+                        for entry in entries.flatten() {
+                            let db = entry.path().join("desktop-v2.db");
+                            if db.try_exists().unwrap_or(false)
+                                && !sqlite(
+                                    &db,
+                                    &format!(
+                                        "SELECT json_object('id',id) FROM threads WHERE id='{}' LIMIT 1",
+                                        id
+                                    ),
+                                )
+                                .unwrap_or_default()
+                                .is_empty()
+                            {
+                                list.push(db);
+                            }
+                        }
+                    }
+                }
+            } else if root.try_exists().unwrap_or(false) {
+                // root is a db file
+                if !sqlite(
+                    &root,
+                    &format!(
+                        "SELECT json_object('id',id) FROM threads WHERE id='{}' LIMIT 1",
+                        id
+                    ),
+                )
+                .unwrap_or_default()
+                .is_empty()
+                {
+                    list.push(root.clone());
+                }
+            }
+            if list.is_empty() {
+                // Freebuff CLI: <projects>/<project>/chats/<timestamp>/chat-messages.json
+                let _ = walk(&root, kind, id, 5, &mut list);
+            }
+            list
         } else {
             let mut candidates = Vec::new();
             walk(&root, kind, id, 6, &mut candidates)?;
@@ -215,6 +279,26 @@ fn walk(
                             .and_then(|n| n.to_str())
                             .is_some_and(|dir| dir.ends_with(&suffix))
                     })
+            }
+            Source::Freebuff => {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // CLI: chat-messages.json inside a directory named with the chat timestamp id
+                (name == "chat-messages.json"
+                    && path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n == id))
+                    || (name == "desktop-v2.db"
+                        && sqlite(
+                            &path,
+                            &format!(
+                                "SELECT json_object('id',id) FROM threads WHERE id='{}' LIMIT 1",
+                                id
+                            ),
+                        )
+                        .ok()
+                        .is_some_and(|rows| !rows.is_empty()))
             }
             Source::Antigravity => {
                 (ext == "jsonl" && stem == id)
