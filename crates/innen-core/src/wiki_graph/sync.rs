@@ -1,17 +1,19 @@
 use super::identity::{assign_ids, changed_fields, wiki_node};
-use super::parse::{collect_markdown, parse_page};
+use super::parse::{collect_markdown, parse_page, split_frontmatter, field_error};
 use super::projection::{
     insert_edge, live_foreign_keys, live_owned_edges, resolve_source, Resolution, WikiResolver,
 };
-use super::types::{DesiredEdge, EdgeKey, SyncReport, WikiGraphError, MANAGED_BY};
+use super::types::{DesiredEdge, EdgeKey, SyncReport, WikiGraphError, MANAGED_BY, WikiPage};
 use crate::graph::materialize;
 use crate::journal::Journal;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use yaml_rust2::{Yaml, YamlLoader};
 
-pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
+pub fn sync(root: &Path, include_outputs: bool) -> Result<SyncReport, WikiGraphError> {
     let canonical_root = fs::canonicalize(root).map_err(|source| WikiGraphError::Io {
         path: root.to_path_buf(),
         source,
@@ -41,6 +43,29 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
     }
     paths.sort();
 
+    // Optionally scan 03-output/projects
+    let mut output_pages = Vec::new();
+    if include_outputs {
+        let output_root = canonical_root.join("03-output/projects");
+        if output_root.exists() {
+            let mut output_paths = Vec::new();
+            collect_markdown(&output_root, &output_root, 0, &mut output_paths, &mut warnings)?;
+            for path in output_paths {
+                match parse_output_page(&canonical_root, &output_root, &path) {
+                    Ok(page) => output_pages.push(page),
+                    Err(error) => {
+                        let rel_path = path
+                            .strip_prefix(&output_root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned();
+                        warnings.push(format!("skipped unreadable output page {rel_path}: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
     // This whole pass is deliberately before Journal::open.
     //
     // One unparseable page must not stop the projection: a single false
@@ -48,7 +73,7 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
     // graph. A page we cannot read is skipped and named in the report; its
     // existing node and edges are left untouched, because a page we cannot
     // read is not a page that was deleted.
-    let mut pages = Vec::with_capacity(paths.len());
+    let mut pages = Vec::with_capacity(paths.len() + output_pages.len());
     let mut skipped_paths: BTreeSet<String> = BTreeSet::new();
     for path in paths {
         match parse_page(&canonical_root, &wiki_root, &path) {
@@ -67,6 +92,8 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
             }
         }
     }
+    // Add output pages (they don't participate in skipped_paths tracking since they're not in 02-wiki)
+    pages.extend(output_pages);
     let skipped_count = skipped_paths.len() as u64;
 
     let journal = Journal::open(&canonical_root)?;
@@ -277,4 +304,128 @@ pub fn sync(root: &Path) -> Result<SyncReport, WikiGraphError> {
     report.warnings.sort();
     report.warnings.dedup();
     Ok(report)
+}
+
+fn parse_output_page(
+    root: &Path,
+    output_root: &Path,
+    path: &Path,
+) -> Result<WikiPage, WikiGraphError> {
+    let file = fs::File::open(path).map_err(|source| WikiGraphError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut bytes = Vec::new();
+    file.take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| WikiGraphError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(field_error(path, "page", "exceeds 4 MiB bound"));
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|error| WikiGraphError::Frontmatter {
+        path: path.to_path_buf(),
+        message: format!("Markdown is not UTF-8: {error}"),
+    })?;
+
+    let (yaml, body) = split_frontmatter(text).ok_or_else(|| WikiGraphError::Frontmatter {
+        path: path.to_path_buf(),
+        message: "expected opening and closing `---` delimiters".to_string(),
+    })?;
+
+    let docs = YamlLoader::load_from_str(yaml).map_err(|error| WikiGraphError::Frontmatter {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    if docs.len() != 1 || !matches!(docs.first(), Some(Yaml::Hash(_))) {
+        return Err(WikiGraphError::Frontmatter {
+            path: path.to_path_buf(),
+            message: "frontmatter must be one YAML mapping".to_string(),
+        });
+    }
+    let doc = &docs[0];
+
+    let title = required_scalar(doc, "title", path)?;
+    let tags = required_string_list(doc, "tags", path)?;
+    let sources = required_string_list(doc, "sources", path)?;
+    let related = required_string_list(doc, "related", path)?;
+    let node_id = optional_scalar(doc, "node_id", path)?;
+    let legacy_id = optional_scalar(doc, "id", path)?;
+
+    let relative = path.strip_prefix(output_root).map_err(|_| {
+        WikiGraphError::Identity(format!("output page escaped 03-output: {}", path.display()))
+    })?;
+    let wiki_path = relative.to_string_lossy().replace('\\', "/");
+    let absolute = root.join("03-output/projects").join(relative);
+
+    Ok(WikiPage {
+        path: absolute,
+        wiki_path,
+        title,
+        tags,
+        sources,
+        related,
+        explicit_id: node_id.or(legacy_id),
+        body: body.to_string(),
+        sha256: crate::ids::sha256_hex(&bytes),
+        id: String::new(),
+    })
+}
+
+fn required_scalar(doc: &Yaml, key: &str, path: &Path) -> Result<String, WikiGraphError> {
+    match &doc[key] {
+        Yaml::String(value) => Ok(value.clone()),
+        Yaml::Integer(value) => Ok(value.to_string()),
+        Yaml::Real(value) => Ok(value.clone()),
+        Yaml::Boolean(value) => Ok(value.to_string()),
+        Yaml::BadValue => Err(field_error(path, key, "is missing")),
+        _ => Err(field_error(path, key, "must be a scalar")),
+    }
+}
+
+fn optional_scalar(doc: &Yaml, key: &str, path: &Path) -> Result<Option<String>, WikiGraphError> {
+    match &doc[key] {
+        Yaml::BadValue | Yaml::Null => Ok(None),
+        value => {
+            let s = match value {
+                Yaml::String(v) => Some(v.clone()),
+                Yaml::Integer(v) => Some(v.to_string()),
+                Yaml::Real(v) => Some(v.clone()),
+                Yaml::Boolean(v) => Some(v.to_string()),
+                _ => None,
+            };
+            Ok(s)
+        }
+    }
+}
+
+fn required_string_list(doc: &Yaml, key: &str, path: &Path) -> Result<Vec<String>, WikiGraphError> {
+    match &doc[key] {
+        Yaml::BadValue => Err(field_error(path, key, "is missing")),
+        Yaml::Null => Ok(Vec::new()),
+        Yaml::Array(values) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                scalar_value(value).ok_or_else(|| {
+                    field_error(path, key, &format!("item {index} must be a scalar"))
+                })
+            })
+            .collect(),
+        value => scalar_value(value)
+            .map(|value| vec![value])
+            .ok_or_else(|| field_error(path, key, "must be a scalar or list")),
+    }
+}
+
+fn scalar_value(value: &Yaml) -> Option<String> {
+    match value {
+        Yaml::String(value) => Some(value.clone()),
+        Yaml::Integer(value) => Some(value.to_string()),
+        Yaml::Real(value) => Some(value.clone()),
+        Yaml::Boolean(value) => Some(value.to_string()),
+        _ => None,
+    }
 }

@@ -140,7 +140,7 @@ pub(super) fn parse_page(
     })
 }
 
-fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
+pub(super) fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     let normalized_start = text.strip_prefix("\u{feff}").unwrap_or(text);
     let after_open = normalized_start
         .strip_prefix("---\n")
@@ -206,7 +206,7 @@ fn scalar_value(value: &Yaml) -> Option<String> {
     }
 }
 
-fn field_error(path: &Path, key: &str, reason: &str) -> WikiGraphError {
+pub(super) fn field_error(path: &Path, key: &str, reason: &str) -> WikiGraphError {
     WikiGraphError::Frontmatter {
         path: path.to_path_buf(),
         message: format!("`{key}` {reason}"),

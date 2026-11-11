@@ -196,9 +196,9 @@ pub(crate) fn run() -> i32 {
             let root = resolve_or_exit!(cli.root.clone());
             trace::cmd_trace(&root, args)
         }
-        Commands::Wiki { op: WikiOp::Sync } => {
+        Commands::Wiki { op: WikiOp::Sync { include_outputs } } => {
             let root = resolve_or_exit!(cli.root.clone());
-            match innen_core::wiki_graph::sync(&root) {
+            match innen_core::wiki_graph::sync(&root, *include_outputs) {
                 Ok(report) => {
                     println!(
                         "{}",
@@ -211,6 +211,30 @@ pub(crate) fn run() -> i32 {
                         eprintln!(
                             "warning: {} page(s) skipped and left unchanged; see warnings",
                             report.pages_skipped
+                        );
+                        1
+                    } else {
+                        0
+                    }
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    2
+                }
+            }
+        }
+        Commands::Wiki { op: WikiOp::Verify { include_outputs, check_drift } } => {
+            let root = resolve_or_exit!(cli.root.clone());
+            match innen_core::wiki_graph::verify(&root, *include_outputs, *check_drift) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&report).expect("wiki verify report serializes")
+                    );
+                    if report.broken_sources > 0 || report.drifted_sources > 0 {
+                        eprintln!(
+                            "warning: {} broken source(s), {} drifted source(s); see report",
+                            report.broken_sources, report.drifted_sources
                         );
                         1
                     } else {

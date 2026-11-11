@@ -142,6 +142,13 @@ pub(super) fn resolve_source(
                 return None;
             }
         };
+        if !path.exists() {
+            warnings.push(format!(
+                "{wiki_path}: source file does not exist: {raw:?} (resolved to {})",
+                path.display()
+            ));
+            return None;
+        }
         json!({"kind": "file", "path": path.to_string_lossy()})
     };
     let (id, node) = source_node(raw, locator);
@@ -159,7 +166,7 @@ fn conversation_ref(value: &str) -> Option<(&str, &str)> {
     (!source.is_empty() && !session_id.is_empty()).then_some((source, session_id))
 }
 
-fn unwrapped_ref(reference: &str) -> String {
+pub(super) fn unwrapped_ref(reference: &str) -> String {
     let mut value = reference.trim();
     if let Some(inner) = value.strip_prefix("[[").and_then(|v| v.strip_suffix("]]")) {
         value = inner;
@@ -169,7 +176,7 @@ fn unwrapped_ref(reference: &str) -> String {
     value.trim().replace('\\', "/")
 }
 
-fn absolute_local_path(root: &Path, reference: &str) -> Option<PathBuf> {
+pub(super) fn absolute_local_path(root: &Path, reference: &str) -> Option<PathBuf> {
     if let Some(relative) = reference.strip_prefix("~/") {
         let home = std::env::var_os("HOME")?;
         return Some(lexical_normalize(&PathBuf::from(home).join(relative)));

@@ -98,5 +98,18 @@ pub(super) enum Commands {
 #[derive(clap::Subcommand)]
 pub(super) enum WikiOp {
     /// Append changed wiki metadata and managed source edges to the graph.
-    Sync,
+    Sync {
+        /// Also process markdown files in 03-output/projects/ with wiki-like frontmatter.
+        #[arg(long)]
+        include_outputs: bool,
+    },
+    /// Audit all source references in wiki pages and 03-output markdown for existence and drift.
+    Verify {
+        /// Also check markdown files in 03-output/projects/ with wiki-like frontmatter.
+        #[arg(long)]
+        include_outputs: bool,
+        /// Report drift when source file hash differs from artifact/wiki content hash.
+        #[arg(long)]
+        check_drift: bool,
+    },
 }
