@@ -24,6 +24,7 @@ mod util;
 
 use clap::Parser;
 use commands::{Commands, WikiOp};
+use innen_core::config::CliOverrides;
 use types::Cli;
 use util::is_human;
 
@@ -174,7 +175,8 @@ pub(crate) fn run() -> i32 {
         }
         Commands::Harvest(args) => {
             let root = resolve_or_exit!(cli.root.clone());
-            harvest::cmd_harvest(&root, &cli.format, args)
+            let overrides: CliOverrides = (&cli).into();
+            harvest::cmd_harvest(&root, &cli.format, args, &overrides)
         }
         Commands::Hook(args) => {
             let root = resolve_or_exit!(cli.root.clone());
@@ -182,7 +184,8 @@ pub(crate) fn run() -> i32 {
         }
         Commands::Ingest => {
             let root = resolve_or_exit!(cli.root.clone());
-            harvest::cmd_ingest(&root, &cli.format)
+            let overrides: CliOverrides = (&cli).into();
+            harvest::cmd_ingest(&root, &cli.format, &overrides)
         }
         Commands::Retention(args) => {
             let root = resolve_or_exit!(cli.root.clone());

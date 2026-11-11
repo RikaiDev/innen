@@ -1,4 +1,5 @@
 use super::commands::Commands;
+use innen_core::config::CliOverrides;
 use std::path::PathBuf;
 
 /// What an agent or newcomer needs first: intent, not a 22-row command table.
@@ -46,6 +47,21 @@ pub(super) struct Cli {
     /// KB root dir. Precedence: --root > INNEN_ROOT env > global config.
     #[arg(long, global = true)]
     pub(super) root: Option<PathBuf>,
+    /// File patterns to harvest (glob patterns relative to inbox_path).
+    /// Builtin = ["**/*.md", "**/*.json", "**/*.jsonl", "**/*.txt"].
+    #[arg(long, global = true, num_args = 1..)]
+    pub(super) harvest_patterns: Vec<String>,
     #[command(subcommand)]
     pub(super) command: Commands,
+}
+
+impl From<&Cli> for CliOverrides {
+    fn from(cli: &Cli) -> Self {
+        Self {
+            root: cli.root.clone(),
+            format: if cli.format.is_empty() { None } else { Some(cli.format.clone()) },
+            harvest_patterns: if cli.harvest_patterns.is_empty() { None } else { Some(cli.harvest_patterns.clone()) },
+            rebuild_on_open: None,
+        }
+    }
 }

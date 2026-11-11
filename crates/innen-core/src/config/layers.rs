@@ -11,6 +11,8 @@ pub struct CliOverrides {
     pub root: Option<PathBuf>,
     /// Overrides `[core] format`.
     pub format: Option<String>,
+    /// Overrides `[core] harvest_patterns`.
+    pub harvest_patterns: Option<Vec<String>>,
     /// Overrides `[index] rebuild_on_open`.
     pub rebuild_on_open: Option<bool>,
 }
@@ -22,6 +24,12 @@ pub struct Config {
     pub root: PathBuf,
     /// Output format (e.g. `"human"` / `"json"`). Builtin = `"human"`.
     pub format: String,
+    /// Harvest inbox path relative to root. Builtin = `"00-inbox/harvest"`.
+    /// Set once in project onboarding via machine.json; not overridable by CLI/env/global.
+    pub inbox_path: PathBuf,
+    /// File patterns to harvest (glob patterns relative to inbox_path).
+    /// Builtin = `["**/*.md", "**/*.json", "**/*.jsonl", "**/*.txt"]`.
+    pub harvest_patterns: Vec<String>,
     /// Rebuild the derived index on open. Builtin = `false`.
     pub rebuild_on_open: bool,
 }
@@ -31,6 +39,8 @@ pub struct Config {
 pub(super) struct Layer {
     pub(super) root: Option<PathBuf>,
     pub(super) format: Option<String>,
+    pub(super) inbox_path: Option<PathBuf>,
+    pub(super) harvest_patterns: Option<Vec<String>>,
     pub(super) rebuild_on_open: Option<bool>,
 }
 
@@ -91,6 +101,28 @@ pub(super) fn parse_toml_text(text: &str) -> Layer {
                     }
                 }
             }
+            (Some(Section::Core), "inbox_path") => {
+                if let Some(s) = unquote(value) {
+                    if !s.is_empty() {
+                        layer.inbox_path = Some(PathBuf::from(s));
+                    }
+                }
+            }
+            (Some(Section::Core), "harvest_patterns") => {
+                // Simple array parsing: ["*.md", "*.json"]
+                let value = value.trim();
+                if value.starts_with('[') && value.ends_with(']') {
+                    let inner = &value[1..value.len() - 1];
+                    let patterns: Vec<String> = inner
+                        .split(',')
+                        .map(|s| unquote(s.trim()).unwrap_or_default())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !patterns.is_empty() {
+                        layer.harvest_patterns = Some(patterns);
+                    }
+                }
+            }
             (Some(Section::Index), "rebuild_on_open") => match value {
                 "true" => layer.rebuild_on_open = Some(true),
                 "false" => layer.rebuild_on_open = Some(false),
@@ -135,6 +167,22 @@ pub(super) fn parse_machine_bytes(bytes: &[u8]) -> Layer {
     if let Some(s) = obj.get("format").and_then(|v| v.as_str()) {
         if !s.is_empty() {
             layer.format = Some(s.to_string());
+        }
+    }
+    if let Some(s) = obj.get("inbox_path").and_then(|v| v.as_str()) {
+        if !s.is_empty() {
+            layer.inbox_path = Some(PathBuf::from(s));
+        }
+    }
+    if let Some(arr) = obj.get("harvest_patterns").and_then(|v| v.as_array()) {
+        let patterns: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !patterns.is_empty() {
+            layer.harvest_patterns = Some(patterns);
         }
     }
     if let Some(b) = obj.get("rebuild_on_open").and_then(|v| v.as_bool()) {

@@ -4,34 +4,64 @@
 
 use std::path::Path;
 
+use crate::config::Config;
 use crate::tap::Event;
 
 use super::report::{HarvestReport, TapReport};
 use super::tap::TAP_ID;
 
-/// Sorted top-level `*.md` file names under `<root>/00-inbox/harvest`.
+/// Recursively list files matching harvest patterns under inbox_path.
 /// Missing/unreadable inbox → empty.
-pub(super) fn list_inbox_files(root: &Path) -> Vec<String> {
-    let inbox = root.join("00-inbox/harvest");
-    let entries = match std::fs::read_dir(&inbox) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
+pub(super) fn list_inbox_files(root: &Path, config: &Config) -> Vec<String> {
+    let inbox = root.join(&config.inbox_path);
     let mut names = Vec::new();
-    for entry in entries.flatten() {
+    
+    // Walk the inbox directory recursively
+    if !inbox.exists() {
+        return Vec::new();
+    }
+    
+    let walker = walkdir::WalkDir::new(&inbox).into_iter();
+    
+    for entry in walker.flatten() {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
-        let is_md = path
-            .extension()
-            .and_then(|o| o.to_str())
-            .is_some_and(|e| e == "md");
-        if !is_md {
-            continue;
+        
+        // Check if file matches any harvest pattern
+        let rel = path.strip_prefix(&inbox).unwrap_or(path);
+        let rel_str = rel.to_string_lossy();
+        
+        let matches = config.harvest_patterns.iter().any(|pattern| {
+            // Simple glob matching: **/*.ext -> ends with .ext
+            if pattern.starts_with("**/") {
+                let suffix = &pattern[3..];
+                // Handle **/*.ext pattern - extract extension
+                if suffix.starts_with("*.") {
+                    let ext = &suffix[1..]; // include the dot, e.g. ".jsonl"
+                    rel_str.ends_with(ext)
+                } else {
+                    // Pattern like **/foo - match exact path suffix
+                    rel_str.ends_with(suffix)
+                }
+            } else if pattern.starts_with("*.") {
+                // Simple glob: *.md, *.json, etc.
+                let ext = &pattern[1..]; // include the dot
+                rel_str.ends_with(ext)
+            } else if pattern.contains('*') {
+                // Other glob patterns not supported yet
+                false
+            } else {
+                rel_str == *pattern
+            }
+        });
+        
+        if matches {
+            names.push(rel_str.into_owned());
         }
-        names.push(entry.file_name().to_string_lossy().into_owned());
     }
+    
     names.sort();
     names
 }
@@ -48,7 +78,7 @@ fn sha8(rel: &str) -> String {
 /// inputs (legacy count, unreadable file) contributes an empty consumed set:
 /// re-listing everything is safe because the event id is content-derived and
 /// the op is an upsert, whereas guessing a count would skip real files.
-pub(super) fn unconsumed(root: &Path) -> (Vec<String>, crate::tap::CursorState) {
+pub(super) fn unconsumed(root: &Path, config: &Config) -> (Vec<String>, crate::tap::CursorState) {
     let state = crate::tap::load_cursor(root, TAP_ID);
     let cursor = state
         .known()
@@ -56,7 +86,7 @@ pub(super) fn unconsumed(root: &Path) -> (Vec<String>, crate::tap::CursorState) 
             consumed: consumed.clone(),
         })
         .unwrap_or_default();
-    let files = list_inbox_files(root);
+    let files = list_inbox_files(root, config);
     let pending = cursor
         .unconsumed(&files)
         .into_iter()
@@ -105,11 +135,11 @@ pub(super) fn event_for_file(rel: &str, bytes: &[u8], text: &str) -> Event {
 }
 
 /// DRY-RUN: no appends, no cursor advance.
-pub fn check(root: &Path) -> HarvestReport {
-    let (pending, state) = unconsumed(root);
+pub fn check(root: &Path, config: &Config) -> HarvestReport {
+    let (pending, state) = unconsumed(root, config);
     let mut new_files = Vec::new();
     let mut skipped = Vec::new();
-    let inbox = root.join("00-inbox/harvest");
+    let inbox = root.join(&config.inbox_path);
     for rel in pending {
         let text = std::fs::read_to_string(inbox.join(&rel)).unwrap_or_default();
         if crate::credentials::scan_credentials(&text).is_empty() {

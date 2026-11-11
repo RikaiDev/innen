@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use crate::config::Config;
 use crate::credentials::credential_preview;
 
 use super::report::{IngestReport, Skipped};
@@ -16,8 +17,8 @@ use super::tap::TAP_ID;
 /// (reported, never appended), then record every consumed name —
 /// added and skipped alike, so a credential hit is not retried forever
 /// and a clean file is never skipped by a shifted cursor.
-pub fn run(root: &Path) -> IngestReport {
-    let (pending, state) = unconsumed(root);
+pub fn run(root: &Path, config: &Config) -> IngestReport {
+    let (pending, state) = unconsumed(root, config);
     let total = pending.len();
     if total == 0 {
         return IngestReport {
@@ -31,7 +32,7 @@ pub fn run(root: &Path) -> IngestReport {
             skipped: Vec::new(),
         };
     };
-    let inbox = root.join("00-inbox/harvest");
+    let inbox = root.join(&config.inbox_path);
     let mut added: u64 = 0;
     let mut skipped = Vec::new();
     let mut processed: Vec<String> = Vec::with_capacity(total);

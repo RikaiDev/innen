@@ -24,12 +24,17 @@ pub(super) struct HarvestArgs {
 }
 
 use super::util::{escape_tsv_field, is_human};
+use innen_core::config::CliOverrides;
 
-pub(super) fn cmd_ingest(root: &std::path::Path, format: &str) -> i32 {
+pub(super) fn cmd_ingest(root: &std::path::Path, format: &str, cli: &CliOverrides) -> i32 {
     // Thin call: appends + watermark advance live in
     // innen-core::harvest::ingest::run. Credential hits are reported, never
     // appended.
-    let report = innen_core::harvest::ingest::run(root);
+    let (config, warnings) = innen_core::config::load(root, cli);
+    for w in &warnings {
+        eprintln!("{w}");
+    }
+    let report = innen_core::harvest::ingest::run(root, &config);
     if is_human(format) {
         println!("added\t{}", report.added);
         if !report.skipped.is_empty() {
@@ -52,7 +57,7 @@ pub(super) fn cmd_ingest(root: &std::path::Path, format: &str) -> i32 {
     0
 }
 
-pub(super) fn cmd_harvest(root: &std::path::Path, format: &str, args: &HarvestArgs) -> i32 {
+pub(super) fn cmd_harvest(root: &std::path::Path, format: &str, args: &HarvestArgs, cli: &CliOverrides) -> i32 {
     if let Some(session) = &args.session {
         if args.source == "auto" {
             eprintln!("error: --session requires a concrete --source");
@@ -86,7 +91,11 @@ pub(super) fn cmd_harvest(root: &std::path::Path, format: &str, args: &HarvestAr
     // Thin call: dry-run report lives in innen-core::harvest (never appends,
     // never advances the watermark). Core structs serialize in field order,
     // which is the JSON wire order.
-    let report = innen_core::harvest::check(root);
+    let (config, warnings) = innen_core::config::load(root, cli);
+    for w in &warnings {
+        eprintln!("{w}");
+    }
+    let report = innen_core::harvest::check(root, &config);
     if args.coding_sessions {
         if args.source_root.is_some() && args.source == "auto" {
             eprintln!("error: --source-root requires a concrete --source");

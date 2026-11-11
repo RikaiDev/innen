@@ -13,7 +13,7 @@ use super::RootResolutionError;
 /// strings match the former binary `eprintln!("error: {e}")` suffixes exactly.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigSetError {
-    #[error("unknown config key: {0} (root|format|rebuild_on_open)")]
+    #[error("unknown config key: {0} (root|format|inbox_path|harvest_patterns|rebuild_on_open)")]
     UnknownKey(String),
     #[error("rebuild_on_open must be true|false")]
     InvalidBool,
@@ -104,11 +104,11 @@ pub fn set_global_value_with_env(
     value: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Result<String, ConfigSetError> {
-    if !matches!(key, "root" | "format" | "rebuild_on_open") {
+    if !matches!(key, "root" | "format" | "inbox_path" | "harvest_patterns" | "rebuild_on_open") {
         return Err(ConfigSetError::UnknownKey(key.to_string()));
     }
     let normalized = value.trim();
-    if (key == "root" || key == "format") && normalized.is_empty() {
+    if (key == "root" || key == "format" || key == "inbox_path") && normalized.is_empty() {
         return Err(ConfigSetError::EmptyValue(key.to_string()));
     }
     if key == "rebuild_on_open"
@@ -122,6 +122,14 @@ pub fn set_global_value_with_env(
     let (stored, echo) = if key == "rebuild_on_open" {
         let b = normalized.eq_ignore_ascii_case("true");
         (serde_json::Value::Bool(b), normalized.to_ascii_lowercase())
+    } else if key == "harvest_patterns" {
+        // Store as JSON array
+        let patterns: Vec<String> = normalized
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        (serde_json::to_value(patterns).unwrap(), normalized.to_string())
     } else {
         (
             serde_json::Value::String(normalized.to_string()),
@@ -168,7 +176,10 @@ pub fn get_global_value_with_env(
     key: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Result<Option<String>, ConfigSetError> {
-    if !matches!(key, "root" | "format" | "rebuild_on_open") {
+    if !matches!(
+        key,
+        "root" | "format" | "inbox_path" | "harvest_patterns" | "rebuild_on_open"
+    ) {
         return Err(ConfigSetError::UnknownKey(key.to_string()));
     }
     let global_path = match global_config_path_with_env(env) {
@@ -210,6 +221,20 @@ pub fn get_global_value_with_env(
             .get("format")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())),
+        "inbox_path" => Ok(obj
+            .get("inbox_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())),
+        "harvest_patterns" => Ok(obj
+            .get("harvest_patterns")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })),
         "rebuild_on_open" => Ok(obj
             .get("rebuild_on_open")
             .and_then(|v| v.as_bool())

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::config::{load, CliOverrides};
 use crate::graph::{materialize, EdgeType};
 use crate::journal::Journal;
 
@@ -36,7 +37,8 @@ pub fn list(root: &Path, options: &TaskOptions<'_>) -> Result<Value, String> {
     let entries = Journal::open(root)
         .and_then(|j| j.read_all())
         .map_err(|e| e.to_string())?;
-    let harvest_report = crate::harvest::check(root);
+    let config = load(root, &CliOverrides::default()).0;
+    let harvest_report = crate::harvest::check(root, &config);
     let (harvest_pending, harvest_skipped) = harvest_report
         .taps
         .iter()

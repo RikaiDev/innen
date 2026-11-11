@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use crate::config::{load, CliOverrides};
 use crate::tap::{Event, Tap, TapError};
 
 use super::scan::{event_for_file, unconsumed};
@@ -20,6 +21,10 @@ impl DirectoryTap {
     fn inbox_dir(&self) -> PathBuf {
         self.dir.join("00-inbox/harvest")
     }
+    
+    fn config(&self) -> crate::config::Config {
+        load(&self.dir, &CliOverrides::default()).0
+    }
 }
 
 impl Tap for DirectoryTap {
@@ -36,7 +41,8 @@ impl Tap for DirectoryTap {
     /// scans before append.
     fn collect(&self) -> Result<Vec<Event>, TapError> {
         let mut out = Vec::new();
-        for rel in unconsumed(&self.dir).0 {
+        let config = self.config();
+        for rel in unconsumed(&self.dir, &config).0 {
             let path = self.inbox_dir().join(&rel);
             let bytes = std::fs::read(&path)
                 .map_err(|e| TapError::Io(format!("read {}: {e}", path.display())))?;

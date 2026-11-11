@@ -17,6 +17,7 @@ jieba-rs = { workspace = true }
 tiktoken-rs = { workspace = true }
 yaml-rust2 = { workspace = true }
 zstd = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
