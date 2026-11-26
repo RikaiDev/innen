@@ -538,6 +538,64 @@ fn sweep_compacts_an_unattested_closed_session_then_purges_it() {
 }
 
 #[test]
+fn compaction_journals_its_conversation_node_when_unseeded() {
+    // Regression: write_compressed_conversation inserts the conversation node
+    // into the in-memory graph only. A guard checked after that write skipped
+    // the journal node.upsert while still asserting the DERIVED_FROM edge, so
+    // doctor reported dangling edges (455 in innen-wiki on 2026-11-23).
+    let kb = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let source = store.path().join(format!("{ID}.jsonl"));
+    fs::write(
+        &source,
+        concat!(
+            "{\"type\":\"user\",\"timestamp\":\"2020-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"question\"}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2020-01-01T00:01:00Z\",\"message\":{\"role\":\"assistant\",\"content\":\"answer\"}}\n"
+        ),
+    )
+    .unwrap();
+    let candidate = Candidate {
+        id: ID.into(),
+        source: Source::Claude,
+        modified: Some("2020-01-01T00:00:00Z".into()),
+        path: source.clone(),
+        project: None,
+        parent_id: None,
+    };
+    let record = compact_and_attest(kb.path(), &candidate).unwrap();
+
+    let entries = Journal::open(kb.path()).unwrap().read_all().unwrap();
+    let conversation_id = format!("conversation:claude:{ID}");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.op == "node.upsert" && e.payload["id"] == conversation_id),
+        "compaction must journal the conversation node it references"
+    );
+    let edge = entries
+        .iter()
+        .find(|e| e.op == "edge.assert" && e.payload["from"] == record.node_id)
+        .expect("compaction asserts a DERIVED_FROM edge");
+    assert_eq!(edge.payload["to"], conversation_id);
+
+    // Replay exactly as doctor does: every non-retracted endpoint resolves.
+    let events = entries
+        .iter()
+        .map(|e| json!({"op": e.op, "payload": e.payload, "observed_utc": e.observed_utc}))
+        .collect::<Vec<_>>();
+    let graph = crate::graph::materialize(&events, None, true);
+    assert!(
+        graph
+            .edges
+            .iter()
+            .filter(|e| !e.retracted)
+            .all(|e| graph.nodes.contains_key(&e.from) && graph.nodes.contains_key(&e.to)),
+        "materialized graph must have no dangling edges: {:?}",
+        graph.edges
+    );
+}
+
+#[test]
 fn tool_managed_deletion_refuses_a_source_root_override() {
     // Regression: `codex delete <id>` acts on ~/.codex, so an override copy must
     // never reach it (a trial on 2026-09-30 deleted the real session instead).

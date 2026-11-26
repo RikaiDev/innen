@@ -143,6 +143,11 @@ pub(super) fn compact_and_attest(
         latest_checkpoint.as_ref(),
     )?;
     let mut graph = load_graph(root)?;
+    // `write_compressed_conversation` inserts the conversation node into the
+    // in-memory graph without journaling it. Snapshot journal-backed presence
+    // first: checking after the write always sees the node as present and
+    // silently skips its `node.upsert` while the edge below is still asserted.
+    let conversation_known = graph.nodes.contains_key(&conversation_id);
     write_compressed(&mut graph, &compressed)?;
 
     let node_id = format!(
@@ -157,7 +162,7 @@ pub(super) fn compact_and_attest(
             .append(op, &payload)
             .map_err(|error| Error::Journal(error.to_string()))
     };
-    if !graph.nodes.contains_key(&conversation_id) {
+    if !conversation_known {
         append(
             "node.upsert",
             json!({

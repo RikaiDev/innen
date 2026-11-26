@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Session retention compaction now journals the target `conversation` node before
+  asserting its `DERIVED_FROM` edge. The previous guard checked an in-memory graph
+  already mutated by the compressed-conversation writer, so the `node.upsert` was
+  skipped while the edge was still written; `innen doctor` then reported dangling
+  references. A regression test covers the unseeded-conversation path.
+
 ## [0.21.0] - 2026-11-11
 
 ### Added
