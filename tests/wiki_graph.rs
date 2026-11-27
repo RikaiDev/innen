@@ -182,6 +182,7 @@ fn projects_wiki_sources_related_and_is_idempotent() {
 fn changed_sources_retract_owned_edge_and_preserve_foreign_edge() {
     let root = tempfile::tempdir().expect("temp root");
     write_page(root.path(), "page.md", "old-source.txt", "[]");
+    std::fs::write(root.path().join("old-source.txt"), "old bytes").expect("old source");
     wiki_graph::sync(root.path(), false).expect("initial sync");
     let before = graph(root.path());
     let wiki_id = before
@@ -207,6 +208,7 @@ fn changed_sources_retract_owned_edge_and_preserve_foreign_edge() {
     drop(journal);
 
     write_page(root.path(), "page.md", "new-source.txt", "[]");
+    std::fs::write(root.path().join("new-source.txt"), "new bytes").expect("new source");
     let report = wiki_graph::sync(root.path(), false).expect("changed sync");
     assert_eq!(report.edges_retracted, 1);
     assert_eq!(report.edges_asserted, 1);
@@ -258,7 +260,7 @@ fn malformed_yaml_writes_nothing() {
 }
 
 #[test]
-fn source_targets_are_never_read_and_relative_escape_is_skipped() {
+fn missing_and_escaping_source_targets_are_skipped() {
     let root = tempfile::tempdir().expect("temp root");
     write_page(
         root.path(),
@@ -271,20 +273,22 @@ fn source_targets_are_never_read_and_relative_escape_is_skipped() {
         .warnings
         .iter()
         .any(|warning| warning.contains("escaping the knowledge-base root")));
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("source file does not exist")));
     let projected = graph(root.path());
-    assert!(projected.nodes.values().any(|node| {
-        node["source_ref"] == "missing/private/source.bin" && node["locator"]["kind"] == "file"
+    assert!(!projected.nodes.values().any(|node| {
+        node["source_ref"] == "missing/private/source.bin"
+            || node["source_ref"] == "../../escape.txt"
     }));
-    assert!(!projected
-        .nodes
-        .values()
-        .any(|node| node["source_ref"] == "../../escape.txt"));
 }
 
 #[test]
 fn deleted_page_is_marked_missing_without_deleting_its_node() {
     let root = tempfile::tempdir().expect("temp root");
     write_page(root.path(), "page.md", "evidence.txt", "[]");
+    std::fs::write(root.path().join("evidence.txt"), "evidence").expect("source file");
     wiki_graph::sync(root.path(), false).expect("initial sync");
     let before = graph(root.path());
     let wiki_id = before

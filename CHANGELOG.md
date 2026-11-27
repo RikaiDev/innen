@@ -1,17 +1,12 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed
-
-- Trace regression test follows the wiki source-verification contract: a missing
-  source ref is surfaced by `wiki sync` and `wiki verify`, and becomes a trace
-  candidate only after the file exists and the graph is synced again.
-
 ## [0.21.1] - 2026-11-27
 
 ### Fixed
 
+- Trace and wiki-graph regression tests follow the source-verification contract:
+  a missing source ref is surfaced by `wiki sync` and `wiki verify`, and becomes
+  a graph candidate only after the file exists and the graph is synced again.
 - Session retention compaction now journals the target `conversation` node before
   asserting its `DERIVED_FROM` edge. The previous guard checked an in-memory graph
   already mutated by the compressed-conversation writer, so the `node.upsert` was
