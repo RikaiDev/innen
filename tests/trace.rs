@@ -254,20 +254,24 @@ fn native_command_stdout_keeps_ordinal_pointer_and_scalar_hash() {
 fn missing_sources_and_budget_exhaustion_are_not_empty_success_claims() {
     let kb = tempfile::tempdir().unwrap();
     page(kb.path(), &kb.path().join("does-not-exist.md"));
-    output(kb.path(), &["wiki", "sync"]);
-    let missing = output(kb.path(), &["trace", "--q", "release"]);
-    assert!(missing["hits"].as_array().unwrap().is_empty());
-    assert_eq!(missing["coverage_incomplete"], true);
-    assert!(missing["sources"]
+    let synced = output(kb.path(), &["wiki", "sync"]);
+    assert!(synced["warnings"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|s| s["status"] == "unavailable"));
+        .any(|w| w.as_str().unwrap().contains("source file does not exist")));
+    let verified = cli(kb.path(), &["wiki", "verify"]);
+    let verified: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified["broken_sources"], 1);
+    let missing = output(kb.path(), &["trace", "--q", "release"]);
+    assert!(missing["hits"].as_array().unwrap().is_empty());
+    assert!(missing["sources"].as_array().unwrap().is_empty());
     fs::write(
         kb.path().join("does-not-exist.md"),
         "x".repeat(1000) + "release",
     )
     .unwrap();
+    output(kb.path(), &["wiki", "sync"]);
     let limited = output(kb.path(), &["trace", "--q", "release", "--max-bytes", "16"]);
     assert_eq!(limited["coverage_incomplete"], true);
     let no_query = cli(kb.path(), &["trace", "--q", ""]);
