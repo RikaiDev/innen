@@ -57,15 +57,22 @@ fn read_global_layer(env: Option<&HashMap<String, String>>) -> Layer {
     layer
 }
 
+/// Environment-derived overrides for a single merge, kept together because they
+/// share the same precedence tier.
+#[derive(Default)]
+struct EnvOverrides {
+    root: Option<PathBuf>,
+    format: Option<String>,
+    rebuild: Option<bool>,
+}
+
 /// Merge layers in precedence order and collect machine-over-toml warnings.
 fn merge(
     root_arg: &Path,
     toml: &Layer,
     machine: &Layer,
     global: &Layer,
-    env_root: Option<PathBuf>,
-    env_format: Option<String>,
-    env_rebuild: Option<bool>,
+    env: EnvOverrides,
     cli: &CliOverrides,
 ) -> (Config, Vec<String>) {
     let mut warnings = Vec::new();
@@ -143,13 +150,13 @@ fn merge(
     if let Some(v) = global.rebuild_on_open {
         cfg.rebuild_on_open = v;
     }
-    if let Some(v) = env_root {
+    if let Some(v) = env.root {
         cfg.root = v;
     }
-    if let Some(v) = env_format {
+    if let Some(v) = env.format {
         cfg.format = v;
     }
-    if let Some(v) = env_rebuild {
+    if let Some(v) = env.rebuild {
         cfg.rebuild_on_open = v;
     }
     if let Some(v) = &cli.root {
@@ -184,9 +191,11 @@ fn load_impl(
         &toml,
         &machine,
         &global,
-        env_root,
-        env_format,
-        env_rebuild,
+        EnvOverrides {
+            root: env_root,
+            format: env_format,
+            rebuild: env_rebuild,
+        },
         cli,
     )
 }
@@ -235,9 +244,11 @@ pub fn load_with_env(
         &toml,
         &machine,
         &global,
-        env_root,
-        env_format,
-        env_rebuild,
+        EnvOverrides {
+            root: env_root,
+            format: env_format,
+            rebuild: env_rebuild,
+        },
         cli,
     )
 }

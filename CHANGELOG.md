@@ -10,6 +10,12 @@
   skipped while the edge was still written; `innen doctor` then reported dangling
   references. A regression test covers the unseeded-conversation path.
 
+### Changed
+
+- Grouped configuration and compression inputs into dedicated structs and
+  collapsed redundant conditional nesting so the pinned Rust 1.90 clippy baseline
+  (`-D warnings`) is green without blanket lint allowances.
+
 ## [0.21.0] - 2026-11-11
 
 ### Added

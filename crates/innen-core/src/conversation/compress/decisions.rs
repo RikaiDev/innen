@@ -87,17 +87,17 @@ fn infer_task_state_from_flow(units: &[DiscourseUnit]) -> Option<TaskStateSummar
     for unit in units.iter().rev().take(50) {
         let content = &unit.content;
 
-        if summary.objective.is_none() && unit.role == Role::User {
-            if content.contains("objective")
+        if summary.objective.is_none()
+            && unit.role == Role::User
+            && (content.contains("objective")
                 || content.contains("goal")
                 || content.contains("task")
                 || content.contains("need to")
                 || content.contains("目標")
                 || content.contains("任務")
-                || content.contains("需要")
-            {
-                summary.objective = Some(truncate(content, 300));
-            }
+                || content.contains("需要"))
+        {
+            summary.objective = Some(truncate(content, 300));
         }
 
         if unit.role == Role::Assistant {

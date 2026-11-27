@@ -224,17 +224,33 @@ pub struct Deliverable {
     pub related_requirement: Option<String>,
 }
 
+/// Inputs for one compression run. Session metadata and retrieval context are
+/// grouped so the public entry point stays within the argument-count budget.
+pub struct CompressInput<'a> {
+    pub session_id: &'a str,
+    pub source: Source,
+    pub project: &'a str,
+    pub records: &'a [Record],
+    pub source_sha256: &'a str,
+    pub source_bytes: u64,
+    pub session_closed: bool,
+    pub latest_checkpoint: Option<&'a Checkpoint>,
+}
+
 /// Compress a full conversation transcript into semantic representation.
 pub fn compress_conversation(
-    session_id: &str,
-    source: Source,
-    project: &str,
-    records: &[Record],
-    source_sha256: &str,
-    source_bytes: u64,
-    session_closed: bool,
-    latest_checkpoint: Option<&Checkpoint>,
+    input: CompressInput<'_>,
 ) -> Result<CompressedConversation, ReadError> {
+    let CompressInput {
+        session_id,
+        source,
+        project,
+        records,
+        source_sha256,
+        source_bytes,
+        session_closed,
+        latest_checkpoint,
+    } = input;
     let conversation_id = format!("conversation:{}:{}", source.as_str(), session_id);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -430,16 +446,16 @@ mod tests {
     #[test]
     fn test_compress_conversation() {
         let records = sample_records();
-        let compressed = compress_conversation(
-            "test-session-123",
-            Source::Codex,
-            "/test/project",
-            &records,
-            "abc123",
-            1024,
-            true,
-            None,
-        )
+        let compressed = compress_conversation(CompressInput {
+            session_id: "test-session-123",
+            source: Source::Codex,
+            project: "/test/project",
+            records: &records,
+            source_sha256: "abc123",
+            source_bytes: 1024,
+            session_closed: true,
+            latest_checkpoint: None,
+        })
         .unwrap();
 
         assert_eq!(compressed.session_id, "test-session-123");
@@ -457,16 +473,16 @@ mod tests {
     #[test]
     fn test_narrative_arc_extraction() {
         let records = sample_records();
-        let compressed = compress_conversation(
-            "test-session-123",
-            Source::Codex,
-            "/test/project",
-            &records,
-            "abc123",
-            1024,
-            true,
-            None,
-        )
+        let compressed = compress_conversation(CompressInput {
+            session_id: "test-session-123",
+            source: Source::Codex,
+            project: "/test/project",
+            records: &records,
+            source_sha256: "abc123",
+            source_bytes: 1024,
+            session_closed: true,
+            latest_checkpoint: None,
+        })
         .unwrap();
 
         if let Some(arc) = &compressed.extraction.narrative_arc {
@@ -477,16 +493,16 @@ mod tests {
     #[test]
     fn test_user_requirements() {
         let records = sample_records();
-        let compressed = compress_conversation(
-            "test-session-123",
-            Source::Codex,
-            "/test/project",
-            &records,
-            "abc123",
-            1024,
-            true,
-            None,
-        )
+        let compressed = compress_conversation(CompressInput {
+            session_id: "test-session-123",
+            source: Source::Codex,
+            project: "/test/project",
+            records: &records,
+            source_sha256: "abc123",
+            source_bytes: 1024,
+            session_closed: true,
+            latest_checkpoint: None,
+        })
         .unwrap();
 
         let has_format_req = compressed
@@ -506,16 +522,16 @@ mod tests {
     #[test]
     fn test_code_changes_from_tool_calls() {
         let records = sample_records();
-        let compressed = compress_conversation(
-            "test-session-123",
-            Source::Codex,
-            "/test/project",
-            &records,
-            "abc123",
-            1024,
-            true,
-            None,
-        )
+        let compressed = compress_conversation(CompressInput {
+            session_id: "test-session-123",
+            source: Source::Codex,
+            project: "/test/project",
+            records: &records,
+            source_sha256: "abc123",
+            source_bytes: 1024,
+            session_closed: true,
+            latest_checkpoint: None,
+        })
         .unwrap();
 
         let has_create = compressed

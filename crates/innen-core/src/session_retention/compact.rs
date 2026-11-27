@@ -12,6 +12,7 @@
 use super::*;
 use crate::conversation::compress::{
     compress_conversation, graph_write::write_compressed_conversation as write_compressed,
+    CompressInput,
 };
 use crate::conversation::sources::Located;
 use std::io::Write;
@@ -132,16 +133,16 @@ pub(super) fn compact_and_attest(
     let records = crate::conversation::read_all_dialogue(&located, &candidate.id)?;
     let latest_checkpoint =
         crate::conversation::checkpoint::latest_checkpoint_for_session(root, &candidate.id)?;
-    let compressed = compress_conversation(
-        &candidate.id,
-        candidate.source,
-        candidate.project.as_deref().unwrap_or("unknown"),
-        &records,
-        &before.sha256,
-        before.bytes,
-        true,
-        latest_checkpoint.as_ref(),
-    )?;
+    let compressed = compress_conversation(CompressInput {
+        session_id: &candidate.id,
+        source: candidate.source,
+        project: candidate.project.as_deref().unwrap_or("unknown"),
+        records: &records,
+        source_sha256: &before.sha256,
+        source_bytes: before.bytes,
+        session_closed: true,
+        latest_checkpoint: latest_checkpoint.as_ref(),
+    })?;
     let mut graph = load_graph(root)?;
     // `write_compressed_conversation` inserts the conversation node into the
     // in-memory graph without journaling it. Snapshot journal-backed presence

@@ -16,8 +16,9 @@ pub fn extract_narrative_arc_from_flow(units: &[DiscourseUnit]) -> Option<super:
     for (idx, unit) in units.iter().enumerate() {
         let content_lower = unit.content.to_lowercase();
 
-        if arc.why.is_none() && unit.role == Role::User {
-            if content_lower.contains("why")
+        if arc.why.is_none()
+            && unit.role == Role::User
+            && (content_lower.contains("why")
                 || content_lower.contains("motivation")
                 || content_lower.contains("problem")
                 || content_lower.contains("context")
@@ -27,32 +28,30 @@ pub fn extract_narrative_arc_from_flow(units: &[DiscourseUnit]) -> Option<super:
                 || content_lower.contains("上次提報沒過主因")
                 || content_lower.contains("個資")
                 || content_lower.contains("合法")
-                || content_lower.contains("合規")
-            {
-                arc.why = Some(extract_section(units, idx, 30));
-                arc.source_ranges.why = Some((unit.line, unit.line + 100));
-                found = true;
-            }
+                || content_lower.contains("合規"))
+        {
+            arc.why = Some(extract_section(units, idx, 30));
+            arc.source_ranges.why = Some((unit.line, unit.line + 100));
+            found = true;
         }
 
-        if arc.scenario.is_none() {
-            if content_lower.contains("scenario")
+        if arc.scenario.is_none()
+            && (content_lower.contains("scenario")
                 || content_lower.contains("use case")
                 || content_lower.contains("情境")
                 || content_lower.contains("情況")
                 || content_lower.contains("situation")
                 || content_lower.contains("example")
                 || content_lower.contains("例如")
-                || content_lower.contains("比如")
-            {
-                arc.scenario = Some(extract_section(units, idx, 20));
-                arc.source_ranges.scenario = Some((unit.line, unit.line + 80));
-                found = true;
-            }
+                || content_lower.contains("比如"))
+        {
+            arc.scenario = Some(extract_section(units, idx, 20));
+            arc.source_ranges.scenario = Some((unit.line, unit.line + 80));
+            found = true;
         }
 
-        if arc.vehicle.is_none() {
-            if content_lower.contains("format")
+        if arc.vehicle.is_none()
+            && (content_lower.contains("format")
                 || content_lower.contains("vehicle")
                 || content_lower.contains("delivery")
                 || content_lower.contains("interface")
@@ -63,16 +62,16 @@ pub fn extract_narrative_arc_from_flow(units: &[DiscourseUnit]) -> Option<super:
                 || content_lower.contains("pptx")
                 || content_lower.contains("pdf")
                 || content_lower.contains("google slides")
-                || content_lower.contains("openslide")
-            {
-                arc.vehicle = Some(extract_section(units, idx, 20));
-                arc.source_ranges.vehicle = Some((unit.line, unit.line + 80));
-                found = true;
-            }
+                || content_lower.contains("openslide"))
+        {
+            arc.vehicle = Some(extract_section(units, idx, 20));
+            arc.source_ranges.vehicle = Some((unit.line, unit.line + 80));
+            found = true;
         }
 
-        if arc.architecture.is_none() && unit.role == Role::Assistant {
-            if content_lower.contains("architecture")
+        if arc.architecture.is_none()
+            && unit.role == Role::Assistant
+            && (content_lower.contains("architecture")
                 || content_lower.contains("architect")
                 || content_lower.contains("架構")
                 || content_lower.contains("設計")
@@ -85,12 +84,11 @@ pub fn extract_narrative_arc_from_flow(units: &[DiscourseUnit]) -> Option<super:
                 || content_lower.contains("公鑰")
                 || content_lower.contains("數位信封")
                 || content_lower.contains("hash")
-                || content_lower.contains("sha")
-            {
-                arc.architecture = Some(extract_section(units, idx, 40));
-                arc.source_ranges.architecture = Some((unit.line, unit.line + 120));
-                found = true;
-            }
+                || content_lower.contains("sha"))
+        {
+            arc.architecture = Some(extract_section(units, idx, 40));
+            arc.source_ranges.architecture = Some((unit.line, unit.line + 120));
+            found = true;
         }
     }
 

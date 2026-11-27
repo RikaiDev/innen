@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod cases {
     use crate::config::Config;
     use crate::harvest::{check, ingest};
     use crate::tap::watermark_path;

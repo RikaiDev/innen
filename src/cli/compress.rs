@@ -60,14 +60,16 @@ pub(super) fn cmd_compress(format: &str, args: &CompressArgs) -> i32 {
 
     // Compress the conversation
     let compress_result = innen_core::conversation::compress::compress_conversation(
-        &args.uuid,
-        source,
-        &project,
-        &records,
-        &source_sha256,
-        source_bytes,
-        true, // session_closed - assume closed for now
-        None, // latest_checkpoint - not available in this context
+        innen_core::conversation::compress::CompressInput {
+            session_id: &args.uuid,
+            source,
+            project: &project,
+            records: &records,
+            source_sha256: &source_sha256,
+            source_bytes,
+            session_closed: true,    // assume closed for now
+            latest_checkpoint: None, // not available in this context
+        },
     );
 
     let compressed = match compress_result {

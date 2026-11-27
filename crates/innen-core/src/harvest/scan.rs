@@ -35,8 +35,7 @@ pub(super) fn list_inbox_files(root: &Path, config: &Config) -> Vec<String> {
 
         let matches = config.harvest_patterns.iter().any(|pattern| {
             // Simple glob matching: **/*.ext -> ends with .ext
-            if pattern.starts_with("**/") {
-                let suffix = &pattern[3..];
+            if let Some(suffix) = pattern.strip_prefix("**/") {
                 // Handle **/*.ext pattern - extract extension
                 if suffix.starts_with("*.") {
                     let ext = &suffix[1..]; // include the dot, e.g. ".jsonl"
