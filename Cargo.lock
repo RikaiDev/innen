@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "innen"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "innen-core"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "chrono",
  "fs2",
